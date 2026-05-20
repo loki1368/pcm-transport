@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.81
+
+- Neutralized GTK theme-dependent accent colors for playlist selection, sliders, checkboxes and notebook selection styling for more consistent cross-distribution UI.
+
+## 0.9.80
+
+- Replaced Unicode transport button glyphs with GTK symbolic icons for more consistent appearance across Linux desktop themes.
+
+## 0.9.79
+
+- Improved compatibility with older GLib/GTK 3 environments on Linux distributions such as Ubuntu.
+
 ## 0.9.78
 
 - Updated project descriptions and contact information.

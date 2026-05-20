@@ -114,6 +114,34 @@ std::string make_simd_status_text(bool supported, bool enabled) {
     return run_simd_dsp_self_test() ? "SIMD DSP acceleration self-test passed. Ready to use." : "SIMD DSP acceleration self-test failed. Kept disabled. Build with -msse2 on 32-bit x86 if needed.";
 }
 
+
+GtkWidget* create_symbolic_button(const char* primary_icon,
+                                  const char* fallback_icon,
+                                  const char* fallback_label) {
+    GtkWidget* button = gtk_button_new();
+    GtkIconTheme* theme = gtk_icon_theme_get_default();
+    const char* icon_name = primary_icon;
+    if (theme != nullptr && icon_name != nullptr && !gtk_icon_theme_has_icon(theme, icon_name)) {
+        if (fallback_icon != nullptr && gtk_icon_theme_has_icon(theme, fallback_icon)) {
+            icon_name = fallback_icon;
+        } else {
+            icon_name = nullptr;
+        }
+    }
+
+    if (icon_name != nullptr) {
+        GtkWidget* image = gtk_image_new_from_icon_name(icon_name, GTK_ICON_SIZE_BUTTON);
+        gtk_image_set_pixel_size(GTK_IMAGE(image), 18);
+        gtk_widget_set_halign(image, GTK_ALIGN_CENTER);
+        gtk_widget_set_valign(image, GTK_ALIGN_CENTER);
+        gtk_button_set_image(GTK_BUTTON(button), image);
+        gtk_button_set_always_show_image(GTK_BUTTON(button), TRUE);
+    } else {
+        gtk_button_set_label(GTK_BUTTON(button), fallback_label != nullptr ? fallback_label : "");
+    }
+    return button;
+}
+
 bool detect_flac_threaded_decode_support() {
     return FlacStreamDecoder::threaded_decode_supported();
 }
@@ -1370,7 +1398,7 @@ GtkPlayerWindow::~GtkPlayerWindow() {
 }
 
 void GtkPlayerWindow::show() {
-    app_ = gtk_application_new("org.berestov.pcmtransport", G_APPLICATION_DEFAULT_FLAGS);
+    app_ = gtk_application_new("org.berestov.pcmtransport", G_APPLICATION_FLAGS_NONE);
     g_signal_connect(app_, "activate", G_CALLBACK(GtkPlayerWindow::on_activate), this);
     g_application_run(G_APPLICATION(app_), 0, nullptr);
     g_object_unref(app_);
@@ -1395,7 +1423,7 @@ void GtkPlayerWindow::on_playlist_area_size_allocate(GtkWidget*, GtkAllocation* 
 
 void GtkPlayerWindow::build_ui(GtkApplication* app) {
     window_ = gtk_application_window_new(app);
-    gtk_window_set_title(GTK_WINDOW(window_), "PCM Transport v0.9.78");
+    gtk_window_set_title(GTK_WINDOW(window_), "PCM Transport v0.9.81");
     gtk_window_set_default_size(GTK_WINDOW(window_), 900, 660);
     gtk_container_set_border_width(GTK_CONTAINER(window_), 16);
 
@@ -1408,7 +1436,16 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
         ".display-time { font-size: 24px; font-weight: bold; }"
         ".transport-button { min-height: 42px; min-width: 46px; font-weight: bold; padding: 2px 8px; }"
         ".transport-button-thin { min-height: 19px; min-width: 86px; font-weight: bold; padding: 1px 8px; }"
-        ".transport-icon { font-size: 18px; }"
+        ".transport-icon { font-size: 18px; color: #25313a; }"
+        "treeview.view:selected, treeview.view:selected:focus { background-color: #6f7780; color: #ffffff; }"
+        "treeview.view:selected:hover { background-color: #78818a; color: #ffffff; }"
+        "notebook > header > tabs > tab:checked { box-shadow: inset 0 -3px #6f7780; }"
+        "scale trough highlight { background-color: #6f7780; background-image: none; border-color: #6f7780; }"
+        "scale slider { background-color: #eeeeee; background-image: none; border-color: #9a9a9a; }"
+        "scale slider:hover { background-color: #ffffff; border-color: #7c838a; }"
+        "checkbutton check { background-image: none; border-color: #9a9a9a; }"
+        "checkbutton check:checked { background-color: #6f7780; background-image: none; border-color: #6f7780; color: #ffffff; }"
+        "checkbutton check:checked:hover { background-color: #78818a; border-color: #78818a; }"
         ".small-label { color: #e8ebee; }"
         ".display-badge { color: #ff5959; border: 1px solid #ff5959; border-radius: 3px; padding: 2px 6px; font-size: 10px; font-weight: bold; margin-left: 6px; }"
         ".meter-caption { color: #d6d8db; font-size: 10px; font-weight: bold; }"
@@ -1537,13 +1574,13 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     gtk_box_pack_start(GTK_BOX(controls_wrap_), controls_transport, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(controls_wrap_), controls_text, FALSE, FALSE, 0);
 
-    btn_prev_ = gtk_button_new_with_label("⏮");
-    btn_play_ = gtk_button_new_with_label("▶");
-    btn_pause_ = gtk_button_new_with_label("⏸");
-    btn_stop_ = gtk_button_new_with_label("⏹");
-    btn_next_ = gtk_button_new_with_label("⏭");
-    btn_open_ = gtk_button_new_with_label("⏏");
-    btn_repeat_ = gtk_button_new_with_label("⇄");
+    btn_prev_ = create_symbolic_button("media-skip-backward-symbolic", nullptr, "<<");
+    btn_play_ = create_symbolic_button("media-playback-start-symbolic", nullptr, ">");
+    btn_pause_ = create_symbolic_button("media-playback-pause-symbolic", nullptr, "||");
+    btn_stop_ = create_symbolic_button("media-playback-stop-symbolic", nullptr, "[]");
+    btn_next_ = create_symbolic_button("media-skip-forward-symbolic", nullptr, ">>");
+    btn_open_ = create_symbolic_button("document-open-symbolic", "media-eject-symbolic", "Open");
+    btn_repeat_ = create_symbolic_button("media-playlist-repeat-symbolic", "view-refresh-symbolic", "Repeat");
     btn_settings_ = gtk_button_new_with_label("Settings");
     btn_eq_ = gtk_button_new_with_label("DSP Studio");
     btn_alsamixer_ = gtk_button_new_with_label("alsamixer");
@@ -1552,9 +1589,7 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     GtkWidget* transport_buttons_all[] = {btn_prev_, btn_play_, btn_pause_, btn_stop_, btn_next_, btn_open_, btn_repeat_};
     for (GtkWidget* button : transport_buttons_all) {
         gtk_style_context_add_class(gtk_widget_get_style_context(button), "transport-button");
-        if (button == btn_prev_ || button == btn_play_ || button == btn_pause_ || button == btn_stop_ || button == btn_next_) {
-            gtk_style_context_add_class(gtk_widget_get_style_context(button), "transport-icon");
-        }
+        gtk_style_context_add_class(gtk_widget_get_style_context(button), "transport-icon");
         gtk_box_pack_start(GTK_BOX(controls_transport), button, FALSE, FALSE, 0);
     }
 
@@ -2638,7 +2673,7 @@ void GtkPlayerWindow::open_file_dialog() {
                                                     GTK_FILE_CHOOSER_ACTION_OPEN,
                                                     "_Cancel", GTK_RESPONSE_CANCEL,
                                                     "_Open", GTK_RESPONSE_ACCEPT,
-                                                    nullptr);
+                                                    NULL);
     gtk_file_chooser_set_select_multiple(GTK_FILE_CHOOSER(dialog), TRUE);
     if (!last_open_directory_.empty()) {
         gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(dialog), last_open_directory_.c_str());
@@ -2716,7 +2751,7 @@ void GtkPlayerWindow::open_settings_dialog() {
                                                     GTK_DIALOG_MODAL,
                                                     "_Cancel", GTK_RESPONSE_CANCEL,
                                                     "_Save", RESPONSE_APPLY_CLOSE,
-                                                    nullptr);
+                                                    NULL);
     GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
     gtk_container_set_border_width(GTK_CONTAINER(content), 14);
 
@@ -2908,7 +2943,7 @@ void GtkPlayerWindow::open_about_dialog() {
                                                     "_Donate", RESPONSE_DONATE,
                                                     "_License", RESPONSE_LICENSE,
                                                     "_Close", GTK_RESPONSE_CLOSE,
-                                                    nullptr);
+                                                    NULL);
     GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
     style_dialog_action_area(dialog);
     gtk_container_set_border_width(GTK_CONTAINER(content), 14);
@@ -2917,7 +2952,7 @@ void GtkPlayerWindow::open_about_dialog() {
     gtk_box_pack_start(GTK_BOX(content), box, TRUE, TRUE, 0);
 
     GtkWidget* title = gtk_label_new(nullptr);
-    gtk_label_set_markup(GTK_LABEL(title), "<b>PCM Transport 0.9.78</b>");
+    gtk_label_set_markup(GTK_LABEL(title), "<b>PCM Transport 0.9.81</b>");
     gtk_label_set_xalign(GTK_LABEL(title), 0.5f);
     GtkWidget* subtitle = gtk_label_new("Digital Audio Player");
     gtk_label_set_xalign(GTK_LABEL(subtitle), 0.5f);
@@ -2952,7 +2987,7 @@ void GtkPlayerWindow::open_about_dialog() {
                                                          GTK_DIALOG_MODAL,
                                                          "_Copy", RESPONSE_COPY,
                                                          "_Close", GTK_RESPONSE_CLOSE,
-                                                         nullptr);
+                                                         NULL);
             GtkWidget* area = gtk_dialog_get_content_area(GTK_DIALOG(msg));
             style_dialog_action_area(msg);
             gtk_container_set_border_width(GTK_CONTAINER(area), 14);
@@ -2980,7 +3015,7 @@ void GtkPlayerWindow::open_about_dialog() {
                                                          GTK_WINDOW(dialog),
                                                          GTK_DIALOG_MODAL,
                                                          "_Close", GTK_RESPONSE_CLOSE,
-                                                         nullptr);
+                                                         NULL);
             GtkWidget* area = gtk_dialog_get_content_area(GTK_DIALOG(msg));
             style_dialog_action_area(msg);
             gtk_container_set_border_width(GTK_CONTAINER(area), 14);
@@ -3046,7 +3081,7 @@ void GtkPlayerWindow::open_bitperfect_test_dialog(GtkWidget* parent_dialog, int 
     GtkWidget* dialog = gtk_dialog_new_with_buttons("FLAC bit-perfect test",
                                                     GTK_WINDOW(parent_dialog),
                                                     GTK_DIALOG_MODAL,
-                                                    nullptr);
+                                                    NULL);
     GtkWidget* close_button = gtk_dialog_add_button(GTK_DIALOG(dialog), "_Close", GTK_RESPONSE_CLOSE);
     gtk_widget_set_sensitive(close_button, FALSE);
     gtk_window_set_deletable(GTK_WINDOW(dialog), FALSE);
@@ -3108,7 +3143,7 @@ void GtkPlayerWindow::open_bitperfect_test_dialog(GtkWidget* parent_dialog, int 
         };
         try {
             post_diagnostics_update(text_view, progress, close_button,
-                "PCM Transport FLAC bit-perfect test\nVersion: 0.9.78\nMode: current player processing path before ALSA\nFFmpeg: not used\n", 0.02, false);
+                "PCM Transport FLAC bit-perfect test\nVersion: 0.9.81\nMode: current player processing path before ALSA\nFFmpeg: not used\n", 0.02, false);
             std::ostringstream ctx;
             ctx << "Duration: " << duration_seconds << " sec\n"
                 << "Generated signal: deterministic 16-bit / 44.1 kHz / stereo stress pattern\n"
@@ -3192,7 +3227,7 @@ void GtkPlayerWindow::open_eq_dialog() {
                                                     GTK_DIALOG_MODAL,
                                                     "_Close", GTK_RESPONSE_CLOSE,
                                                     "_Reset", RESPONSE_RESET,
-                                                    nullptr);
+                                                    NULL);
     GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
     style_dialog_action_area(dialog);
     gtk_container_set_border_width(GTK_CONTAINER(content), 14);
