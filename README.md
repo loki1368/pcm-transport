@@ -106,6 +106,17 @@ To get the cleanest possible playback path:
 
 ---
 
+## Download
+
+A ready-to-run Linux x86_64 AppImage is available on the GitHub Releases page.
+
+```bash
+chmod +x PCM-Transport-v0.9.81-x86_64.AppImage
+./PCM-Transport-v0.9.81-x86_64.AppImage
+```
+
+---
+
 ## Dependencies
 
 ### Build dependencies
