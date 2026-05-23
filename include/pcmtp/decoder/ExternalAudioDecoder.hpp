@@ -13,12 +13,24 @@ struct GenericTags {
     int track_number = 0;
 };
 
+struct ExternalAudioInfo {
+    AudioFormat format{};
+    std::uint64_t total_samples_per_channel = 0;
+    GenericTags tags{};
+    std::string codec_name;
+    std::int64_t duration_ts = 0;
+    std::string time_base;
+    bool lossless = false;
+};
+
 class ExternalAudioDecoder final : public IAudioDecoder {
 public:
     explicit ExternalAudioDecoder(std::uint32_t forced_output_sample_rate = 0, std::uint16_t forced_output_bits_per_sample = 0, const std::string& resample_quality = "maximum", const std::string& bitdepth_quality = "tpdf_hp");
     ~ExternalAudioDecoder() override;
 
     void open(const std::string& path) override;
+    void open_at_sample(const std::string& path, std::uint64_t sample_index) override;
+    void set_known_info(const ExternalAudioInfo& info);
     const AudioFormat& format() const override;
     std::size_t read_samples(PcmSample* destination, std::size_t max_samples) override;
     bool eof() const override;
@@ -27,6 +39,8 @@ public:
     bool seek_to_sample(std::uint64_t sample_index) override;
 
     static bool looks_supported(const std::string& path);
+    static ExternalAudioInfo probe_metadata(const std::string& path, std::uint32_t forced_output_sample_rate = 0, std::uint16_t forced_output_bits_per_sample = 0);
+    static ExternalAudioInfo probe_info(const std::string& path, std::uint32_t forced_output_sample_rate = 0, std::uint16_t forced_output_bits_per_sample = 0);
     static GenericTags read_tags(const std::string& path);
 
 private:
@@ -35,17 +49,24 @@ private:
     static std::string trim_copy(const std::string& value);
     std::string decode_command(double seconds) const;
     std::size_t bytes_per_sample() const;
+    void close_pipe(bool log_stderr, const std::string& context);
+    bool start_decode_pipe(double seconds, const std::string& context);
+    ExternalAudioInfo effective_probe_info(const std::string& path) const;
 
     std::uint32_t forced_output_sample_rate_ = 0;
     std::uint16_t forced_output_bits_per_sample_ = 0;
     std::string resample_quality_ = "maximum";
     std::string bitdepth_quality_ = "tpdf_hp";
     FILE* pipe_ = nullptr;
+    bool have_known_info_ = false;
+    ExternalAudioInfo known_info_{};
+    std::string stderr_path_;
     AudioFormat format_{};
     std::uint64_t total_samples_per_channel_ = 0;
     std::string path_;
     bool opened_ = false;
     bool reached_eof_ = false;
+    bool zero_read_logged_ = false;
     std::uint64_t current_samples_per_channel_ = 0;
 };
 

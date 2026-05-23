@@ -12,6 +12,7 @@ class RangeLimitedDecoder final : public IAudioDecoder {
 public:
     RangeLimitedDecoder(std::unique_ptr<IAudioDecoder> inner, std::uint64_t start_sample, std::uint64_t end_sample);
     void open(const std::string& path) override;
+    void open_at_sample(const std::string& path, std::uint64_t sample_index) override;
     const AudioFormat& format() const override;
     std::size_t read_samples(PcmSample* destination, std::size_t max_samples) override;
     bool eof() const override;

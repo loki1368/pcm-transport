@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(pcm_transport VERSION 0.9.81 LANGUAGES CXX)
+project(pcm_transport VERSION 0.9.91 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,6 +19,7 @@ add_executable(pcm_transport
     src/decoder/FlacStreamDecoder.cpp
     src/decoder/ExternalAudioDecoder.cpp
     src/decoder/RangeLimitedDecoder.cpp
+    src/decoder/GaplessChainDecoder.cpp
     src/decoder/MemoryAudioDecoder.cpp
     src/core/TransportFifo.cpp
     src/gui/GtkPlayerWindow.cpp
@@ -53,5 +54,4 @@ target_link_libraries(pcm_transport PRIVATE
     ${FLAC_LIBRARIES}
     ${GTK3_LIBRARIES}
     pthread
-    dl
 )

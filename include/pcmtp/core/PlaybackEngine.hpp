@@ -57,6 +57,8 @@ public:
     bool deep_bass_enabled() const;
     void set_deep_bass_preset(int preset);
     int deep_bass_preset() const;
+    void set_deep_bass_amount(int amount_steps);
+    int deep_bass_amount() const;
     void set_simd_dsp_enabled(bool enabled);
     bool simd_dsp_enabled() const;
     void set_level_meter_enabled(bool enabled);
@@ -104,6 +106,7 @@ private:
     std::atomic<int> treble_hz_{10000};
     std::atomic<bool> deep_bass_enabled_{false};
     std::atomic<int> deep_bass_preset_{static_cast<int>(tone::DeepBassPreset::Focused)};
+    std::atomic<int> deep_bass_amount_{0};
     std::atomic<bool> simd_dsp_enabled_{false};
     std::atomic<bool> level_meter_enabled_{true};
     std::atomic<bool> clip_detection_enabled_{true};

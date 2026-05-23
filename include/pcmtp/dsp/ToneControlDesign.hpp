@@ -72,24 +72,27 @@ double cascaded_shelf_response_db(std::uint32_t sample_rate,
                                   int treble_db,
                                   int treble_hz,
                                   double hz);
+double deep_bass_amount_gain_from_steps(int amount_steps);
 double process_deep_bass_normalized(double input,
                                     std::uint32_t sample_rate,
                                     DeepBassPreset preset,
-                                    DeepBassState& state);
+                                    DeepBassState& state,
+                                    double amount_gain = 1.0);
 void process_deep_bass_normalized_stereo(double& left,
                                          double& right,
                                          std::uint32_t sample_rate,
                                          DeepBassPreset preset,
                                          DeepBassState& left_state,
                                          DeepBassState& right_state,
-                                         bool prefer_simd);
+                                         double amount_gain = 1.0);
 double estimate_total_processing_max_gain_db(std::uint32_t sample_rate,
                                              int bass_db,
                                              int bass_hz,
                                              int treble_db,
                                              int treble_hz,
                                              bool deep_bass_enabled,
-                                             DeepBassPreset deep_bass_preset);
+                                             DeepBassPreset deep_bass_preset,
+                                             int deep_bass_amount_steps = 0);
 double estimate_cascaded_shelf_max_gain_db(std::uint32_t sample_rate,
                                            int bass_db,
                                            int bass_hz,

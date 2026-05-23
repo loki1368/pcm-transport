@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <stdexcept>
 
+#include "pcmtp/util/Logger.hpp"
+
 namespace pcmtp {
 
 RangeLimitedDecoder::RangeLimitedDecoder(std::unique_ptr<IAudioDecoder> inner, std::uint64_t start_sample, std::uint64_t end_sample)
@@ -11,14 +13,23 @@ RangeLimitedDecoder::RangeLimitedDecoder(std::unique_ptr<IAudioDecoder> inner, s
     if (end_sample_ > start_sample_) track_length_samples_ = end_sample_ - start_sample_;
 }
 void RangeLimitedDecoder::open(const std::string& path) {
-    inner_->open(path);
+    open_at_sample(path, 0);
+}
+
+void RangeLimitedDecoder::open_at_sample(const std::string& path, std::uint64_t sample_index) {
+    const std::uint64_t clamped = std::min<std::uint64_t>(sample_index, track_length_samples_);
+    inner_->open_at_sample(path, start_sample_ + clamped);
     if (end_sample_ <= start_sample_) {
         const std::uint64_t total = inner_->total_samples_per_channel();
         if (total > start_sample_) { end_sample_ = total; track_length_samples_ = end_sample_ - start_sample_; }
     }
-    consumed_samples_per_channel_ = 0;
+    consumed_samples_per_channel_ = clamped;
     opened_ = true;
-    if (start_sample_ > 0 && !inner_->seek_to_sample(start_sample_)) throw std::runtime_error("Failed to seek to CUE track start");
+    Logger::instance().debug("RangeLimitedDecoder open: start=" + std::to_string(start_sample_) +
+                             " end=" + std::to_string(end_sample_) +
+                             " length=" + std::to_string(track_length_samples_) +
+                             " offset=" + std::to_string(clamped) +
+                             " source=" + inner_->source_path());
 }
 const AudioFormat& RangeLimitedDecoder::format() const { return inner_->format(); }
 std::size_t RangeLimitedDecoder::read_samples(PcmSample* destination, std::size_t max_samples) {

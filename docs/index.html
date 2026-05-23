@@ -31,7 +31,7 @@
     "name": "PCM Transport",
     "applicationCategory": "MultimediaApplication",
     "operatingSystem": "Linux",
-    "softwareVersion": "0.9.81",
+    "softwareVersion": "0.9.91",
     "description": "PCM Transport is a lightweight open-source Linux audio player with native FLAC playback through libFLAC, direct ALSA output, GTK interface, DSP Studio and transparent signal-path diagnostics.",
     "author": {
       "@type": "Person",
@@ -515,7 +515,7 @@
           </svg>
         </div>
         <h3>Additional formats via FFmpeg</h3>
-        <p>Uses FFmpeg and FFprobe at runtime for MP3, M4A, WAV, APE, WV, metadata probing and conversion-based processing paths.</p>
+        <p>Uses FFmpeg and FFprobe at runtime for MP3, M4A, WAV, AIFF, APE, WV, metadata probing, CUE image playback and conversion-based processing paths, with codec-aware M4A handling and a session-only probe cache for repeated external metadata checks.</p>
       </div>
 
       <div class="card">
@@ -528,6 +528,18 @@
         </div>
         <h3>Direct ALSA output</h3>
         <p>Designed for Linux playback with GTK 3 and ALSA, without requiring a mandatory PulseAudio or PipeWire layer.</p>
+      </div>
+
+      <div class="card">
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 32 32">
+            <path d="M6 10h8l4 6-4 6H6"/>
+            <path d="M18 10h8v12h-8"/>
+            <path d="M13 16h10"/>
+          </svg>
+        </div>
+        <h3>Gapless-oriented playback</h3>
+        <p>Continuous CUE image playback avoids decoder and ALSA restarts between adjacent track markers, while same-format playlist files can be chained with earlier next-track prebuffering and ALSA keepalive diagnostics where possible.</p>
       </div>
 
       <div class="card">
@@ -554,7 +566,7 @@
           </svg>
         </div>
         <h3>DSP Studio</h3>
-        <p>Includes Baxandall-like bass/treble, Deep Bass, soft volume, automatic Pre-EQ Headroom and optional processing rules.</p>
+        <p>Includes Baxandall-like bass/treble, Deep Bass with adjustable amount, soft volume, automatic Pre-EQ Headroom and optional processing rules.</p>
       </div>
 
       <div class="card">
@@ -566,7 +578,7 @@
           </svg>
         </div>
         <h3>Diagnostics and indicators</h3>
-        <p>Provides level metering, real clip detection, SIMD availability, self-test status and usage counters for runtime diagnostics.</p>
+        <p>Provides level metering, real clip detection, SIMD PCM conversion availability, self-test status, usage counters, bit-perfect testing and an offline SIMD PCM conversion benchmark for runtime diagnostics.</p>
       </div>
     </div>
 
@@ -574,7 +586,7 @@
     <div class="text-panel">
       <p>
         PCM Transport is built for users who want a small Linux FLAC player with a visible signal path,
-        native libFLAC decoding, direct ALSA output and optional DSP that can be fully bypassed.
+        native libFLAC decoding, direct ALSA output, CUE support, gapless-oriented playback and optional DSP that can be fully bypassed.
       </p>
       <p>
         The goal is not to replace large music library managers. PCM Transport is closer to a focused
@@ -588,13 +600,24 @@
       </p>
     </div>
 
-    <h2>Build and run</h2>
+    <h2>Download and run</h2>
     <p class="section-intro">
-      Build instructions follow the current project README. Install the required development packages,
-      build with CMake, then run the generated binary.
+      The easiest way to try PCM Transport is the ready-to-run Linux x86_64 AppImage from GitHub Releases.
+      Source build instructions are provided below for development and packaging.
     </p>
 
     <div class="build-box">
+      <div class="build-row">
+        <div class="build-label">
+          <strong>AppImage</strong>
+          <span>Quick start</span>
+        </div>
+        <div class="build-content">
+          <pre><code>chmod +x PCM-Transport-latest-x86_64.AppImage
+./PCM-Transport-latest-x86_64.AppImage</code></pre>
+        </div>
+      </div>
+
       <div class="build-row">
         <div class="build-label">
           <strong>Arch Linux</strong>
@@ -640,7 +663,7 @@ cmake --build build -j</code></pre>
 
     <p class="note">
       Runtime dependencies include ALSA, GTK 3, libFLAC++, FFmpeg and FFprobe.
-      Native FLAC playback can work without FFmpeg. FFmpeg/FFprobe are required for MP3, M4A, WAV, APE, WV,
+      Native FLAC playback can work without FFmpeg. FFmpeg/FFprobe are required for MP3, M4A, WAV, AIFF, APE, WV,
       metadata probing and FLAC processing paths involving conversion.
     </p>
 

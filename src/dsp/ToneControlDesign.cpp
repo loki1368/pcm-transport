@@ -4,9 +4,6 @@
 #include <array>
 #include <cmath>
 #include <complex>
-#if defined(__SSE2__) && (defined(__x86_64__) || defined(__i386__))
-#include <emmintrin.h>
-#endif
 
 namespace pcmtp {
 namespace tone {
@@ -112,35 +109,6 @@ double process_highpass(double input, double alpha, double& state) {
     return input - process_lowpass(input, alpha, state);
 }
 
-#if defined(__SSE2__) && (defined(__x86_64__) || defined(__i386__))
-void process_lowpass_stereo_simd(double& left, double& right,
-                                 double alpha_left, double alpha_right,
-                                 double& state_left, double& state_right) {
-    alignas(16) double in_pair[2] = {left, right};
-    alignas(16) double state_pair[2] = {state_left, state_right};
-    alignas(16) double alpha_pair[2] = {alpha_left, alpha_right};
-    const __m128d in = _mm_load_pd(in_pair);
-    const __m128d st = _mm_load_pd(state_pair);
-    const __m128d alpha = _mm_load_pd(alpha_pair);
-    const __m128d next = _mm_add_pd(st, _mm_mul_pd(alpha, _mm_sub_pd(in, st)));
-    _mm_store_pd(state_pair, next);
-    left = state_pair[0];
-    right = state_pair[1];
-    state_left = state_pair[0];
-    state_right = state_pair[1];
-}
-
-void process_highpass_stereo_simd(double in_left, double in_right,
-                                  double alpha_left, double alpha_right,
-                                  double& state_left, double& state_right,
-                                  double& out_left, double& out_right) {
-    out_left = in_left;
-    out_right = in_right;
-    process_lowpass_stereo_simd(out_left, out_right, alpha_left, alpha_right, state_left, state_right);
-    out_left = in_left - out_left;
-    out_right = in_right - out_right;
-}
-#endif
 
 double process_envelope(double input_abs,
                         double attack_alpha,
@@ -244,7 +212,8 @@ double simulate_deep_bass_peak(std::uint32_t sample_rate,
                                double freq_a_hz,
                                double linear_gain_b = 0.0,
                                double freq_b_hz = 0.0,
-                               double burst_hz = 0.0) {
+                               double burst_hz = 0.0,
+                               double amount_gain = 1.0) {
     if (sample_rate == 0 || freq_a_hz <= 0.0) {
         return std::max(0.0, linear_gain_a);
     }
@@ -270,7 +239,7 @@ double simulate_deep_bass_peak(std::uint32_t sample_rate,
             phase_b += phase_step_b;
             if (phase_b >= kTwoPi) phase_b -= kTwoPi;
         }
-        const double output = process_deep_bass_normalized(input, sample_rate, preset, state);
+        const double output = process_deep_bass_normalized(input, sample_rate, preset, state, amount_gain);
         if (i >= settle_samples) {
             peak = std::max(peak, std::fabs(output));
         }
@@ -286,6 +255,11 @@ int clamp_bass_hz(int hz) {
 
 int clamp_treble_hz(int hz) {
     return std::max(kTrebleMinHz, std::min(kTrebleMaxHz, hz));
+}
+
+double deep_bass_amount_gain_from_steps(int amount_steps) {
+    const int clamped = std::max(-2, std::min(2, amount_steps));
+    return std::pow(10.0, (static_cast<double>(clamped) * 1.5) / 20.0);
 }
 
 ShelfCoefficients make_low_shelf(std::uint32_t sample_rate, double gain_db, double cutoff_hz) {
@@ -315,7 +289,8 @@ double cascaded_shelf_response_db(std::uint32_t sample_rate,
 double process_deep_bass_normalized(double input,
                                     std::uint32_t sample_rate,
                                     DeepBassPreset preset,
-                                    DeepBassState& state) {
+                                    DeepBassState& state,
+                                    double amount_gain) {
     const DeepBassPresetParams& params = preset_params(preset);
     const double xn = std::max(-8.0, std::min(8.0, input));
     if (state.cached_sample_rate != sample_rate) {
@@ -386,8 +361,10 @@ double process_deep_bass_normalized(double input,
     const double contour_fill = contour - foundation;
     const double contour_fill_mix = params.contour_fill_bias + params.contour_fill_gain * (0.92 + 0.16 * state.shape);
 
-    return xn + (state.foundation_mix * foundation) + (contour_fill_mix * contour_fill)
-           + (state.harmonic_mix * harmonic_band) - (state.cleanup_mix * low_mid);
+    const double processed = xn + (state.foundation_mix * foundation) + (contour_fill_mix * contour_fill)
+                             + (state.harmonic_mix * harmonic_band) - (state.cleanup_mix * low_mid);
+    const double safe_amount = std::max(0.0, amount_gain);
+    return xn + safe_amount * (processed - xn);
 }
 
 void process_deep_bass_normalized_stereo(double& left,
@@ -396,109 +373,11 @@ void process_deep_bass_normalized_stereo(double& left,
                                          DeepBassPreset preset,
                                          DeepBassState& left_state,
                                          DeepBassState& right_state,
-                                         bool prefer_simd) {
-#if defined(__SSE2__) && (defined(__x86_64__) || defined(__i386__))
-    if (prefer_simd) {
-        // Stereo SIMD path for the linear/stateful filter sections; adaptive control remains per-channel.
-        left = std::max(-8.0, std::min(8.0, left));
-        right = std::max(-8.0, std::min(8.0, right));
-        if (left_state.cached_sample_rate != sample_rate || right_state.cached_sample_rate != sample_rate) {
-            left = process_deep_bass_normalized(left, sample_rate, preset, left_state);
-            right = process_deep_bass_normalized(right, sample_rate, preset, right_state);
-            return;
-        }
-        const DeepBassPresetParams& params = preset_params(preset);
-        const std::uint32_t tick = left_state.control_counter++;
-        right_state.control_counter++;
-        const double xn_left = left;
-        const double xn_right = right;
-        double foundation_left = left, foundation_right = right;
-        process_lowpass_stereo_simd(foundation_left, foundation_right, left_state.foundation_alpha, right_state.foundation_alpha, left_state.foundation_lp, right_state.foundation_lp);
-        double contour_left = left, contour_right = right;
-        process_lowpass_stereo_simd(contour_left, contour_right, left_state.contour_alpha, right_state.contour_alpha, left_state.contour_lp, right_state.contour_lp);
-        double low_mid_full_left = left, low_mid_full_right = right;
-        process_lowpass_stereo_simd(low_mid_full_left, low_mid_full_right, left_state.low_mid_alpha, right_state.low_mid_alpha, left_state.low_mid_lp, right_state.low_mid_lp);
-        const double low_mid_left = low_mid_full_left - contour_left;
-        const double low_mid_right = low_mid_full_right - contour_right;
-        double env_left = left_state.envelope, env_right = right_state.envelope;
-        double low_env_left = left_state.low_mid_envelope, low_env_right = right_state.low_mid_envelope;
-        if ((tick % kDeepBassEnvelopePeriodSamples) == 0) {
-            env_left = process_envelope(std::fabs(contour_left), left_state.envelope_attack_alpha, left_state.envelope_release_alpha, left_state.envelope);
-            env_right = process_envelope(std::fabs(contour_right), right_state.envelope_attack_alpha, right_state.envelope_release_alpha, right_state.envelope);
-            low_env_left = process_envelope(std::fabs(low_mid_left), left_state.low_mid_env_attack_alpha, left_state.low_mid_env_release_alpha, left_state.low_mid_envelope);
-            low_env_right = process_envelope(std::fabs(low_mid_right), right_state.low_mid_env_attack_alpha, right_state.low_mid_env_release_alpha, right_state.low_mid_envelope);
-        }
-        const double low_ratio_left = clamp01(low_env_left / (env_left + 1.0e-6));
-        const double low_ratio_right = clamp01(low_env_right / (env_right + 1.0e-6));
-        auto update_control = [&](DeepBassState& st, double env, double low_ratio) {
-            if ((tick % kDeepBassControlPeriodSamples) == 0) {
-                const double env_term = std::min(1.0, env * params.env_scale);
-                const double contour_strength = std::max(params.contour_floor, std::min(params.contour_ceiling, 1.16 - 0.08 * env_term - params.low_mid_scale * 0.04 * low_ratio));
-                const double drive_lift = (0.06 + 0.10 * (1.0 - env_term)) * (1.0 - low_ratio);
-                st.target_foundation_mix = deep_bass_foundation_mix(params, contour_strength) + 0.022;
-                st.target_cleanup_mix = std::max(0.0, deep_bass_cleanup_mix(params, contour_strength, low_ratio) - 0.002);
-                st.target_harmonic_mix = deep_bass_harmonic_mix(params, contour_strength, low_ratio) + 0.016 * (1.0 - low_ratio);
-                st.target_drive = params.drive_bias + params.drive_gain * contour_strength + drive_lift + 0.05;
-                st.target_shape = clamp01(deep_bass_shape(params, contour_strength, low_ratio) + 0.07 * (1.0 - env_term));
-                const double harmonic_hp_hz = params.hp_bias_hz + params.hp_lowmid_hz * low_ratio + params.hp_contour_hz * (1.0 - contour_strength);
-                const double harmonic_lp_hz = params.lp_bias_hz + params.lp_contour_hz * contour_strength + params.lp_lowmid_hz * low_ratio;
-                st.target_harmonic_hp_alpha = one_pole_alpha(sample_rate, harmonic_hp_hz);
-                st.target_harmonic_lp_alpha = one_pole_alpha(sample_rate, harmonic_lp_hz);
-            }
-            st.foundation_mix = smooth_parameter(st.foundation_mix, st.target_foundation_mix);
-            st.cleanup_mix = smooth_parameter(st.cleanup_mix, st.target_cleanup_mix);
-            st.harmonic_mix = smooth_parameter(st.harmonic_mix, st.target_harmonic_mix);
-            st.drive = smooth_parameter(st.drive, st.target_drive);
-            st.shape = smooth_parameter(st.shape, st.target_shape);
-            st.harmonic_hp_alpha = smooth_parameter(st.harmonic_hp_alpha, st.target_harmonic_hp_alpha);
-            st.harmonic_lp_alpha = smooth_parameter(st.harmonic_lp_alpha, st.target_harmonic_lp_alpha);
-        };
-        update_control(left_state, env_left, low_ratio_left);
-        update_control(right_state, env_right, low_ratio_right);
-        const double ws_left = (0.96 + 0.18 * left_state.shape) * left_state.drive * contour_left;
-        const double ws_right = (0.96 + 0.18 * right_state.shape) * right_state.drive * contour_right;
-        const double nl1_left = fast_tanh_like(ws_left);
-        const double nl1_right = fast_tanh_like(ws_right);
-        const double nl2_left = soft_clip3((0.90 + 0.10 * left_state.shape) * ws_left);
-        const double nl2_right = soft_clip3((0.90 + 0.10 * right_state.shape) * ws_right);
-        const double nonlinear_left = ((1.0 - left_state.shape) * nl1_left) + (left_state.shape * nl2_left);
-        const double nonlinear_right = ((1.0 - right_state.shape) * nl1_right) + (right_state.shape * nl2_right);
-        const double enh_left = (fast_tanh_like((0.52 + 0.12 * left_state.shape) * ws_left) - (0.70 * ws_left)) * (0.15 + 0.09 * left_state.shape);
-        const double enh_right = (fast_tanh_like((0.52 + 0.12 * right_state.shape) * ws_right) - (0.70 * ws_right)) * (0.15 + 0.09 * right_state.shape);
-        const double gen_left = nonlinear_left - ((0.30 + 0.07 * left_state.shape) * contour_left) + enh_left;
-        const double gen_right = nonlinear_right - ((0.30 + 0.07 * right_state.shape) * contour_right) + enh_right;
-        double hp_left = 0.0, hp_right = 0.0;
-        process_highpass_stereo_simd(gen_left, gen_right, left_state.harmonic_hp_alpha, right_state.harmonic_hp_alpha, left_state.harmonic_hp_lp, right_state.harmonic_hp_lp, hp_left, hp_right);
-        double harmonic_left = hp_left, harmonic_right = hp_right;
-        process_lowpass_stereo_simd(harmonic_left, harmonic_right, left_state.harmonic_lp_alpha, right_state.harmonic_lp_alpha, left_state.harmonic_band_lp, right_state.harmonic_band_lp);
-        const double contour_fill_left = contour_left - foundation_left;
-        const double contour_fill_right = contour_right - foundation_right;
-        const double fill_mix_left = params.contour_fill_bias + params.contour_fill_gain * (0.92 + 0.16 * left_state.shape);
-        const double fill_mix_right = params.contour_fill_bias + params.contour_fill_gain * (0.92 + 0.16 * right_state.shape);
-#if defined(__SSE2__) && (defined(__x86_64__) || defined(__i386__))
-        alignas(16) double dry_pair[2] = {xn_left, xn_right};
-        alignas(16) double foundation_pair[2] = {left_state.foundation_mix * foundation_left, right_state.foundation_mix * foundation_right};
-        alignas(16) double fill_pair[2] = {fill_mix_left * contour_fill_left, fill_mix_right * contour_fill_right};
-        alignas(16) double harmonic_pair[2] = {left_state.harmonic_mix * harmonic_left, right_state.harmonic_mix * harmonic_right};
-        alignas(16) double cleanup_pair[2] = {left_state.cleanup_mix * low_mid_left, right_state.cleanup_mix * low_mid_right};
-        __m128d mix = _mm_load_pd(dry_pair);
-        mix = _mm_add_pd(mix, _mm_load_pd(foundation_pair));
-        mix = _mm_add_pd(mix, _mm_load_pd(fill_pair));
-        mix = _mm_add_pd(mix, _mm_load_pd(harmonic_pair));
-        mix = _mm_sub_pd(mix, _mm_load_pd(cleanup_pair));
-        _mm_store_pd(dry_pair, mix);
-        left = dry_pair[0];
-        right = dry_pair[1];
-#else
-        left = xn_left + (left_state.foundation_mix * foundation_left) + (fill_mix_left * contour_fill_left) + (left_state.harmonic_mix * harmonic_left) - (left_state.cleanup_mix * low_mid_left);
-        right = xn_right + (right_state.foundation_mix * foundation_right) + (fill_mix_right * contour_fill_right) + (right_state.harmonic_mix * harmonic_right) - (right_state.cleanup_mix * low_mid_right);
-#endif
-        return;
-    }
-#endif
-    left = process_deep_bass_normalized(left, sample_rate, preset, left_state);
-    right = process_deep_bass_normalized(right, sample_rate, preset, right_state);
+                                         double amount_gain) {
+    left = process_deep_bass_normalized(left, sample_rate, preset, left_state, amount_gain);
+    right = process_deep_bass_normalized(right, sample_rate, preset, right_state, amount_gain);
 }
+
 
 double estimate_cascaded_shelf_max_gain_db(std::uint32_t sample_rate,
                                            int bass_db,
@@ -535,13 +414,15 @@ double estimate_total_processing_max_gain_db(std::uint32_t sample_rate,
                                              int treble_db,
                                              int treble_hz,
                                              bool deep_bass_enabled,
-                                             DeepBassPreset deep_bass_preset) {
+                                             DeepBassPreset deep_bass_preset,
+                                             int deep_bass_amount_steps) {
     const double linear_max_db = estimate_cascaded_shelf_max_gain_db(sample_rate, bass_db, bass_hz, treble_db, treble_hz);
     double max_linear = std::pow(10.0, linear_max_db / 20.0);
     if (!deep_bass_enabled || sample_rate == 0) {
         return 20.0 * std::log10(std::max(1.0, max_linear));
     }
 
+    const double amount_gain = deep_bass_amount_gain_from_steps(deep_bass_amount_steps);
     const double nyquist_hz = static_cast<double>(sample_rate) * 0.5;
     const double log_min = std::log(20.0);
     const double log_max = std::log(std::min(420.0, nyquist_hz * 0.98));
@@ -549,8 +430,8 @@ double estimate_total_processing_max_gain_db(std::uint32_t sample_rate,
         const double t = static_cast<double>(i) / static_cast<double>(kDeepBassLowFreqTests - 1);
         const double hz = std::exp(log_min + (log_max - log_min) * t);
         const double shelf_gain = std::pow(10.0, cascaded_shelf_response_db(sample_rate, bass_db, bass_hz, treble_db, treble_hz, hz) / 20.0);
-        max_linear = std::max(max_linear, simulate_deep_bass_peak(sample_rate, deep_bass_preset, shelf_gain, hz));
-        max_linear = std::max(max_linear, simulate_deep_bass_peak(sample_rate, deep_bass_preset, shelf_gain * 0.88, hz, shelf_gain * 0.16, std::min(nyquist_hz * 0.95, hz * 1.60)));
+        max_linear = std::max(max_linear, simulate_deep_bass_peak(sample_rate, deep_bass_preset, shelf_gain, hz, 0.0, 0.0, 0.0, amount_gain));
+        max_linear = std::max(max_linear, simulate_deep_bass_peak(sample_rate, deep_bass_preset, shelf_gain * 0.88, hz, shelf_gain * 0.16, std::min(nyquist_hz * 0.95, hz * 1.60), 0.0, amount_gain));
     }
 
     const double multi_tone_pairs[kDeepBassMultiToneTests][3] = {
@@ -567,8 +448,8 @@ double estimate_total_processing_max_gain_db(std::uint32_t sample_rate,
         const double burst_hz = multi_tone_pairs[i][2];
         const double g1 = std::pow(10.0, cascaded_shelf_response_db(sample_rate, bass_db, bass_hz, treble_db, treble_hz, f1) / 20.0);
         const double g2 = std::pow(10.0, cascaded_shelf_response_db(sample_rate, bass_db, bass_hz, treble_db, treble_hz, f2) / 20.0);
-        max_linear = std::max(max_linear, simulate_deep_bass_peak(sample_rate, deep_bass_preset, 0.64 * g1, f1, 0.14 * g2, f2, burst_hz));
-        max_linear = std::max(max_linear, simulate_deep_bass_peak(sample_rate, deep_bass_preset, 0.52 * g1, f1, 0.18 * g2, f2, burst_hz * 0.75));
+        max_linear = std::max(max_linear, simulate_deep_bass_peak(sample_rate, deep_bass_preset, 0.64 * g1, f1, 0.14 * g2, f2, burst_hz, amount_gain));
+        max_linear = std::max(max_linear, simulate_deep_bass_peak(sample_rate, deep_bass_preset, 0.52 * g1, f1, 0.18 * g2, f2, burst_hz * 0.75, amount_gain));
     }
 
     max_linear *= std::pow(10.0, deep_bass_headroom_tail_db(deep_bass_preset) / 20.0);

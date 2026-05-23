@@ -1,4 +1,4 @@
-# PCM Transport v0.9.81
+# PCM Transport v0.9.91
 
 **PCM Transport** is a Linux desktop audio player inspired by early digital audio systems, focused on **transparent PCM transport, predictable DSP, and honest signal path reporting**.
 
@@ -29,28 +29,34 @@ Website: https://andreyberestov.github.io/pcm-transport/
 - GTK 3 desktop interface  
 - Direct ALSA playback (no mandatory PulseAudio / PipeWire layer)  
 - Native FLAC decoding through libFLAC (bit-accurate path when possible)  
-- FFmpeg / FFprobe runtime decoding for MP3 / M4A / WAV / APE / WV and FLAC processing paths  
-- CUE support  
-- Small ALSA PCM ring buffer (low-latency oriented design)  
+- FFmpeg / FFprobe runtime decoding for MP3 / M4A / WAV / AIFF / APE / WV and FLAC processing paths  
+- Codec-aware M4A handling: ALAC is treated as lossless, AAC remains conservative/lossy  
+- CUE support with case-insensitive audio-file matching  
+- Continuous CUE image playback for adjacent tracks in one album image  
+- Same-format gapless chaining for ordinary playlist files where possible, with earlier preparation for FFmpeg-backed tracks  
+- Small CD-like ALSA PCM period / buffer configuration (low-latency oriented design)  
 
 ### DSP Studio
 
 - Baxandall-like Bass / Treble with selectable shelf profiles  
 - Tone response graph driven by the same shelf logic as playback  
-- Deep Bass with adaptive contour shaping and controlled harmonic reinforcement  
+- Deep Bass with adaptive contour shaping, controlled harmonic reinforcement, and adjustable amount  
 - Soft volume  
 - Automatic Pre-EQ Headroom with temporary manual trim  
 - Optional Processing Rules for SoXr resampling and bit-depth conversion  
-- Optional SIMD DSP / conversion acceleration where supported  
+- Optional SIMD PCM output conversion where supported  
 - Level meter and clip detection with visual indicators  
 
 ### Diagnostics
 
-- Detailed ALSA format negotiation logging  
+- Detailed ALSA and FFmpeg / FFprobe diagnostics  
+- Session-only external metadata cache for faster repeated FFmpeg/CUE probing  
+- Gapless/continuous playback behavior for compatible CUE and same-format file sequences, including keepalive diagnostics when prebuffering is late  
 - Explicit playback path display (reflects the real active chain)  
 - FLAC / libFLAC capability notes  
-- SIMD availability, self-test status, and usage counter  
+- SIMD PCM conversion availability, self-test status, and usage counter  
 - Offline FLAC bit-perfect test using libFLAC / flac CLI before ALSA  
+- Offline SIMD PCM conversion benchmark for the current processing path before ALSA  
 
 ---
 
@@ -72,7 +78,7 @@ DSP is fully bypassed when:
 
 In this state, the internal SoftDSP stage is **not applied to the signal path**.
 
-Level metering, clip detection, diagnostics, and SIMD counters are reporting tools. They do not intentionally change the audio signal.
+Level metering, clip detection, diagnostics, and SIMD PCM conversion counters are reporting tools. They do not intentionally change the audio signal.
 
 The CLIP indicator reflects **actual overload events before final output clamping**, not just peak level.
 
@@ -110,10 +116,21 @@ To get the cleanest possible playback path:
 
 A ready-to-run Linux x86_64 AppImage is available on the GitHub Releases page.
 
-```bash
-chmod +x PCM-Transport-v0.9.81-x86_64.AppImage
-./PCM-Transport-v0.9.81-x86_64.AppImage
+The recommended release asset name is:
+
+```text
+PCM-Transport-latest-x86_64.AppImage
 ```
+
+Run it with:
+
+```bash
+chmod +x PCM-Transport-latest-x86_64.AppImage
+./PCM-Transport-latest-x86_64.AppImage
+```
+
+The AppImage is the easiest way to try PCM Transport without building it from source.
+For development, packaging, or source-based installation, use the build instructions below.
 
 ---
 
@@ -146,7 +163,7 @@ sudo apt install build-essential cmake pkg-config \
 
 ⚠️ `ffmpeg` and `ffprobe` are required for:
 
-- MP3 / M4A / WAV / APE / WV playback  
+- MP3 / M4A / WAV / AIFF / APE / WV playback  
 - FLAC processing paths involving conversion  
 - Metadata probing  
 

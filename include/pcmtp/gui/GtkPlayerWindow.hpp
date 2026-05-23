@@ -13,6 +13,8 @@
 #include "pcmtp/core/PcmTypes.hpp"
 #include "pcmtp/core/PlaybackEngine.hpp"
 #include "pcmtp/cue/CueParser.hpp"
+#include "pcmtp/decoder/ExternalAudioDecoder.hpp"
+#include "pcmtp/decoder/GaplessChainDecoder.hpp"
 #include "pcmtp/dsp/AlsaControlBridge.hpp"
 #include "pcmtp/hardware/CardProfileRegistry.hpp"
 
@@ -54,6 +56,9 @@ private:
         std::uint32_t resampled_from_rate = 0;
         bool bitdepth_converted = false;
         bool processed_by_ffmpeg = false;
+        std::string codec_name;
+        bool cue_track = false;
+        std::uint64_t cue_album_end_sample = 0;
         std::shared_ptr<PcmBuffer> normalized_pcm;
         AudioFormat normalized_format{};
         bool normalization_matches_current = false;
@@ -72,6 +77,7 @@ private:
     static void on_open_alsamixer_clicked(GtkButton* button, gpointer user_data);
     static void on_repeat_clicked(GtkButton* button, gpointer user_data);
     static void on_run_bitperfect_test_clicked(GtkButton* button, gpointer user_data);
+    static void on_run_simd_benchmark_clicked(GtkButton* button, gpointer user_data);
     static gboolean on_timer_tick(gpointer user_data);
     static gboolean on_window_delete_event(GtkWidget* widget, GdkEvent* event, gpointer user_data);
     static void on_window_destroy(GtkWidget* widget, gpointer user_data);
@@ -94,12 +100,14 @@ private:
     void start_current_track(bool restart_if_paused = true);
     void stop_playback();
     void play_track_index(std::size_t index);
+    void play_track_index_at_offset(std::size_t index, std::uint64_t offset_samples);
     void open_file_dialog();
     void open_settings_dialog();
     void open_about_dialog();
     void open_eq_dialog();
     void open_alsamixer_for_current_device();
     void open_bitperfect_test_dialog(GtkWidget* parent_dialog, int duration_seconds);
+    void open_simd_benchmark_dialog(GtkWidget* parent_dialog, int duration_seconds);
     void refresh_device_list();
     void load_preferences();
     void save_preferences() const;
@@ -111,6 +119,15 @@ private:
     void update_playlist_selection_from_ui();
 
     std::unique_ptr<IAudioDecoder> create_decoder_for_entry(const PlaylistEntry& entry, bool for_normalization) const;
+    GaplessTrackSpec gapless_spec_for_entry(const PlaylistEntry& entry) const;
+    bool entries_share_playback_format(const PlaylistEntry& a, const PlaylistEntry& b) const;
+    std::size_t cue_chain_end_index(std::size_t index) const;
+    std::size_t file_chain_end_index(std::size_t index) const;
+    std::uint64_t track_length_samples(const PlaylistEntry& entry) const;
+    void activate_gapless_chain(std::size_t start_index, std::size_t end_index);
+    void clear_gapless_chain();
+    void update_gapless_chain_track_from_status(const PlaybackStatusSnapshot& status);
+    std::uint64_t current_track_position_from_status(const PlaybackStatusSnapshot& status) const;
     std::uint32_t target_sample_rate_for(std::uint32_t source_rate) const;
     std::uint16_t target_bits_for(std::uint16_t source_bits) const;
     void refresh_playlist_processing_metadata();
@@ -179,13 +196,11 @@ private:
     int pre_eq_headroom_tenths_db_ = 0;
     bool deep_bass_enabled_ = false;
     int deep_bass_preset_ = 0;
+    int deep_bass_amount_ = 0;
     bool simd_dsp_supported_ = false;
     bool simd_dsp_enabled_ = false;
     std::string simd_dsp_status_text_;
     bool simd_usage_counter_enabled_ = false;
-    bool flac_threaded_decode_supported_ = false;
-    bool flac_threaded_decode_enabled_ = false;
-    std::string flac_threaded_decode_status_text_;
     bool level_meter_enabled_ = true;
     bool clip_detection_enabled_ = true;
     int bass_shelf_hz_ = 110;
@@ -198,8 +213,14 @@ private:
     bool repeat_enabled_ = false;
     bool finish_handled_ = false;
     bool track_switch_in_progress_ = false;
+    bool gapless_chain_active_ = false;
+    std::size_t gapless_chain_start_index_ = 0;
+    std::size_t gapless_chain_end_index_ = 0;
+    std::vector<std::uint64_t> gapless_chain_offsets_;
+    std::uint64_t gapless_chain_total_samples_ = 0;
     std::string last_open_directory_;
     std::unordered_map<std::string, CueSheet> cue_cache_;
+    std::unordered_map<std::string, ExternalAudioInfo> external_probe_cache_;
     std::chrono::steady_clock::time_point clip_hold_until_{};
     std::uint32_t clip_hold_samples_ = 0;
     guint ui_timer_id_ = 0;

@@ -35,13 +35,6 @@ public:
 
     static FlacTags read_tags(const std::string& path);
 
-    static bool threaded_decode_supported();
-    static bool threaded_decode_requested();
-    static bool threaded_decode_active();
-    static std::string threaded_decode_runtime_status();
-    static bool threaded_decode_enabled();
-    static void set_threaded_decode_enabled(bool enabled);
-    static unsigned threaded_decode_threads();
 
 private:
     static ::FLAC__StreamDecoderWriteStatus write_callback(const ::FLAC__StreamDecoder* decoder,

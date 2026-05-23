@@ -2,9 +2,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <dirent.h>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <string>
+#include <sys/stat.h>
+#include <vector>
 
 namespace pcmtp {
 
@@ -60,6 +64,90 @@ std::string join_path(const std::string& base_dir, const std::string& file_name)
     return base_dir + "/" + file_name;
 }
 
+bool path_exists(const std::string& path) {
+    struct stat st {};
+    return !path.empty() && stat(path.c_str(), &st) == 0;
+}
+
+std::string lower_ascii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+std::vector<std::string> split_components(const std::string& path) {
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    while (start < path.size()) {
+        while (start < path.size() && (path[start] == '/' || path[start] == '\\')) {
+            ++start;
+        }
+        std::size_t end = start;
+        while (end < path.size() && path[end] != '/' && path[end] != '\\') {
+            ++end;
+        }
+        if (end > start) {
+            parts.push_back(path.substr(start, end - start));
+        }
+        start = end;
+    }
+    return parts;
+}
+
+std::string find_child_case_insensitive(const std::string& dir, const std::string& name) {
+    DIR* d = opendir(dir.empty() ? "." : dir.c_str());
+    if (d == nullptr) {
+        return std::string();
+    }
+    const std::string wanted = lower_ascii(name);
+    std::string result;
+    while (dirent* ent = readdir(d)) {
+        const std::string item = ent->d_name;
+        if (item == "." || item == "..") {
+            continue;
+        }
+        if (lower_ascii(item) == wanted) {
+            result = item;
+            break;
+        }
+    }
+    closedir(d);
+    return result;
+}
+
+std::string resolve_case_insensitive_path(const std::string& base_dir, const std::string& file_name) {
+    if (file_name.empty()) {
+        return file_name;
+    }
+    const bool absolute = !file_name.empty() && (file_name[0] == '/' || file_name[0] == '\\');
+    const std::string exact = absolute ? file_name : join_path(base_dir, file_name);
+    if (path_exists(exact)) {
+        return exact;
+    }
+
+    std::string current = absolute ? std::string("/") : (base_dir.empty() ? std::string(".") : base_dir);
+    const std::vector<std::string> parts = split_components(file_name);
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        const std::string exact_child = join_path(current, parts[i]);
+        if (path_exists(exact_child)) {
+            current = exact_child;
+            continue;
+        }
+        const std::string found = find_child_case_insensitive(current, parts[i]);
+        if (found.empty()) {
+            std::string tail;
+            for (std::size_t j = i; j < parts.size(); ++j) {
+                if (!tail.empty()) tail += "/";
+                tail += parts[j];
+            }
+            return join_path(current, tail);
+        }
+        current = join_path(current, found);
+    }
+    return current;
+}
+
 bool starts_with_keyword(const std::string& line, const std::string& keyword) {
     if (line.size() < keyword.size()) {
         return false;
@@ -70,6 +158,18 @@ bool starts_with_keyword(const std::string& line, const std::string& keyword) {
         }
     }
     return true;
+}
+
+std::string cue_file_entry_value(const std::string& line) {
+    const std::size_t first_quote = line.find('"');
+    const std::size_t second_quote = line.find('"', first_quote == std::string::npos ? first_quote : first_quote + 1);
+    if (first_quote != std::string::npos && second_quote != std::string::npos && second_quote > first_quote) {
+        return line.substr(first_quote + 1, second_quote - first_quote - 1);
+    }
+    std::istringstream ss(line.substr(5));
+    std::string file_name;
+    ss >> file_name;
+    return file_name;
 }
 
 std::uint64_t mmssff_to_samples(const std::string& value) {
@@ -101,6 +201,27 @@ bool CueParser::looks_like_cue_path(const std::string& path) {
     return lower.substr(lower.size() - 4) == ".cue";
 }
 
+std::string CueParser::resolve_audio_file_path(const std::string& path) {
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error("Cannot open CUE file: " + path);
+    }
+    const std::string base_dir = directory_of(path);
+    std::string raw_line;
+    while (std::getline(input, raw_line)) {
+        const std::string line = trim(raw_line);
+        if (!starts_with_keyword(line, "FILE ")) {
+            continue;
+        }
+        const std::string referenced = cue_file_entry_value(line);
+        if (referenced.empty()) {
+            break;
+        }
+        return resolve_case_insensitive_path(base_dir, referenced);
+    }
+    throw std::runtime_error("CUE file does not contain FILE entry");
+}
+
 CueSheet CueParser::parse_file(const std::string& path, std::uint64_t total_samples_per_channel) {
     std::ifstream input(path);
     if (!input) {
@@ -122,10 +243,9 @@ CueSheet CueParser::parse_file(const std::string& path, std::uint64_t total_samp
         }
 
         if (starts_with_keyword(line, "FILE ")) {
-            const std::size_t first_quote = line.find('"');
-            const std::size_t second_quote = line.find('"', first_quote == std::string::npos ? first_quote : first_quote + 1);
-            if (first_quote != std::string::npos && second_quote != std::string::npos && second_quote > first_quote) {
-                sheet.audio_file_path = join_path(base_dir, line.substr(first_quote + 1, second_quote - first_quote - 1));
+            const std::string referenced = cue_file_entry_value(line);
+            if (!referenced.empty()) {
+                sheet.audio_file_path = resolve_case_insensitive_path(base_dir, referenced);
                 seen_audio_file = true;
             }
             continue;
@@ -156,7 +276,10 @@ CueSheet CueParser::parse_file(const std::string& path, std::uint64_t total_samp
             int number = 0;
             std::string type;
             stream >> number >> type;
-            if (type == "AUDIO" || type == "audio") {
+            std::transform(type.begin(), type.end(), type.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            if (type == "audio") {
                 CueTrack track;
                 track.number = number;
                 sheet.tracks.push_back(track);

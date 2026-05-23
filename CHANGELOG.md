@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.9.91
+
+This release includes the accumulated updates since 0.9.81, focused on external format handling, CUE/gapless playback, diagnostics, SIMD cleanup, and Settings UI polish.
+
+- Added AIFF / AIF playback support through the existing FFmpeg external decode path.
+- Fixed FFmpeg / FFprobe handling of file paths containing apostrophes.
+- Improved FFmpeg / FFprobe diagnostics, including retained stderr details for troubleshooting.
+- Reduced FFmpeg-backed playlist add latency by combining external format probing and tag reading where possible.
+- Added session-only external metadata caching and clear it when loading a new file set.
+- Added faster FFmpeg-backed CUE startup and seeking with known metadata reuse and direct open-at-sample support.
+- Improved APE + CUE seeking and track changes.
+- Added case-insensitive matching for CUE-referenced audio files, such as `.APE` matching an existing `.ape` file.
+- Added a lightweight WAV header probe with FFprobe fallback for faster WAV playlist loading.
+- Added continuous CUE image playback for adjacent CUE tracks sharing the same audio file and output format.
+- Added same-format gapless chaining for ordinary playlist files with background next-track prebuffering where possible.
+- Added codec-aware M4A handling: ALAC/M4A is treated as lossless, while AAC/M4A remains conservative/lossy.
+- Improved ALAC/M4A lossless badge handling and allows ALAC/M4A in safe same-format gapless chains.
+- Avoided hard range-limiting ordinary full-file tracks so external decoders can play to their natural EOF.
+- Added FFprobe `codec_name`, `duration_ts`, and `time_base` parsing to improve external metadata and duration handling.
+- Removed the inactive libFLAC threaded decoder option and related UI/status plumbing.
+- Added Deep Bass Amount control (-2 to +2), scaling the final Deep Bass contribution while preserving the Reference / Punch character at amount 0.
+- Scoped SIMD acceleration to final PCM/S16 output conversion only.
+- Removed the previous SIMD Bass/Treble and Deep Bass processing paths.
+- Renamed SIMD-related UI and diagnostics wording to “SIMD PCM conversion”.
+- Updated the SIMD benchmark to compare scalar PCM conversion vs SIMD PCM conversion on the current processing path.
+- Set the FLAC bit-perfect test default length to 30 seconds for consistency with diagnostics.
+- Added AppImage usage notes to README and the project site.
+- Refined Settings layout, logging controls, Processing Rules spacing, and the classic OPEN / eject-style file button.
+- Reworked Processing Rules so added rules appear below the Add rule controls in a stable-height list area without forced GTK resize/event flushing.
+- Improved same-format gapless transitions with earlier next-track preparation for FFmpeg-backed files and larger prebuffering for external decoders.
+- Added a short silence keepalive fallback when a gapless prebuffer is not ready in time, keeping the ALSA stream active instead of forcing an immediate device restart.
+- Added diagnostic logging when gapless playback has to use the silence keepalive fallback.
+- Kept native FLAC bit-perfect path, CD-like ALSA buffers, DSP tuning, Deep Bass Reference/Punch and normal playback behavior unchanged.
+
 ## 0.9.81
 
 - Neutralized GTK theme-dependent accent colors for playlist selection, sliders, checkboxes and notebook selection styling for more consistent cross-distribution UI.
