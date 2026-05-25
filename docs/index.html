@@ -31,7 +31,7 @@
     "name": "PCM Transport",
     "applicationCategory": "MultimediaApplication",
     "operatingSystem": "Linux",
-    "softwareVersion": "0.9.91",
+    "softwareVersion": "0.9.94",
     "description": "PCM Transport is a lightweight open-source Linux audio player with native FLAC playback through libFLAC, direct ALSA output, GTK interface, DSP Studio and transparent signal-path diagnostics.",
     "author": {
       "@type": "Person",
@@ -504,7 +504,7 @@
           </svg>
         </div>
         <h3>Native FLAC playback</h3>
-        <p>Uses libFLAC for native FLAC decoding, with a clean playback path when no resampling or bit-depth conversion is required.</p>
+        <p>Uses libFLAC for native FLAC decoding and FFmpeg / FFprobe for additional formats, with the legacy bounded transport wrapper restored for playback entries with known sample ranges, including same-format gapless chains.</p>
       </div>
 
       <div class="card">

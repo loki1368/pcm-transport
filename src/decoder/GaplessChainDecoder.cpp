@@ -62,6 +62,7 @@ std::unique_ptr<IAudioDecoder> GaplessChainDecoder::create_decoder_for_track(con
         decoder.reset(external.release());
     }
     if (spec.range_limited) {
+        Logger::instance().debug("Legacy bounded transport enabled for gapless chain track");
         decoder.reset(new RangeLimitedDecoder(std::move(decoder), spec.start_sample, spec.end_sample));
     }
     return decoder;

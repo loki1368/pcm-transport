@@ -1561,7 +1561,7 @@ void GtkPlayerWindow::on_playlist_area_size_allocate(GtkWidget*, GtkAllocation* 
 
 void GtkPlayerWindow::build_ui(GtkApplication* app) {
     window_ = gtk_application_window_new(app);
-    gtk_window_set_title(GTK_WINDOW(window_), "PCM Transport v0.9.91");
+    gtk_window_set_title(GTK_WINDOW(window_), "PCM Transport v0.9.94");
     gtk_window_set_default_size(GTK_WINDOW(window_), 900, 660);
     gtk_container_set_border_width(GTK_CONTAINER(window_), 16);
 
@@ -2367,9 +2367,9 @@ GaplessTrackSpec GtkPlayerWindow::gapless_spec_for_entry(const PlaylistEntry& en
     spec.format = entry.decoded_format;
     spec.start_sample = entry.start_sample;
     spec.end_sample = entry.end_sample;
-    spec.range_limited = entry.cue_track || entry.start_sample > 0;
     const std::string ext = lower_extension(entry.audio_file_path);
     spec.native_flac = (ext == ".flac" && entry.native_decode);
+    spec.range_limited = entry.start_sample > 0 || entry.end_sample > entry.start_sample;
     if (!spec.native_flac) {
         spec.forced_output_sample_rate = entry.resampled ? entry.decoded_format.sample_rate : 0;
         spec.forced_output_bits_per_sample = entry.bitdepth_converted ? entry.decoded_format.bits_per_sample : 0;
@@ -2966,7 +2966,9 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index, std::uint64_
                 Logger::instance().info("Gapless file chain enabled for " + std::to_string(chain_end - index) + " tracks");
             } else {
                 decoder = create_decoder_for_entry(track, false);
-                if (track.start_sample > 0) {
+
+                if (track.start_sample > 0 || track.end_sample > track.start_sample) {
+                    Logger::instance().debug("Legacy bounded transport enabled");
                     decoder.reset(new RangeLimitedDecoder(std::move(decoder), track.start_sample, track.end_sample));
                 }
                 decoder->open_at_sample(track.audio_file_path, initial_offset);
@@ -3276,7 +3278,7 @@ void GtkPlayerWindow::open_about_dialog() {
     gtk_box_pack_start(GTK_BOX(content), box, TRUE, TRUE, 0);
 
     GtkWidget* title = gtk_label_new(nullptr);
-    gtk_label_set_markup(GTK_LABEL(title), "<b>PCM Transport 0.9.91</b>");
+    gtk_label_set_markup(GTK_LABEL(title), "<b>PCM Transport 0.9.94</b>");
     gtk_label_set_xalign(GTK_LABEL(title), 0.5f);
     GtkWidget* subtitle = gtk_label_new("Digital Audio Player");
     gtk_label_set_xalign(GTK_LABEL(subtitle), 0.5f);
@@ -3492,7 +3494,7 @@ void GtkPlayerWindow::open_bitperfect_test_dialog(GtkWidget* parent_dialog, int 
         };
         try {
             post_diagnostics_update(text_view, progress, close_button,
-                "PCM Transport FLAC bit-perfect test\nVersion: 0.9.91\nMode: current player processing path before ALSA\nFFmpeg: not used\n", 0.02, false);
+                "PCM Transport FLAC bit-perfect test\nVersion: 0.9.94\nMode: current player processing path before ALSA\nFFmpeg: not used\n", 0.02, false);
             std::ostringstream ctx;
             ctx << "Duration: " << duration_seconds << " sec\n"
                 << "Generated signal: deterministic 16-bit / 44.1 kHz / stereo stress pattern\n"
@@ -3651,7 +3653,7 @@ void GtkPlayerWindow::open_simd_benchmark_dialog(GtkWidget* parent_dialog, int d
         };
         try {
             post_diagnostics_update(text_view, progress, close_button,
-                "PCM Transport SIMD PCM conversion benchmark\nVersion: 0.9.91\nMode: current player processing path before ALSA\nOutput: discarded, not sent to ALSA\n", 0.02, false);
+                "PCM Transport SIMD PCM conversion benchmark\nVersion: 0.9.94\nMode: current player processing path before ALSA\nOutput: discarded, not sent to ALSA\n", 0.02, false);
             std::ostringstream ctx;
             ctx << "Duration: " << duration_seconds << " sec\n"
                 << "Generated signal: deterministic 16-bit / 44.1 kHz / stereo stress pattern\n"

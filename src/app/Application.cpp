@@ -9,6 +9,7 @@
 #include "pcmtp/backend/AlsaPcmBackend.hpp"
 #include "pcmtp/core/PlaybackEngine.hpp"
 #include "pcmtp/decoder/FlacStreamDecoder.hpp"
+#include "pcmtp/decoder/RangeLimitedDecoder.hpp"
 #include "pcmtp/gui/GtkPlayerWindow.hpp"
 #include "pcmtp/hardware/CardProfileRegistry.hpp"
 
@@ -82,7 +83,7 @@ int Application::run_probe_only() {
 }
 
 int Application::run_player(const std::string& file_path, const std::string& device_name, std::size_t transport_buffer_ms) {
-    auto decoder = std::make_unique<FlacStreamDecoder>();
+    std::unique_ptr<IAudioDecoder> decoder(new RangeLimitedDecoder(std::unique_ptr<IAudioDecoder>(new FlacStreamDecoder()), 0, 0));
     decoder->open(file_path);
 
     std::cout << "Opened FLAC: " << file_path << "\n";

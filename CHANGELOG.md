@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.94
+
+- Restored the legacy range-limited transport wrapper for all playback entries with known sample ranges, matching the mature 0.9.77 bounded decoder behavior beyond native FLAC.
+- Applied the same range-limited discipline inside same-format gapless chains while preserving the 0.9.91 gapless playback architecture, prebuffering and keepalive behavior.
+- Kept ALSA backend settings, DSP / Deep Bass behavior, SIMD PCM conversion, Processing Rules, CUE continuous playback and decoder selection logic unchanged.
+- Updated playback diagnostics wording to report the generic bounded transport path instead of limiting the note to native FLAC.
+
+## 0.9.93
+
+- Restored the legacy bounded native FLAC transport path as a permanent rule for ordinary full-file libFLAC playback, preserving the mature 0.9.77 playback behavior while keeping the 0.9.91/0.9.92 architecture.
+- Extended the same bounded native FLAC transport discipline into same-format gapless chains for native libFLAC tracks with known sample ranges.
+- Kept FFmpeg-backed playback, external decoder natural EOF behavior, ALSA backend settings, DSP behavior, CUE handling, SIMD PCM conversion and processing rules unchanged.
+- Added debug logging when the legacy bounded native FLAC transport path is activated.
+
+## 0.9.92
+
+- Restored the legacy range-limited wrapper for ordinary full-file native libFLAC playback as a conservative diagnostic A/B step against the 0.9.77 playback path.
+- Kept ALSA backend settings, DSP behavior, FFmpeg-backed playback, CUE handling, same-format gapless chaining, SIMD PCM conversion and existing processing rules unchanged.
+
 ## 0.9.91
 
 This release includes the accumulated updates since 0.9.81, focused on external format handling, CUE/gapless playback, diagnostics, SIMD cleanup, and Settings UI polish.

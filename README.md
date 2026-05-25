@@ -1,4 +1,4 @@
-# PCM Transport v0.9.91
+# PCM Transport v0.9.94
 
 **PCM Transport** is a Linux desktop audio player inspired by early digital audio systems, focused on **transparent PCM transport, predictable DSP, and honest signal path reporting**.
 
@@ -29,6 +29,7 @@ Website: https://andreyberestov.github.io/pcm-transport/
 - GTK 3 desktop interface  
 - Direct ALSA playback (no mandatory PulseAudio / PipeWire layer)  
 - Native FLAC decoding through libFLAC (bit-accurate path when possible)  
+- Legacy bounded transport path restored for playback entries with known sample ranges, including native FLAC and FFmpeg-backed formats  
 - FFmpeg / FFprobe runtime decoding for MP3 / M4A / WAV / AIFF / APE / WV and FLAC processing paths  
 - Codec-aware M4A handling: ALAC is treated as lossless, AAC remains conservative/lossy  
 - CUE support with case-insensitive audio-file matching  
@@ -87,6 +88,7 @@ The CLIP indicator reflects **actual overload events before final output clampin
 ## Audio path notes
 
 - Native FLAC playback uses libFLAC when no resampling or bit-depth conversion is required  
+- Playback entries with known sample ranges use the legacy bounded transport wrapper for stable direct ALSA playback  
 - When conversion is needed, FFmpeg is used  
 - High-quality SoXr resampling is used when available  
 - Output format depends on ALSA device capabilities  
