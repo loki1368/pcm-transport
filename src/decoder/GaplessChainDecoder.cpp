@@ -14,14 +14,20 @@ namespace {
 constexpr std::uint64_t kMinimumPrepareThresholdFrames = 32768;
 constexpr std::uint64_t kNativePrepareSeconds = 2;
 constexpr std::uint64_t kExternalPrepareSeconds = 5;
+constexpr std::uint64_t kRawAacPrepareSeconds = 8;
 constexpr std::uint64_t kNativePrefetchMillis = 500;
 constexpr std::uint64_t kExternalPrefetchMillis = 1000;
+constexpr std::uint64_t kRawAacPrefetchMillis = 1800;
 constexpr std::uint64_t kKeepaliveSilenceMillis = 120;
 
 bool same_format(const AudioFormat& a, const AudioFormat& b) {
     return a.sample_rate == b.sample_rate &&
            a.channels == b.channels &&
            a.bits_per_sample == b.bits_per_sample;
+}
+
+bool raw_aac_track(const GaplessTrackSpec& spec) {
+    return spec.has_known_external_info && spec.known_external_info.raw_aac;
 }
 
 } // namespace
@@ -351,7 +357,9 @@ std::uint64_t GaplessChainDecoder::prepare_threshold_frames(std::size_t index) c
         return kMinimumPrepareThresholdFrames;
     }
     const std::uint32_t rate = std::max<std::uint32_t>(1, tracks_[index].format.sample_rate);
-    const std::uint64_t seconds = tracks_[index].native_flac ? kNativePrepareSeconds : kExternalPrepareSeconds;
+    const GaplessTrackSpec& spec = tracks_[index];
+    const std::uint64_t seconds = spec.native_flac ? kNativePrepareSeconds
+                                : (raw_aac_track(spec) ? kRawAacPrepareSeconds : kExternalPrepareSeconds);
     return std::max<std::uint64_t>(kMinimumPrepareThresholdFrames, static_cast<std::uint64_t>(rate) * seconds);
 }
 
@@ -362,7 +370,8 @@ std::size_t GaplessChainDecoder::prebuffer_samples(std::size_t index) const {
     const GaplessTrackSpec& spec = tracks_[index];
     const std::uint32_t rate = std::max<std::uint32_t>(1, spec.format.sample_rate);
     const std::uint16_t channels = std::max<std::uint16_t>(1, spec.format.channels);
-    const std::uint64_t millis = spec.native_flac ? kNativePrefetchMillis : kExternalPrefetchMillis;
+    const std::uint64_t millis = spec.native_flac ? kNativePrefetchMillis
+                                 : (raw_aac_track(spec) ? kRawAacPrefetchMillis : kExternalPrefetchMillis);
     const std::uint64_t frames = std::max<std::uint64_t>(8192, (static_cast<std::uint64_t>(rate) * millis) / 1000);
     const std::uint64_t samples = frames * static_cast<std::uint64_t>(channels);
     return static_cast<std::size_t>(std::min<std::uint64_t>(samples, static_cast<std::uint64_t>(1024 * 1024)));

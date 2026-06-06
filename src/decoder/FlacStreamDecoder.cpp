@@ -261,7 +261,9 @@ void FlacStreamDecoder::fill_queue_if_needed() {
         }
     }
 
-    Logger::instance().debug("FLAC queue low, decoding next frame");
+    if (Logger::instance().debug_enabled()) {
+        Logger::instance().debug("FLAC queue low, decoding next frame");
+    }
     if (decoder_ == nullptr || FLAC__stream_decoder_process_single(decoder_) == 0) {
         std::lock_guard<std::mutex> lock(mutex_);
         reached_eof_ = true;

@@ -85,6 +85,7 @@ private:
     static gboolean on_meter_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data);
     static gboolean on_progress_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data);
     static gboolean on_progress_button_press(GtkWidget* widget, GdkEventButton* event, gpointer user_data);
+    static gboolean on_pending_seek_timer(gpointer user_data);
     static gboolean on_softvol_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data);
     static gboolean on_softvol_button_press(GtkWidget* widget, GdkEventButton* event, gpointer user_data);
     static gboolean on_softvol_motion_notify(GtkWidget* widget, GdkEventMotion* event, gpointer user_data);
@@ -114,6 +115,7 @@ private:
     void refresh_dsp_info_for_current_device();
     void refresh_display(bool update_text = true, bool update_progress = true, bool update_meter = true, bool update_simd = true);
     void stop_ui_updates();
+    void cancel_pending_seek();
     void rebuild_playlist_view();
     void select_playlist_row(std::size_t index);
     void update_playlist_selection_from_ui();
@@ -152,12 +154,13 @@ private:
     GtkWidget* display_status_ = nullptr;
     GtkWidget* display_source_ = nullptr;
     GtkWidget* display_path_ = nullptr;
-    GtkWidget* display_simd_ = nullptr;
+    GtkWidget* display_reserve_ = nullptr;
     GtkWidget* display_mode_ = nullptr;
     GtkWidget* display_meter_ = nullptr;
     GtkWidget* badge_clip_ = nullptr;
     GtkWidget* progress_bar_ = nullptr;
     double meter_level_ = 0.0;
+    double display_progress_ratio_ = 0.0;
     GtkWidget* badge_box_ = nullptr;
     GtkWidget* badge_lossless_ = nullptr;
     GtkWidget* badge_redbook_ = nullptr;
@@ -200,7 +203,6 @@ private:
     bool simd_dsp_supported_ = false;
     bool simd_dsp_enabled_ = false;
     std::string simd_dsp_status_text_;
-    bool simd_usage_counter_enabled_ = false;
     bool level_meter_enabled_ = true;
     bool clip_detection_enabled_ = true;
     int bass_shelf_hz_ = 110;
@@ -225,6 +227,11 @@ private:
     std::uint32_t clip_hold_samples_ = 0;
     guint ui_timer_id_ = 0;
     unsigned int ui_refresh_tick_ = 0;
+    bool progress_blink_enabled_ = true;
+    guint pending_seek_timer_id_ = 0;
+    bool pending_seek_valid_ = false;
+    std::size_t pending_seek_index_ = 0;
+    std::uint64_t pending_seek_offset_ = 0;
     bool ui_closing_ = false;
 };
 

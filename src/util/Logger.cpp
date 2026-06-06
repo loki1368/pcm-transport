@@ -4,6 +4,7 @@
 #include <ctime>
 #include <iomanip>
 #include <sstream>
+#include <cstring>
 
 namespace pcmtp {
 
@@ -31,6 +32,11 @@ void Logger::configure(bool enabled, const std::string& path, bool errors_only) 
 bool Logger::enabled() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return enabled_;
+}
+
+bool Logger::debug_enabled() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return enabled_ && !errors_only_ && stream_.is_open();
 }
 
 void Logger::info(const std::string& message) {
@@ -65,7 +71,9 @@ void Logger::write(const char* level, const std::string& message) {
 
     stream_ << std::put_time(&local_tm, "%Y-%m-%d %H:%M:%S")
             << " [" << level << "] " << message << '\n';
-    stream_.flush();
+    if (std::strcmp(level, "ERROR") == 0) {
+        stream_.flush();
+    }
 }
 
 } // namespace pcmtp

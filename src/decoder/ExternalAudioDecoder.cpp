@@ -112,6 +112,18 @@ std::string lower_copy(std::string value) {
     return value;
 }
 
+std::string trim_value_copy(const std::string& value) {
+    std::size_t start = 0;
+    while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start])) != 0) {
+        ++start;
+    }
+    std::size_t end = value.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
+        --end;
+    }
+    return value.substr(start, end - start);
+}
+
 double parse_time_base_seconds(const std::string& value) {
     const std::size_t slash = value.find('/');
     if (slash == std::string::npos) {
@@ -125,6 +137,16 @@ double parse_time_base_seconds(const std::string& value) {
         }
     } catch (...) {}
     return 0.0;
+}
+
+
+std::uint16_t bits_from_sample_fmt(const std::string& sample_fmt) {
+    const std::string fmt = lower_copy(sample_fmt);
+    if (fmt.find("s16") != std::string::npos || fmt.find("u16") != std::string::npos) return 16;
+    if (fmt.find("s24") != std::string::npos || fmt.find("u24") != std::string::npos) return 24;
+    if (fmt.find("s32") != std::string::npos || fmt.find("u32") != std::string::npos) return 32;
+    if (fmt == "flt" || fmt == "fltp") return 32;
+    return 0;
 }
 
 bool codec_is_lossless(const std::string& codec_name, const std::string& ext) {
@@ -165,6 +187,198 @@ std::uint32_t read_le32(const unsigned char* p) {
 bool read_exact(std::ifstream& input, unsigned char* data, std::size_t size) {
     input.read(reinterpret_cast<char*>(data), static_cast<std::streamsize>(size));
     return static_cast<std::size_t>(input.gcount()) == size;
+}
+
+
+std::uint64_t read_id3v2_size(const unsigned char* h) {
+    return (static_cast<std::uint64_t>(h[6] & 0x7Fu) << 21) |
+           (static_cast<std::uint64_t>(h[7] & 0x7Fu) << 14) |
+           (static_cast<std::uint64_t>(h[8] & 0x7Fu) << 7) |
+           static_cast<std::uint64_t>(h[9] & 0x7Fu);
+}
+
+bool probe_adts_aac_fast(const std::string& path, ExternalAudioInfo& info) {
+    std::ifstream input(path.c_str(), std::ios::binary);
+    if (!input) {
+        return false;
+    }
+
+    unsigned char first[10]{};
+    input.read(reinterpret_cast<char*>(first), sizeof(first));
+    const std::size_t got_first = static_cast<std::size_t>(input.gcount());
+    if (got_first >= 10 && std::memcmp(first, "ID3", 3) == 0) {
+        const std::uint64_t tag_size = read_id3v2_size(first);
+        const bool footer = (first[5] & 0x10u) != 0;
+        input.clear();
+        input.seekg(static_cast<std::streamoff>(10 + tag_size + (footer ? 10 : 0)), std::ios::beg);
+    } else {
+        input.clear();
+        input.seekg(0, std::ios::beg);
+    }
+
+    static const std::uint32_t kSampleRates[16] = {
+        96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
+        16000, 12000, 11025, 8000, 7350, 0, 0, 0
+    };
+
+    std::uint64_t total_frames = 0;
+    std::uint64_t total_samples = 0;
+    std::uint32_t sample_rate = 0;
+    std::uint16_t channels = 0;
+    while (input) {
+        unsigned char h[7]{};
+        const std::streampos frame_pos = input.tellg();
+        input.read(reinterpret_cast<char*>(h), sizeof(h));
+        if (static_cast<std::size_t>(input.gcount()) != sizeof(h)) {
+            break;
+        }
+        if (h[0] != 0xFFu || (h[1] & 0xF0u) != 0xF0u) {
+            if (total_frames == 0) {
+                return false;
+            }
+            break;
+        }
+        const unsigned int sf_index = (h[2] >> 2) & 0x0Fu;
+        if (sf_index >= 16 || kSampleRates[sf_index] == 0) {
+            return false;
+        }
+        const std::uint16_t channel_config = static_cast<std::uint16_t>(((h[2] & 0x01u) << 2) | ((h[3] & 0xC0u) >> 6));
+        const std::uint32_t frame_length = (static_cast<std::uint32_t>(h[3] & 0x03u) << 11) |
+                                           (static_cast<std::uint32_t>(h[4]) << 3) |
+                                           ((static_cast<std::uint32_t>(h[5] & 0xE0u)) >> 5);
+        if (frame_length < 7) {
+            return false;
+        }
+        if (sample_rate == 0) {
+            sample_rate = kSampleRates[sf_index];
+            channels = channel_config == 0 ? 2 : channel_config;
+        }
+        const std::uint32_t raw_blocks = static_cast<std::uint32_t>(h[6] & 0x03u) + 1u;
+        total_samples += static_cast<std::uint64_t>(raw_blocks) * 1024u;
+        ++total_frames;
+        input.clear();
+        input.seekg(frame_pos + static_cast<std::streamoff>(frame_length), std::ios::beg);
+    }
+
+    if (total_frames == 0 || sample_rate == 0) {
+        return false;
+    }
+    info.format.sample_rate = sample_rate;
+    info.format.channels = channels == 0 ? 2 : channels;
+    info.format.bits_per_sample = 16;
+    info.total_samples_per_channel = total_samples;
+    info.codec_name = "aac";
+    info.lossless = false;
+    info.raw_aac = true;
+    info.duration_reliable = true;
+    Logger::instance().debug("ExternalAudioDecoder fast ADTS AAC probe: " + path + " frames=" + std::to_string(total_frames));
+    return true;
+}
+
+bool probe_aac_frame_count_ffprobe(const std::string& path, ExternalAudioInfo& info) {
+    const std::string cmd =
+        "ffprobe -v error -count_frames -select_streams a:0 "
+        "-show_entries stream=nb_read_frames,sample_rate,channels "
+        "-of default=nokey=0:noprint_wrappers=1 " + shell_escape_for_command(path);
+    const CommandCaptureResult result = run_command_capture(cmd);
+    if (result.status != 0 || result.stdout_text.empty()) {
+        return false;
+    }
+    std::istringstream ps(result.stdout_text);
+    std::string line;
+    std::uint64_t frames = 0;
+    std::uint32_t sample_rate = 0;
+    std::uint16_t channels = 0;
+    while (std::getline(ps, line)) {
+        line = trim_value_copy(line);
+        const std::size_t pos = line.find('=');
+        if (pos == std::string::npos) continue;
+        const std::string key = line.substr(0, pos);
+        const std::string value = line.substr(pos + 1);
+        try {
+            if (key == "nb_read_frames" && !value.empty() && value != "N/A") {
+                frames = static_cast<std::uint64_t>(std::stoull(value));
+            } else if (key == "sample_rate" && !value.empty() && value != "N/A") {
+                sample_rate = static_cast<std::uint32_t>(std::stoul(value));
+            } else if (key == "channels" && !value.empty() && value != "N/A") {
+                channels = static_cast<std::uint16_t>(std::stoul(value));
+            }
+        } catch (...) {}
+    }
+    if (frames == 0 || sample_rate == 0) {
+        return false;
+    }
+    info.format.sample_rate = sample_rate;
+    info.format.channels = channels == 0 ? 2 : channels;
+    info.format.bits_per_sample = 16;
+    info.total_samples_per_channel = frames * 1024u;
+    info.codec_name = "aac";
+    info.lossless = false;
+    info.raw_aac = true;
+    info.duration_reliable = true;
+    Logger::instance().debug("ExternalAudioDecoder ffprobe AAC frame-count probe: " + path + " frames=" + std::to_string(frames));
+    return true;
+}
+
+
+bool probe_m4a_packet_duration_ffprobe(const std::string& path, ExternalAudioInfo& info) {
+    if (info.format.sample_rate == 0) {
+        return false;
+    }
+    const std::string cmd =
+        "ffprobe -v error -select_streams a:0 "
+        "-show_packets -show_entries packet=duration_time,duration "
+        "-of default=nokey=0:noprint_wrappers=1 " + shell_escape_for_command(path);
+    const CommandCaptureResult result = run_command_capture(cmd);
+    if (result.status != 0 || result.stdout_text.empty()) {
+        return false;
+    }
+
+    std::istringstream ps(result.stdout_text);
+    std::string line;
+    double seconds_sum = 0.0;
+    std::uint64_t duration_units_sum = 0;
+    while (std::getline(ps, line)) {
+        line = trim_value_copy(line);
+        const std::size_t pos = line.find('=');
+        if (pos == std::string::npos) continue;
+        const std::string key = line.substr(0, pos);
+        const std::string value = line.substr(pos + 1);
+        if (value.empty() || value == "N/A") {
+            continue;
+        }
+        try {
+            if (key == "duration_time") {
+                const double v = std::stod(value);
+                if (v > 0.0 && std::isfinite(v)) {
+                    seconds_sum += v;
+                }
+            } else if (key == "duration") {
+                const std::uint64_t v = static_cast<std::uint64_t>(std::stoull(value));
+                duration_units_sum += v;
+            }
+        } catch (...) {}
+    }
+
+    double total_seconds = seconds_sum;
+    if (total_seconds <= 0.0 && duration_units_sum > 0 && !info.time_base.empty()) {
+        const double tb = parse_time_base_seconds(info.time_base);
+        if (tb > 0.0) {
+            total_seconds = static_cast<double>(duration_units_sum) * tb;
+        }
+    }
+    if (total_seconds <= 0.0 || !std::isfinite(total_seconds)) {
+        return false;
+    }
+
+    info.total_samples_per_channel = static_cast<std::uint64_t>(std::llround(total_seconds * static_cast<double>(info.format.sample_rate)));
+    info.duration_reliable = info.total_samples_per_channel > 0;
+    if (info.total_samples_per_channel == 0) {
+        return false;
+    }
+    Logger::instance().debug("ExternalAudioDecoder packet-duration probe: " + path +
+                             " samples/ch=" + std::to_string(info.total_samples_per_channel));
+    return true;
 }
 
 bool probe_wav_header_fast(const std::string& path, ExternalAudioInfo& info) {
@@ -283,7 +497,7 @@ std::string ExternalAudioDecoder::to_lower_extension(const std::string& path) {
 }
 
 bool ExternalAudioDecoder::looks_supported(const std::string& path) {
-    static const std::array<const char*, 8> exts = {{".mp3", ".m4a", ".wav", ".ape", ".wv", ".flac", ".aiff", ".aif"}};
+    static const std::array<const char*, 11> exts = {{".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".ape", ".wv", ".flac", ".aiff", ".aif"}};
     const std::string ext = to_lower_extension(path);
     for (const char* item : exts) {
         if (ext == item) {
@@ -335,7 +549,7 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path, 
     if (!have_info) {
         const std::string probe_cmd =
             "ffprobe -v error -select_streams a:0 "
-            "-show_entries stream=codec_name,sample_rate,channels,bits_per_sample,bits_per_raw_sample,duration,duration_ts,time_base:format=duration:format_tags=title,artist,track "
+            "-show_entries stream=codec_name,sample_fmt,sample_rate,channels,bits_per_sample,bits_per_raw_sample,duration,duration_ts,time_base:format=duration:format_tags=title,artist,track "
             "-of default=nokey=0:noprint_wrappers=1 " +
             shell_escape_for_command(path);
         Logger::instance().debug("ExternalAudioDecoder unified probe: " + path);
@@ -351,6 +565,7 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path, 
 
         std::istringstream ps(probe.stdout_text);
         std::string line;
+        std::string sample_fmt;
         double seconds = 0.0;
         while (std::getline(ps, line)) {
             line = trim_copy(line);
@@ -361,6 +576,8 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path, 
             try {
                 if (key == "codec_name") {
                     info.codec_name = lower_copy(value);
+                } else if (key == "sample_fmt") {
+                    sample_fmt = lower_copy(value);
                 } else if (key == "sample_rate") {
                     info.format.sample_rate = static_cast<std::uint32_t>(std::stoul(value));
                 } else if (key == "channels") {
@@ -388,6 +605,12 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path, 
                 }
             } catch (...) {}
         }
+        const std::uint16_t fmt_bits = bits_from_sample_fmt(sample_fmt);
+        if ((info.format.bits_per_sample == 0 || info.format.bits_per_sample == 16) && fmt_bits > 0) {
+            if (!(info.format.bits_per_sample == 16 && fmt_bits == 32 && info.codec_name != "alac")) {
+                info.format.bits_per_sample = fmt_bits;
+            }
+        }
         const double time_base_seconds = parse_time_base_seconds(info.time_base);
         if (info.duration_ts > 0 && time_base_seconds > 0.0 && info.format.sample_rate > 0) {
             info.total_samples_per_channel = static_cast<std::uint64_t>(std::llround(static_cast<double>(info.duration_ts) * time_base_seconds * static_cast<double>(info.format.sample_rate)));
@@ -396,11 +619,36 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path, 
         }
     }
 
+    if (ext == ".m4a" && info.codec_name == "alac" && info.total_samples_per_channel == 0) {
+        ExternalAudioInfo m4a_info = info;
+        if (probe_m4a_packet_duration_ffprobe(path, m4a_info)) {
+            m4a_info.tags = info.tags;
+            info = m4a_info;
+        } else {
+            info.duration_reliable = false;
+            Logger::instance().debug("ExternalAudioDecoder ALAC/M4A duration packet probe fallback failed: " + path);
+        }
+    }
+
+    if (ext == ".aac") {
+        ExternalAudioInfo aac_info = info;
+        if (probe_adts_aac_fast(path, aac_info) || probe_aac_frame_count_ffprobe(path, aac_info)) {
+            aac_info.tags = info.tags;
+            info = aac_info;
+        } else {
+            info.raw_aac = true;
+            info.duration_reliable = info.total_samples_per_channel > 0;
+            Logger::instance().debug("ExternalAudioDecoder raw AAC duration probe fallback: " + path);
+        }
+    }
+
     if (info.format.channels == 0) info.format.channels = 2;
     if (info.format.bits_per_sample != 16 && info.format.bits_per_sample != 24 && info.format.bits_per_sample != 32) {
         info.format.bits_per_sample = 16;
     }
     info.lossless = codec_is_lossless(info.codec_name, ext);
+    info.source_format = info.format;
+    info.source_total_samples_per_channel = info.total_samples_per_channel;
     const std::uint32_t source_rate = info.format.sample_rate;
     const std::uint64_t source_total = info.total_samples_per_channel;
     if (forced_output_sample_rate > 0 && source_rate > 0 && source_total > 0 && forced_output_sample_rate != source_rate) {
@@ -427,15 +675,23 @@ GenericTags ExternalAudioDecoder::read_tags(const std::string& path) {
 
 std::string ExternalAudioDecoder::decode_command(double seconds) const {
     const bool have_seek = seconds > 0.0;
+    const AudioFormat source_format = source_format_.sample_rate > 0 ? source_format_ : format_;
     const std::uint32_t out_rate = forced_output_sample_rate_ > 0 ? forced_output_sample_rate_ : format_.sample_rate;
     const std::uint16_t out_bits = forced_output_bits_per_sample_ > 0 ? forced_output_bits_per_sample_ : format_.bits_per_sample;
     const std::string codec = out_bits <= 16 ? "pcm_s16le"
                              : (out_bits <= 24 ? "pcm_s24le" : "pcm_s32le");
     const std::string raw = out_bits <= 16 ? "s16le"
                            : (out_bits <= 24 ? "s24le" : "s32le");
-    const bool need_filter = (out_rate != format_.sample_rate) || (out_bits != format_.bits_per_sample);
-    const bool is_ape = to_lower_extension(path_) == ".ape";
+    const bool forced_rate_active = forced_output_sample_rate_ > 0 && forced_output_sample_rate_ != source_format.sample_rate;
+    const bool forced_bits_active = forced_output_bits_per_sample_ > 0 && forced_output_bits_per_sample_ != source_format.bits_per_sample;
+    const bool need_filter = forced_rate_active || forced_bits_active;
+    const std::string ext = to_lower_extension(path_);
+    const bool is_ape = ext == ".ape";
+    const bool is_raw_aac = ext == ".aac";
+    const bool is_alac_m4a = ext == ".m4a" && codec_name_ == "alac";
     constexpr double kApeHybridPrerollSeconds = 3.0;
+    constexpr double kAacHybridPrerollSeconds = 1.5;
+    constexpr double kAlacHybridPrerollSeconds = 1.0;
     double input_seek = 0.0;
     double output_seek = 0.0;
     if (have_seek) {
@@ -444,16 +700,30 @@ std::string ExternalAudioDecoder::decode_command(double seconds) const {
             output_seek = kApeHybridPrerollSeconds;
         } else if (is_ape) {
             output_seek = seconds;
+        } else if (is_raw_aac && seconds > kAacHybridPrerollSeconds) {
+            input_seek = seconds - kAacHybridPrerollSeconds;
+            output_seek = kAacHybridPrerollSeconds;
+        } else if (is_raw_aac) {
+            output_seek = seconds;
+        } else if (is_alac_m4a && seconds > kAlacHybridPrerollSeconds) {
+            input_seek = seconds - kAlacHybridPrerollSeconds;
+            output_seek = kAlacHybridPrerollSeconds;
+        } else if (is_alac_m4a) {
+            output_seek = seconds;
         } else {
             input_seek = seconds;
         }
     }
 
     std::string cmd = "ffmpeg -v error -nostdin ";
+    if (is_raw_aac) {
+        cmd += "-fflags +genpts ";
+    }
     if (input_seek > 0.0) {
         cmd += "-ss " + format_seconds(input_seek) + " ";
     }
     cmd += "-i " + shell_escape(path_) + " ";
+    cmd += "-map 0:a:0 -vn -sn -dn ";
     if (output_seek > 0.0) {
         cmd += "-ss " + format_seconds(output_seek) + " ";
     }
@@ -474,8 +744,6 @@ std::string ExternalAudioDecoder::decode_command(double seconds) const {
             af += ":osf=s32";
         }
         cmd += "-af " + shell_escape(af) + " ";
-    } else {
-        cmd += "-ar " + std::to_string(out_rate) + " ";
     }
     cmd += "-f " + raw + " -acodec " + codec +
            " -ac " + std::to_string(format_.channels) + " -";
@@ -546,6 +814,8 @@ void ExternalAudioDecoder::open_at_sample(const std::string& path, std::uint64_t
 
     const ExternalAudioInfo info = effective_probe_info(path);
     format_ = info.format;
+    source_format_ = info.source_format.sample_rate > 0 ? info.source_format : info.format;
+    codec_name_ = info.codec_name;
     total_samples_per_channel_ = info.total_samples_per_channel;
 
     Logger::instance().debug("ExternalAudioDecoder format: " + std::to_string(format_.sample_rate) + " Hz / " +
@@ -572,8 +842,8 @@ std::size_t ExternalAudioDecoder::read_samples(PcmSample* destination, std::size
     }
 
     const std::size_t bps = bytes_per_sample();
-    std::vector<unsigned char> raw(max_samples * bps);
-    const std::size_t got_bytes = fread(raw.data(), 1, raw.size(), pipe_);
+    raw_buffer_.resize(max_samples * bps);
+    const std::size_t got_bytes = fread(raw_buffer_.data(), 1, raw_buffer_.size(), pipe_);
     const std::size_t got = got_bytes / bps;
     if (got == 0 && !zero_read_logged_) {
         const bool expected_more = (total_samples_per_channel_ == 0) || (current_samples_per_channel_ < total_samples_per_channel_);
@@ -592,7 +862,7 @@ std::size_t ExternalAudioDecoder::read_samples(PcmSample* destination, std::size
         zero_read_logged_ = true;
     }
     for (std::size_t i = 0; i < got; ++i) {
-        const unsigned char* src = raw.data() + i * bps;
+        const unsigned char* src = raw_buffer_.data() + i * bps;
         std::int32_t value = 0;
         if (bps == 2) {
             value = static_cast<std::int16_t>(static_cast<std::uint16_t>(src[0]) | (static_cast<std::uint16_t>(src[1]) << 8));
@@ -647,8 +917,12 @@ bool ExternalAudioDecoder::seek_to_sample(std::uint64_t sample_index) {
     reached_eof_ = false;
     zero_read_logged_ = false;
     current_samples_per_channel_ = sample_index;
-    const bool is_ape = to_lower_extension(path_) == ".ape";
-    const std::string seek_mode = is_ape && seconds > 3.0 ? "hybrid input/output seek for APE" : (is_ape ? "decoded-output seek for short APE offset" : "input seek");
+    const std::string ext = to_lower_extension(path_);
+    const bool is_ape = ext == ".ape";
+    const bool is_raw_aac = ext == ".aac";
+    const std::string seek_mode = is_ape && seconds > 3.0 ? "hybrid input/output seek for APE" :
+                                  (is_ape ? "decoded-output seek for short APE offset" :
+                                  (is_raw_aac ? "hybrid raw AAC seek" : "input seek"));
     Logger::instance().debug("ExternalAudioDecoder seeking/restarting ffmpeg decode at " + std::to_string(seconds) +
                              " sec (" + seek_mode + ") for: " + path_);
     return start_decode_pipe(seconds, seek_mode);

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(pcm_transport VERSION 0.9.94 LANGUAGES CXX)
+project(pcm_transport VERSION 0.9.103 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,6 +16,7 @@ add_executable(pcm_transport
     src/backend/AlsaPcmBackend.cpp
     src/core/PlaybackEngine.cpp
     src/cue/CueParser.cpp
+    src/playlist/M3uPlaylistReader.cpp
     src/decoder/FlacStreamDecoder.cpp
     src/decoder/ExternalAudioDecoder.cpp
     src/decoder/RangeLimitedDecoder.cpp

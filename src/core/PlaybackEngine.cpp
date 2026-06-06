@@ -155,7 +155,7 @@ void PlaybackEngine::set_deep_bass_preset(int preset) {
     deep_bass_preset_.store(clamped, std::memory_order_relaxed);
 }
 int PlaybackEngine::deep_bass_preset() const { return deep_bass_preset_.load(std::memory_order_relaxed); }
-void PlaybackEngine::set_deep_bass_amount(int amount_steps) { deep_bass_amount_.store(std::max(-2, std::min(2, amount_steps)), std::memory_order_relaxed); }
+void PlaybackEngine::set_deep_bass_amount(int amount_steps) { deep_bass_amount_.store(std::max(-1, std::min(1, amount_steps)), std::memory_order_relaxed); }
 int PlaybackEngine::deep_bass_amount() const { return deep_bass_amount_.load(std::memory_order_relaxed); }
 void PlaybackEngine::set_simd_dsp_enabled(bool enabled) { simd_dsp_enabled_.store(enabled, std::memory_order_relaxed); }
 bool PlaybackEngine::simd_dsp_enabled() const { return simd_dsp_enabled_.load(std::memory_order_relaxed); }

@@ -31,7 +31,7 @@
     "name": "PCM Transport",
     "applicationCategory": "MultimediaApplication",
     "operatingSystem": "Linux",
-    "softwareVersion": "0.9.94",
+    "softwareVersion": "0.9.103",
     "description": "PCM Transport is a lightweight open-source Linux audio player with native FLAC playback through libFLAC, direct ALSA output, GTK interface, DSP Studio and transparent signal-path diagnostics.",
     "author": {
       "@type": "Person",
@@ -504,7 +504,7 @@
           </svg>
         </div>
         <h3>Native FLAC playback</h3>
-        <p>Uses libFLAC for native FLAC decoding and FFmpeg / FFprobe for additional formats, with the legacy bounded transport wrapper restored for playback entries with known sample ranges, including same-format gapless chains.</p>
+        <p>Uses libFLAC for native FLAC decoding and FFmpeg / FFprobe for additional formats.</p>
       </div>
 
       <div class="card">
@@ -515,7 +515,7 @@
           </svg>
         </div>
         <h3>Additional formats via FFmpeg</h3>
-        <p>Uses FFmpeg and FFprobe at runtime for MP3, M4A, WAV, AIFF, APE, WV, metadata probing, CUE image playback and conversion-based processing paths, with codec-aware M4A handling and a session-only probe cache for repeated external metadata checks.</p>
+        <p>Uses FFmpeg and FFprobe at runtime for MP3, M4A, AAC, OGG, OPUS, WAV, AIFF, APE, WV, metadata probing, ALAC-in-M4A handling and conversion paths.</p>
       </div>
 
       <div class="card">
@@ -539,7 +539,7 @@
           </svg>
         </div>
         <h3>Gapless-oriented playback</h3>
-        <p>Continuous CUE image playback avoids decoder and ALSA restarts between adjacent track markers, while same-format playlist files can be chained with earlier next-track prebuffering and ALSA keepalive diagnostics where possible.</p>
+        <p>Continuous CUE image playback, local M3U/M3U8 import and same-format file chaining are used where possible.</p>
       </div>
 
       <div class="card">
@@ -553,7 +553,7 @@
           </svg>
         </div>
         <h3>Transparent signal path</h3>
-        <p>Shows the real active playback chain, including ALSA negotiation, FLAC/libFLAC notes and possible conversion stages.</p>
+        <p>Shows the active playback chain, format and processing state.</p>
       </div>
 
       <div class="card">
@@ -566,7 +566,7 @@
           </svg>
         </div>
         <h3>DSP Studio</h3>
-        <p>Includes Baxandall-like bass/treble, Deep Bass with adjustable amount, soft volume, automatic Pre-EQ Headroom and optional processing rules.</p>
+        <p>Includes bass/treble, Deep Bass, soft volume, Pre-EQ Headroom and optional processing rules.</p>
       </div>
 
       <div class="card">
@@ -578,7 +578,7 @@
           </svg>
         </div>
         <h3>Diagnostics and indicators</h3>
-        <p>Provides level metering, real clip detection, SIMD PCM conversion availability, self-test status, usage counters, bit-perfect testing and an offline SIMD PCM conversion benchmark for runtime diagnostics.</p>
+        <p>Provides level metering, clip detection, bit-perfect testing and a SIMD conversion benchmark.</p>
       </div>
     </div>
 
@@ -663,8 +663,8 @@ cmake --build build -j</code></pre>
 
     <p class="note">
       Runtime dependencies include ALSA, GTK 3, libFLAC++, FFmpeg and FFprobe.
-      Native FLAC playback can work without FFmpeg. FFmpeg/FFprobe are required for MP3, M4A, WAV, AIFF, APE, WV,
-      metadata probing and FLAC processing paths involving conversion.
+      Native FLAC playback can work without FFmpeg. FFmpeg/FFprobe are required for MP3, M4A, AAC, OGG, OPUS, WAV, AIFF, APE, WV,
+      metadata probing and conversion paths.
     </p>
 
     <h2>Project goals</h2>

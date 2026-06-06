@@ -258,8 +258,9 @@ int clamp_treble_hz(int hz) {
 }
 
 double deep_bass_amount_gain_from_steps(int amount_steps) {
-    const int clamped = std::max(-2, std::min(2, amount_steps));
-    return std::pow(10.0, (static_cast<double>(clamped) * 1.5) / 20.0);
+    const int clamped = std::max(-1, std::min(1, amount_steps));
+    static const double kAmountGainDb[3] = { -10.0, -3.0, 1.0 };
+    return std::pow(10.0, kAmountGainDb[clamped + 1] / 20.0);
 }
 
 ShelfCoefficients make_low_shelf(std::uint32_t sample_rate, double gain_db, double cutoff_hz) {

@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "pcmtp/decoder/IAudioDecoder.hpp"
 
@@ -15,12 +16,16 @@ struct GenericTags {
 
 struct ExternalAudioInfo {
     AudioFormat format{};
+    AudioFormat source_format{};
     std::uint64_t total_samples_per_channel = 0;
+    std::uint64_t source_total_samples_per_channel = 0;
     GenericTags tags{};
     std::string codec_name;
     std::int64_t duration_ts = 0;
     std::string time_base;
     bool lossless = false;
+    bool raw_aac = false;
+    bool duration_reliable = true;
 };
 
 class ExternalAudioDecoder final : public IAudioDecoder {
@@ -62,12 +67,15 @@ private:
     ExternalAudioInfo known_info_{};
     std::string stderr_path_;
     AudioFormat format_{};
+    AudioFormat source_format_{};
     std::uint64_t total_samples_per_channel_ = 0;
     std::string path_;
+    std::string codec_name_;
     bool opened_ = false;
     bool reached_eof_ = false;
     bool zero_read_logged_ = false;
     std::uint64_t current_samples_per_channel_ = 0;
+    std::vector<unsigned char> raw_buffer_;
 };
 
 } // namespace pcmtp
