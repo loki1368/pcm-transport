@@ -151,16 +151,16 @@ std::uint16_t bits_from_sample_fmt(const std::string& sample_fmt) {
 
 bool codec_is_lossless(const std::string& codec_name, const std::string& ext) {
     const std::string codec = lower_copy(codec_name);
-    if (codec == "alac" || codec == "flac" || codec == "ape" || codec == "wavpack") {
+    if (codec == "alac" || codec == "flac" || codec == "ape" || codec == "wavpack" || codec == "tta" || codec == "tak" || codec == "wmalossless") {
         return true;
     }
     if (codec.size() >= 4 && codec.compare(0, 4, "pcm_") == 0) {
         return true;
     }
-    if (codec == "aiff" || codec == "aifc") {
+    if (codec == "aiff" || codec == "aifc" || codec == "dsd_lsbf" || codec == "dsd_msbf" || codec == "dsd_lsbf_planar" || codec == "dsd_msbf_planar") {
         return true;
     }
-    if (ext == ".wav" || ext == ".wave" || ext == ".aiff" || ext == ".aif" || ext == ".ape" || ext == ".wv" || ext == ".flac") {
+    if (ext == ".wav" || ext == ".wave" || ext == ".bwf" || ext == ".aiff" || ext == ".aif" || ext == ".ape" || ext == ".wv" || ext == ".flac" || ext == ".tta" || ext == ".tak" || ext == ".dsf") {
         return true;
     }
     return false;
@@ -497,7 +497,7 @@ std::string ExternalAudioDecoder::to_lower_extension(const std::string& path) {
 }
 
 bool ExternalAudioDecoder::looks_supported(const std::string& path) {
-    static const std::array<const char*, 11> exts = {{".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".ape", ".wv", ".flac", ".aiff", ".aif"}};
+    static const std::array<const char*, 29> exts = {{".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".wave", ".bwf", ".au", ".snd", ".caf", ".ape", ".wv", ".flac", ".aiff", ".aif", ".tak", ".tta", ".wma", ".asf", ".xwma", ".oma", ".aa3", ".at3", ".mpc", ".mp+", ".mpp", ".dsf", ".oga"}};
     const std::string ext = to_lower_extension(path);
     for (const char* item : exts) {
         if (ext == item) {
@@ -540,7 +540,7 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path, 
     info.format.bits_per_sample = 16;
 
     const std::string ext = to_lower_extension(path);
-    const bool can_use_fast_wav = (ext == ".wav") || (ext == ".wave");
+    const bool can_use_fast_wav = (ext == ".wav") || (ext == ".wave") || (ext == ".bwf");
     bool have_info = false;
     if (can_use_fast_wav) {
         have_info = probe_wav_header_fast(path, info);

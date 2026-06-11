@@ -1,4 +1,4 @@
-# PCM Transport v0.9.103
+# PCM Transport v0.9.109
 
 **PCM Transport** is a Linux desktop audio player focused on direct PCM playback, predictable DSP, and clear signal-path reporting.
 
@@ -29,7 +29,7 @@ Website: https://andreyberestov.github.io/pcm-transport/
 - GTK 3 desktop interface
 - Direct ALSA output
 - Native FLAC decoding through libFLAC
-- Runtime FFmpeg / FFprobe support for MP3, M4A, AAC, OGG, OPUS, WAV, AIFF/AIF, APE and WV
+- Runtime FFmpeg / FFprobe support for MP3, M4A, AAC, OGG, OPUS, WAV, AIFF/AIF, APE, WV and selected legacy formats
 - CUE support, including continuous CUE image playback
 - Local M3U / M3U8 playlist import
 - Same-format gapless playback where possible
@@ -37,15 +37,67 @@ Website: https://andreyberestov.github.io/pcm-transport/
 - Baxandall-style Bass / Treble controls
 - Deep Bass with Reference and Punch presets
 - Soft volume, Pre-EQ Headroom, level meter and clip indicator
-- Optional SIMD PCM output conversion
-- FLAC bit-perfect test and SIMD PCM conversion benchmark
+- Classic scalar ALSA write path
+- FLAC bit-perfect test
+- Active ALSA output report, ALSA device probe, 24-bit container preference and optional realtime priority
 
 ---
+
+## Supported formats
+
+Native / primary:
+
+```text
+*.flac
+*.wav
+*.wave
+*.cue
+*.m3u
+*.m3u8
+```
+
+FFmpeg-backed lossless / PCM / container formats:
+
+```text
+*.aif
+*.aiff
+*.ape
+*.wv
+*.bwf
+*.au
+*.snd
+*.caf
+*.tak
+*.tta
+```
+
+FFmpeg-backed lossy formats:
+
+```text
+*.mp3
+*.m4a
+*.aac
+*.ogg
+*.oga
+*.opus
+*.wma
+*.asf
+*.xwma
+*.oma
+*.aa3
+*.at3
+*.mpc
+*.mp+
+*.mpp
+```
+
+FFmpeg-backed formats require `ffmpeg` and `ffprobe` at runtime. Rare-format support depends on the local FFmpeg build.
 
 ## Playback notes
 
 - Native FLAC is used when no Processing Rules are applied.
 - ALAC-in-M4A is decoded through FFmpeg.
+- Selected FFmpeg-backed legacy formats include AU/SND, BWF, CAF, TAK, TTA, WMA, ATRAC and MPC.
 - FFmpeg is used for external formats and conversion paths.
 - DSP is bypassed when Bass/Treble are neutral, volume is 100%, Pre-EQ Headroom is 0 dB, and Deep Bass is off.
 - The main display shows the active playback path.
@@ -84,7 +136,7 @@ sudo pacman -S --needed base-devel cmake pkgconf alsa-lib flac gtk3 ffmpeg
 
 ```bash
 sudo apt install build-essential cmake pkg-config \
-    libasound2-dev libflac++-dev libgtk-3-dev ffmpeg
+    libasound2-dev libflac-dev libgtk-3-dev ffmpeg
 ```
 
 ### Runtime
@@ -94,8 +146,10 @@ sudo apt install build-essential cmake pkg-config \
 - libFLAC
 - ffmpeg
 - ffprobe
+- rtkit-daemon (optional, for RTKit realtime audio-thread priority)
+- pkexec and setcap (optional, for granting persistent cap_sys_nice realtime permission)
 
-Native FLAC playback works without FFmpeg. FFmpeg and FFprobe are required for external formats, metadata probing and conversion paths.
+Native FLAC playback works without FFmpeg. FFmpeg and FFprobe are required for external formats, metadata probing and conversion paths. RTKit support uses GLib/GIO D-Bus from GTK 3; no separate RTKit build dependency is required. Persistent realtime permission can be granted with pkexec/setcap cap_sys_nice and requires a player restart.
 
 ---
 

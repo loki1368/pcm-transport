@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.109
+
+- Added persistent realtime permission controls using pkexec/setcap cap_sys_nice.
+- Applied RTKit to the current playback thread when the option is enabled during playback.
+- Moved Active ALSA output report to DSP Studio → Diagnostics / Tests.
+- Added selected ALSA device probe for common PCM containers and sample rates.
+- Restored the classic scalar ALSA write conversion path.
+- Removed SIMD PCM conversion and benchmark code.
+- Added FFmpeg-backed playback for AU/SND, BWF, CAF, TAK, TTA, WMA/ASF/XWMA, ATRAC OMA/AA3/AT3 and MPC.
+- Fixed GTK3 maximize / restore layout behavior.
+
 ## 0.9.103
 
 - Added local M3U / M3U8 playlist import.

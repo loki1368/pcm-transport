@@ -77,7 +77,6 @@ private:
     static void on_open_alsamixer_clicked(GtkButton* button, gpointer user_data);
     static void on_repeat_clicked(GtkButton* button, gpointer user_data);
     static void on_run_bitperfect_test_clicked(GtkButton* button, gpointer user_data);
-    static void on_run_simd_benchmark_clicked(GtkButton* button, gpointer user_data);
     static gboolean on_timer_tick(gpointer user_data);
     static gboolean on_window_delete_event(GtkWidget* widget, GdkEvent* event, gpointer user_data);
     static void on_window_destroy(GtkWidget* widget, gpointer user_data);
@@ -90,7 +89,6 @@ private:
     static gboolean on_softvol_button_press(GtkWidget* widget, GdkEventButton* event, gpointer user_data);
     static gboolean on_softvol_motion_notify(GtkWidget* widget, GdkEventMotion* event, gpointer user_data);
     static gboolean on_softvol_button_release(GtkWidget* widget, GdkEventButton* event, gpointer user_data);
-    static void on_playlist_area_size_allocate(GtkWidget* widget, GtkAllocation* allocation, gpointer user_data);
     static void on_playlist_row_activated(GtkTreeView* tree_view,
                                           GtkTreePath* path,
                                           GtkTreeViewColumn* column,
@@ -108,12 +106,11 @@ private:
     void open_eq_dialog();
     void open_alsamixer_for_current_device();
     void open_bitperfect_test_dialog(GtkWidget* parent_dialog, int duration_seconds);
-    void open_simd_benchmark_dialog(GtkWidget* parent_dialog, int duration_seconds);
     void refresh_device_list();
     void load_preferences();
     void save_preferences() const;
     void refresh_dsp_info_for_current_device();
-    void refresh_display(bool update_text = true, bool update_progress = true, bool update_meter = true, bool update_simd = true);
+    void refresh_display(bool update_text = true, bool update_progress = true, bool update_meter = true);
     void stop_ui_updates();
     void cancel_pending_seek();
     void rebuild_playlist_view();
@@ -200,9 +197,6 @@ private:
     bool deep_bass_enabled_ = false;
     int deep_bass_preset_ = 0;
     int deep_bass_amount_ = 0;
-    bool simd_dsp_supported_ = false;
-    bool simd_dsp_enabled_ = false;
-    std::string simd_dsp_status_text_;
     bool level_meter_enabled_ = true;
     bool clip_detection_enabled_ = true;
     int bass_shelf_hz_ = 110;
@@ -228,6 +222,8 @@ private:
     guint ui_timer_id_ = 0;
     unsigned int ui_refresh_tick_ = 0;
     bool progress_blink_enabled_ = true;
+    std::string alsa_24bit_container_preference_ = "auto";
+    bool realtime_audio_priority_enabled_ = false;
     guint pending_seek_timer_id_ = 0;
     bool pending_seek_valid_ = false;
     std::size_t pending_seek_index_ = 0;

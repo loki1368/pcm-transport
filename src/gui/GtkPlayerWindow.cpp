@@ -11,6 +11,7 @@
 #include <thread>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <functional>
 #include <iomanip>
 #include <iterator>
@@ -22,10 +23,6 @@
 #include <utility>
 
 #include <pango/pango.h>
-#if defined(__x86_64__) || defined(__i386__)
-#include <immintrin.h>
-#endif
-
 #include "pcmtp/backend/AlsaPcmBackend.hpp"
 #include "pcmtp/decoder/ExternalAudioDecoder.hpp"
 #include "pcmtp/decoder/GaplessChainDecoder.hpp"
@@ -126,41 +123,6 @@ void update_log_path_tooltip(GtkWidget* entry) {
     gtk_widget_set_tooltip_text(entry, tip.c_str());
 }
 
-bool detect_simd_dsp_support() {
-#if defined(__x86_64__) || defined(__i386__)
-#  if defined(__GNUC__) || defined(__clang__)
-    __builtin_cpu_init();
-    return __builtin_cpu_supports("sse2") != 0;
-#  else
-    return true;
-#  endif
-#else
-    return false;
-#endif
-}
-
-bool run_simd_dsp_self_test() {
-#if defined(__x86_64__) || defined(__i386__)
-    if (!detect_simd_dsp_support()) return false;
-    constexpr double kEpsilon = 1.0e-9;
-    const __m128d a = _mm_set_pd(2.0, 1.0);
-    const __m128d b = _mm_set_pd(4.0, 3.0);
-    const __m128d c = _mm_add_pd(a, b);
-    alignas(16) double out[2] = {0.0, 0.0};
-    _mm_store_pd(out, c);
-    return std::fabs(out[0] - 4.0) <= kEpsilon && std::fabs(out[1] - 6.0) <= kEpsilon;
-#else
-    return false;
-#endif
-}
-
-std::string make_simd_status_text(bool supported, bool enabled) {
-    if (!supported) return "SIMD PCM conversion is not available on this CPU.";
-    if (!enabled) return "SIMD PCM conversion is available but currently disabled.";
-    return run_simd_dsp_self_test() ? "SIMD PCM conversion self-test passed. Ready to use." : "SIMD PCM conversion self-test failed. Kept disabled. Build with -msse2 on 32-bit x86 if needed.";
-}
-
-
 GtkWidget* create_symbolic_button(const char* primary_icon,
                                   const char* fallback_icon,
                                   const char* fallback_label) {
@@ -217,6 +179,117 @@ std::string directory_name(const std::string& path) {
     return path.substr(0, pos);
 }
 
+std::string current_executable_path() {
+    char buffer[4096];
+    const ssize_t n = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+    if (n <= 0) return std::string();
+    buffer[n] = '\0';
+    return std::string(buffer);
+}
+
+std::string preferred_tool_path(const char* primary, const char* fallback, const char* name) {
+    if (primary != nullptr && access(primary, X_OK) == 0) return std::string(primary);
+    if (fallback != nullptr && access(fallback, X_OK) == 0) return std::string(fallback);
+    return name != nullptr ? std::string(name) : std::string();
+}
+
+struct SpawnResult {
+    bool ok = false;
+    int exit_code = -1;
+    std::string output;
+    std::string error;
+};
+
+SpawnResult run_argv_sync(const std::vector<std::string>& args) {
+    SpawnResult result;
+    if (args.empty()) {
+        result.error = "empty command";
+        return result;
+    }
+    std::vector<gchar*> argv;
+    argv.reserve(args.size() + 1);
+    for (const std::string& arg : args) {
+        argv.push_back(const_cast<gchar*>(arg.c_str()));
+    }
+    argv.push_back(nullptr);
+
+    gchar* stdout_text = nullptr;
+    gchar* stderr_text = nullptr;
+    gint wait_status = 0;
+    GError* error = nullptr;
+    const gboolean spawned = g_spawn_sync(nullptr,
+                                          argv.data(),
+                                          nullptr,
+                                          G_SPAWN_SEARCH_PATH,
+                                          nullptr,
+                                          nullptr,
+                                          &stdout_text,
+                                          &stderr_text,
+                                          &wait_status,
+                                          &error);
+    if (!spawned) {
+        result.error = error != nullptr && error->message != nullptr ? std::string(error->message) : std::string("spawn failed");
+        if (error != nullptr) g_error_free(error);
+    } else {
+        if (WIFEXITED(wait_status)) {
+            result.exit_code = WEXITSTATUS(wait_status);
+            result.ok = (result.exit_code == 0);
+        } else {
+            result.error = "command did not exit normally";
+        }
+    }
+    if (stdout_text != nullptr) {
+        result.output = stdout_text;
+        g_free(stdout_text);
+    }
+    if (stderr_text != nullptr) {
+        result.error = stderr_text;
+        g_free(stderr_text);
+    }
+    if (!result.ok && result.error.empty() && result.exit_code >= 0) {
+        result.error = "exit code " + std::to_string(result.exit_code);
+    }
+    return result;
+}
+
+std::string persistent_rt_permission_status() {
+    const std::string exe = current_executable_path();
+    if (exe.empty()) return "Persistent RT permission: executable path unavailable";
+    const std::string getcap = preferred_tool_path("/usr/sbin/getcap", "/usr/bin/getcap", "getcap");
+    const SpawnResult result = run_argv_sync({getcap, exe});
+    if (!result.ok) {
+        return "Persistent RT permission: unknown (getcap unavailable)";
+    }
+    if (result.output.find("cap_sys_nice") != std::string::npos) {
+        return "Persistent RT permission: granted; restart required if granted during this session";
+    }
+    return "Persistent RT permission: not granted";
+}
+
+std::string apply_persistent_rt_permission(bool grant) {
+    const std::string exe = current_executable_path();
+    if (exe.empty()) return "Persistent RT permission: executable path unavailable";
+    const std::string setcap = preferred_tool_path("/usr/sbin/setcap", "/usr/bin/setcap", "setcap");
+    std::vector<std::string> args;
+    args.push_back("pkexec");
+    args.push_back(setcap);
+    if (grant) {
+        args.push_back("cap_sys_nice=eip");
+    } else {
+        args.push_back("-r");
+    }
+    args.push_back(exe);
+    const SpawnResult result = run_argv_sync(args);
+    if (result.ok) {
+        return grant
+            ? "Persistent RT permission: granted. Restart PCM Transport to use it."
+            : "Persistent RT permission: revoked for next start. Restart PCM Transport.";
+    }
+    std::string msg = grant ? "Persistent RT permission grant failed" : "Persistent RT permission revoke failed";
+    if (!result.error.empty()) msg += ": " + result.error;
+    return msg;
+}
+
 std::string lower_extension(const std::string& path) {
     const std::size_t dot = path.find_last_of('.');
     if (dot == std::string::npos) {
@@ -229,6 +302,201 @@ std::string lower_extension(const std::string& path) {
     return ext;
 }
 
+
+void style_dialog_action_area(GtkWidget* dialog, guint border, gint spacing);
+
+Alsa24BitContainerPreference alsa_24bit_preference_from_id(const std::string& id) {
+    if (id == "s24le") return Alsa24BitContainerPreference::PreferS24LE;
+    if (id == "s24_3le") return Alsa24BitContainerPreference::PreferS24_3LE;
+    if (id == "s32le") return Alsa24BitContainerPreference::PreferS32LE;
+    return Alsa24BitContainerPreference::Auto;
+}
+
+std::string normalize_alsa_24bit_preference_id(const std::string& id) {
+    if (id == "s24le" || id == "s24_3le" || id == "s32le") {
+        return id;
+    }
+    return "auto";
+}
+
+int alsa_24bit_preference_combo_index(const std::string& id) {
+    const std::string normalized = normalize_alsa_24bit_preference_id(id);
+    if (normalized == "s24le") return 1;
+    if (normalized == "s24_3le") return 2;
+    if (normalized == "s32le") return 3;
+    return 0;
+}
+
+void show_runtime_message(GtkWindow* parent, const char* title, const std::string& message, GtkMessageType type = GTK_MESSAGE_INFO) {
+    GtkWidget* msg = gtk_message_dialog_new(parent,
+                                            GTK_DIALOG_MODAL,
+                                            type,
+                                            GTK_BUTTONS_CLOSE,
+                                            "%s",
+                                            message.c_str());
+    gtk_window_set_title(GTK_WINDOW(msg), title != nullptr ? title : "PCM Transport");
+    style_dialog_action_area(msg, 2, 6);
+    gtk_dialog_run(GTK_DIALOG(msg));
+    gtk_widget_destroy(msg);
+}
+
+void show_text_report_dialog(GtkWindow* parent, const char* title, const std::string& text) {
+    GtkWidget* dialog = gtk_dialog_new_with_buttons(title != nullptr ? title : "PCM Transport report",
+                                                    parent,
+                                                    GTK_DIALOG_MODAL,
+                                                    "_Close", GTK_RESPONSE_CLOSE,
+                                                    NULL);
+    style_dialog_action_area(dialog, 2, 6);
+    GtkWidget* area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    gtk_container_set_border_width(GTK_CONTAINER(area), 14);
+
+    GtkWidget* scrolled = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_widget_set_size_request(scrolled, 760, 420);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+
+    GtkWidget* view = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(view), FALSE);
+    gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(view), FALSE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(view), GTK_WRAP_NONE);
+    GtkTextBuffer* buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(view));
+    gtk_text_buffer_set_text(buffer, text.c_str(), -1);
+
+    gtk_container_add(GTK_CONTAINER(scrolled), view);
+    gtk_box_pack_start(GTK_BOX(area), scrolled, TRUE, TRUE, 0);
+    gtk_widget_show_all(dialog);
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+}
+
+std::string realtime_status_markup(const std::string& status) {
+    gchar* escaped = g_markup_escape_text(status.c_str(), -1);
+    std::string safe = escaped != nullptr ? std::string(escaped) : status;
+    if (escaped != nullptr) g_free(escaped);
+    if (status.find("active, SCHED_") != std::string::npos) {
+        return std::string("<b><span foreground=\"#1a7f37\">") + safe + "</span></b>";
+    }
+    if (status.find("not available") != std::string::npos ||
+        status.find("failed") != std::string::npos ||
+        status.find("not active") != std::string::npos ||
+        status.find("permission required") != std::string::npos ||
+        status.find("access denied") != std::string::npos) {
+        return std::string("<span foreground=\"#9a3412\">") + safe + "</span>";
+    }
+    return safe;
+}
+
+void set_realtime_status_label(GtkWidget* label, const std::string& status) {
+    if (label == nullptr || !GTK_IS_LABEL(label)) return;
+    const std::string markup = realtime_status_markup(status);
+    gtk_label_set_markup(GTK_LABEL(label), markup.c_str());
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(label), TRUE);
+    gtk_label_set_line_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_max_width_chars(GTK_LABEL(label), 92);
+    gtk_label_set_selectable(GTK_LABEL(label), TRUE);
+    gtk_widget_set_tooltip_text(label, status.c_str());
+}
+
+std::string realtime_settings_status_text(PlaybackEngine& engine) {
+    const std::string rt = engine.refresh_realtime_priority_status();
+    return rt + "\n" + persistent_rt_permission_status();
+}
+
+
+void add_probe_cell(GtkGrid* grid, GtkWidget* child, int column, int row, bool header, bool ok = false, bool fail = false) {
+    gtk_widget_set_hexpand(child, TRUE);
+    gtk_widget_set_vexpand(child, FALSE);
+    gtk_widget_set_halign(child, GTK_ALIGN_FILL);
+    gtk_widget_set_valign(child, GTK_ALIGN_FILL);
+    gtk_style_context_add_class(gtk_widget_get_style_context(child), "alsa-probe-cell");
+    if (header) {
+        gtk_style_context_add_class(gtk_widget_get_style_context(child), "alsa-probe-header");
+    }
+    if (ok) {
+        gtk_style_context_add_class(gtk_widget_get_style_context(child), "alsa-probe-ok");
+    }
+    if (fail) {
+        gtk_style_context_add_class(gtk_widget_get_style_context(child), "alsa-probe-fail");
+    }
+    gtk_grid_attach(grid, child, column, row, 1, 1);
+}
+
+
+void show_alsa_probe_table_dialog(GtkWindow* parent, const AlsaProbeMatrix& matrix) {
+    GtkWidget* dialog = gtk_dialog_new_with_buttons("ALSA device probe",
+                                                    parent,
+                                                    GTK_DIALOG_MODAL,
+                                                    "_Close", GTK_RESPONSE_CLOSE,
+                                                    NULL);
+    style_dialog_action_area(dialog, 2, 6);
+    GtkWidget* area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    gtk_container_set_border_width(GTK_CONTAINER(area), 14);
+
+    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_box_pack_start(GTK_BOX(area), box, FALSE, FALSE, 0);
+
+    GtkWidget* title = gtk_label_new(nullptr);
+    const std::string title_text = "<b>ALSA device probe</b>\nDevice: " + matrix.device_name + "\nMode: playback, RW_INTERLEAVED, stereo";
+    gtk_label_set_markup(GTK_LABEL(title), title_text.c_str());
+    gtk_label_set_xalign(GTK_LABEL(title), 0.0f);
+    gtk_box_pack_start(GTK_BOX(box), title, FALSE, FALSE, 0);
+
+    GtkWidget* scrolled = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_widget_set_size_request(scrolled, 720, 156);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled), GTK_POLICY_AUTOMATIC, GTK_POLICY_NEVER);
+    gtk_widget_set_margin_top(scrolled, 2);
+    gtk_widget_set_margin_bottom(scrolled, 2);
+    GtkWidget* grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 0);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 0);
+    gtk_container_add(GTK_CONTAINER(scrolled), grid);
+
+    GtkWidget* first = gtk_label_new("Format");
+    gtk_label_set_xalign(GTK_LABEL(first), 0.0f);
+    add_probe_cell(GTK_GRID(grid), first, 0, 0, true);
+    for (std::size_t r = 0; r < matrix.sample_rates.size(); ++r) {
+        std::string rate_label;
+        if (matrix.sample_rates[r] % 1000 == 0) {
+            rate_label = std::to_string(matrix.sample_rates[r] / 1000) + " kHz";
+        } else {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%.1f kHz", static_cast<double>(matrix.sample_rates[r]) / 1000.0);
+            rate_label = buf;
+        }
+        GtkWidget* label = gtk_label_new(rate_label.c_str());
+        gtk_label_set_xalign(GTK_LABEL(label), 0.5f);
+        add_probe_cell(GTK_GRID(grid), label, static_cast<int>(r + 1), 0, true);
+    }
+    for (std::size_t f = 0; f < matrix.format_names.size(); ++f) {
+        GtkWidget* format = gtk_label_new(matrix.format_names[f].c_str());
+        gtk_label_set_xalign(GTK_LABEL(format), 0.0f);
+        add_probe_cell(GTK_GRID(grid), format, 0, static_cast<int>(f + 1), true);
+        for (std::size_t r = 0; r < matrix.sample_rates.size(); ++r) {
+            const std::size_t idx = f * matrix.sample_rates.size() + r;
+            const bool ok = idx < matrix.cells.size() && matrix.cells[idx].supported;
+            GtkWidget* value = gtk_label_new(nullptr);
+            gtk_label_set_markup(GTK_LABEL(value), ok ? "<b>OK</b>" : "<b>✗</b>");
+            gtk_label_set_xalign(GTK_LABEL(value), 0.5f);
+            add_probe_cell(GTK_GRID(grid), value, static_cast<int>(r + 1), static_cast<int>(f + 1), false, ok, !ok);
+        }
+    }
+    gtk_box_pack_start(GTK_BOX(box), scrolled, FALSE, FALSE, 0);
+
+    GtkWidget* note = gtk_label_new("This probe tests the selected ALSA PCM device directly. Other players may use plug/dmix or a different subdevice. Stop playback before probing for reliable results.");
+    gtk_label_set_xalign(GTK_LABEL(note), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);
+    gtk_label_set_line_wrap_mode(GTK_LABEL(note), PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_max_width_chars(GTK_LABEL(note), 92);
+    gtk_widget_set_margin_top(note, 2);
+    gtk_box_pack_start(GTK_BOX(box), note, FALSE, FALSE, 0);
+
+    gtk_widget_show_all(dialog);
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+}
+
+
+
 std::string codec_family_from_name(const std::string& codec_name, const std::string& path) {
     std::string codec = codec_name;
     std::transform(codec.begin(), codec.end(), codec.begin(), [](unsigned char c) {
@@ -239,12 +507,18 @@ std::string codec_family_from_name(const std::string& codec_name, const std::str
     if (codec == "aac" || ext == ".aac" || (ext == ".m4a" && codec != "alac")) return "aac";
     if (codec == "vorbis") return "vorbis";
     if (codec == "opus" || ext == ".opus") return "opus";
+    if (codec == "mpc" || ext == ".mpc" || ext == ".mp+" || ext == ".mpp") return "mpc";
+    if (codec.find("wmav") == 0 || codec == "wmapro" || codec == "wmalossless" || ext == ".wma" || ext == ".asf" || ext == ".xwma") return "wma";
+    if (codec.find("atrac") == 0 || ext == ".oma" || ext == ".aa3" || ext == ".at3") return "atrac";
     if (codec == "alac") return "alac";
     if (codec == "flac" || ext == ".flac") return "flac";
     if (codec == "ape" || ext == ".ape") return "ape";
     if (codec == "wavpack" || ext == ".wv") return "wavpack";
+    if (codec == "tta" || ext == ".tta") return "tta";
+    if (codec == "tak" || ext == ".tak") return "tak";
+    if (codec.find("dsd_") == 0 || ext == ".dsf") return "dsd";
     if (codec.size() >= 4 && codec.compare(0, 4, "pcm_") == 0) return "pcm";
-    if (ext == ".wav" || ext == ".aiff" || ext == ".aif") return "pcm";
+    if (ext == ".wav" || ext == ".wave" || ext == ".bwf" || ext == ".aiff" || ext == ".aif" || ext == ".au" || ext == ".snd" || ext == ".caf") return "pcm";
     return codec.empty() ? ext : codec;
 }
 
@@ -519,7 +793,6 @@ std::vector<std::int16_t> render_internal_path_16(const std::string& flac_path,
                                                   bool deep_bass_enabled,
                                                   int deep_bass_preset,
                                                   int deep_bass_amount,
-                                                  bool simd_enabled,
                                                   int bass_hz,
                                                   int treble_hz) {
     FlacStreamDecoder decoder;
@@ -564,7 +837,6 @@ std::vector<std::int16_t> render_internal_path_16(const std::string& flac_path,
             out.push_back(static_cast<std::int16_t>(static_cast<PcmSample>(sample)));
         }
     }
-    (void)simd_enabled;
     return out;
 }
 
@@ -598,166 +870,6 @@ CompareResult compare_samples(const std::vector<std::int16_t>& expected, const s
     }
     return r;
 }
-
-
-bool diagnostic_sample_exceeds_full_scale(double sample, std::uint16_t bits_per_sample) {
-    const double limit = static_cast<double>(pcm_full_scale(bits_per_sample));
-    if (limit <= 0.0) return false;
-    return sample > limit || sample < -limit;
-}
-
-
-void diagnostic_convert_to_s16_scalar(const PcmSample* samples,
-                                      std::size_t count,
-                                      std::uint16_t bits_per_sample,
-                                      std::int16_t* out) {
-    for (std::size_t i = 0; i < count; ++i) {
-        std::int64_t v = static_cast<std::int64_t>(samples[i]);
-        if (bits_per_sample > 16) v >>= (bits_per_sample - 16);
-        if (v > 32767) v = 32767;
-        if (v < -32768) v = -32768;
-        out[i] = static_cast<std::int16_t>(v);
-    }
-}
-
-bool diagnostic_convert_to_s16(const PcmSample* samples,
-                               std::size_t count,
-                               std::uint16_t bits_per_sample,
-                               bool prefer_simd,
-                               std::int16_t* out) {
-#if defined(__SSE2__) && (defined(__x86_64__) || defined(__i386__))
-    if (prefer_simd && bits_per_sample <= 16) {
-        std::size_t i = 0;
-        for (; i + 8 <= count; i += 8) {
-            const __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(samples + i));
-            const __m128i b = _mm_loadu_si128(reinterpret_cast<const __m128i*>(samples + i + 4));
-            const __m128i packed = _mm_packs_epi32(a, b);
-            _mm_storeu_si128(reinterpret_cast<__m128i*>(out + i), packed);
-        }
-        for (; i < count; ++i) {
-            std::int64_t v = static_cast<std::int64_t>(samples[i]);
-            if (v > 32767) v = 32767;
-            if (v < -32768) v = -32768;
-            out[i] = static_cast<std::int16_t>(v);
-        }
-        return true;
-    }
-#else
-    (void)prefer_simd;
-#endif
-    diagnostic_convert_to_s16_scalar(samples, count, bits_per_sample, out);
-    return false;
-}
-
-struct SimdBenchmarkRenderResult {
-    std::vector<std::int16_t> samples;
-    double elapsed_ms = 0.0;
-    std::uint64_t simd_converted_samples = 0;
-    std::uint32_t clipped_samples = 0;
-    bool clip_detected = false;
-    float peak_level = 0.0f;
-};
-
-SimdBenchmarkRenderResult render_simd_benchmark_path_16(const std::string& flac_path,
-                                                        int soft_volume_percent,
-                                                        int bass_db,
-                                                        int treble_db,
-                                                        int pre_eq_headroom_tenths_db,
-                                                        bool deep_bass_enabled,
-                                                        int deep_bass_preset,
-                                                        int deep_bass_amount,
-                                                        bool prefer_simd,
-                                                        bool measure_level,
-                                                        bool detect_clip,
-                                                        int bass_hz,
-                                                        int treble_hz) {
-    const auto started = std::chrono::steady_clock::now();
-    FlacStreamDecoder decoder;
-    decoder.open(flac_path);
-    const AudioFormat fmt = decoder.format();
-    if (fmt.sample_rate != 44100 || fmt.channels != 2 || fmt.bits_per_sample != 16) {
-        throw std::runtime_error("SIMD benchmark expects generated 16-bit / 44.1 kHz / stereo FLAC");
-    }
-
-    std::vector<PcmSample> block(4096);
-    std::vector<std::int16_t> temp16;
-    SimdBenchmarkRenderResult result;
-    result.samples.reserve(static_cast<std::size_t>(decoder.total_samples_per_channel() * fmt.channels));
-
-    DiagnosticShelfState low_l{}, low_r{}, high_l{}, high_r{};
-    tone::DeepBassState deep_l{}, deep_r{};
-    const auto low = tone::make_low_shelf(fmt.sample_rate, static_cast<double>(bass_db), static_cast<double>(bass_hz));
-    const auto high = tone::make_high_shelf(fmt.sample_rate, static_cast<double>(treble_db), static_cast<double>(treble_hz));
-    const bool dsp_active = soft_volume_percent < 100 || bass_db != 0 || treble_db != 0 || pre_eq_headroom_tenths_db > 0 || deep_bass_enabled;
-    const double user_volume = static_cast<double>(soft_volume_percent) / 100.0;
-    const double pre_eq_gain = std::pow(10.0, -(static_cast<double>(pre_eq_headroom_tenths_db) / 10.0) / 20.0);
-    const double full_scale = static_cast<double>(pcm_full_scale(fmt.bits_per_sample));
-    const double inv_full_scale = full_scale > 0.0 ? 1.0 / full_scale : 0.0;
-    const double deep_bass_amount_gain = tone::deep_bass_amount_gain_from_steps(deep_bass_amount);
-    float peak = 0.0f;
-    bool clip_detected = false;
-    std::uint32_t clipped_samples = 0;
-
-    while (!decoder.eof()) {
-        const std::size_t got = decoder.read_samples(block.data(), block.size());
-        if (got == 0) break;
-        if (dsp_active) {
-            for (std::size_t i = 0; i < got; ++i) {
-                const bool left = ((i % 2) == 0);
-                double sample = static_cast<double>(block[i]);
-                sample *= pre_eq_gain;
-                if (bass_db != 0) sample = diagnostic_process_sample(sample, low, left ? low_l : low_r);
-                if (treble_db != 0) sample = diagnostic_process_sample(sample, high, left ? high_l : high_r);
-                if (deep_bass_enabled && inv_full_scale > 0.0) {
-                    sample = tone::process_deep_bass_normalized(sample * inv_full_scale, fmt.sample_rate,
-                                                                static_cast<tone::DeepBassPreset>(deep_bass_preset),
-                                                                left ? deep_l : deep_r,
-                                                                deep_bass_amount_gain) * full_scale;
-                }
-                sample *= user_volume;
-                if (measure_level) {
-                    const double meter_mag = full_scale > 0.0 ? (std::fabs(sample) / full_scale) : 0.0;
-                    if (meter_mag > static_cast<double>(peak)) peak = static_cast<float>(meter_mag);
-                }
-                if (detect_clip && diagnostic_sample_exceeds_full_scale(sample, fmt.bits_per_sample)) {
-                    clip_detected = true;
-                    ++clipped_samples;
-                }
-                block[i] = static_cast<PcmSample>(std::llround(diagnostic_clamp_to_bits(sample, fmt.bits_per_sample)));
-            }
-        } else if (measure_level) {
-            for (std::size_t i = 0; i < got; ++i) {
-                const double meter_mag = full_scale > 0.0 ? (std::fabs(static_cast<double>(block[i])) / full_scale) : 0.0;
-                if (meter_mag > static_cast<double>(peak)) peak = static_cast<float>(meter_mag);
-            }
-        }
-
-        temp16.resize(got);
-        const bool used_simd_conversion = diagnostic_convert_to_s16(block.data(), got, fmt.bits_per_sample, prefer_simd, temp16.data());
-        if (used_simd_conversion) result.simd_converted_samples += static_cast<std::uint64_t>(got);
-        result.samples.insert(result.samples.end(), temp16.begin(), temp16.end());
-    }
-
-    result.peak_level = peak;
-    result.clip_detected = clip_detected;
-    result.clipped_samples = clipped_samples;
-    const auto finished = std::chrono::steady_clock::now();
-    result.elapsed_ms = std::chrono::duration<double, std::milli>(finished - started).count();
-    return result;
-}
-
-std::string benchmark_bar(const std::string& label, double value_ms, double max_ms) {
-    constexpr int width = 28;
-    int filled = 0;
-    if (max_ms > 0.0) filled = std::max(1, std::min(width, static_cast<int>(std::llround((value_ms / max_ms) * width))));
-    std::ostringstream ss;
-    ss << std::left << std::setw(8) << label << " ";
-    for (int i = 0; i < filled; ++i) ss << '#';
-    for (int i = filled; i < width; ++i) ss << ' ';
-    ss << "  " << std::fixed << std::setprecision(2) << value_ms << " ms";
-    return ss.str();
-}
-
 
 
 int current_card_index(const std::vector<CardProfileInfo>& cards, const std::string& device_name) {
@@ -1586,16 +1698,12 @@ GtkPlayerWindow::GtkPlayerWindow(std::size_t transport_buffer_ms)
     load_preferences();
     repeat_enabled_ = false;
     Logger::instance().configure(logging_enabled_, log_path_, log_errors_only_);
-    simd_dsp_supported_ = detect_simd_dsp_support();
-    if (!simd_dsp_supported_) simd_dsp_enabled_ = false;
-    simd_dsp_status_text_ = make_simd_status_text(simd_dsp_supported_, simd_dsp_enabled_);
     engine_.set_soft_volume_percent(soft_volume_percent_);
     engine_.set_soft_eq(bass_db_, treble_db_);
     engine_.set_pre_eq_headroom_tenths_db(pre_eq_headroom_tenths_db_);
     engine_.set_soft_eq_profile(bass_shelf_hz_, treble_shelf_hz_);
     engine_.set_deep_bass_enabled(deep_bass_enabled_);
     engine_.set_deep_bass_preset(deep_bass_internal_from_ui(deep_bass_preset_));
-    engine_.set_simd_dsp_enabled(simd_dsp_enabled_);
 }
 
 GtkPlayerWindow::~GtkPlayerWindow() {
@@ -1617,21 +1725,9 @@ void GtkPlayerWindow::on_activate(GtkApplication* app, gpointer user_data) {
     static_cast<GtkPlayerWindow*>(user_data)->build_ui(app);
 }
 
-void GtkPlayerWindow::on_playlist_area_size_allocate(GtkWidget*, GtkAllocation* allocation, gpointer user_data) {
-    auto* self = static_cast<GtkPlayerWindow*>(user_data);
-    if (self == nullptr || allocation == nullptr) return;
-    const int available = std::max(680, allocation->width);
-    const int unit = std::max(44, (available - 56) / 11);
-    GtkWidget* small[] = {self->btn_prev_, self->btn_play_, self->btn_pause_, self->btn_stop_, self->btn_next_, self->btn_open_, self->btn_repeat_};
-    for (GtkWidget* button : small) { if (button != nullptr) gtk_widget_set_size_request(button, unit, 42); }
-    GtkWidget* wide[] = {self->btn_settings_, self->btn_eq_, self->btn_alsamixer_, self->btn_about_};
-    for (GtkWidget* button : wide) { if (button != nullptr) gtk_widget_set_size_request(button, unit * 2, 19); }
-}
-
-
 void GtkPlayerWindow::build_ui(GtkApplication* app) {
     window_ = gtk_application_window_new(app);
-    gtk_window_set_title(GTK_WINDOW(window_), "PCM Transport v0.9.103");
+    gtk_window_set_title(GTK_WINDOW(window_), "PCM Transport v0.9.109");
     gtk_window_set_default_size(GTK_WINDOW(window_), 900, 660);
     gtk_container_set_border_width(GTK_CONTAINER(window_), 16);
 
@@ -1659,7 +1755,11 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
         ".meter-caption { color: #d6d8db; font-size: 10px; font-weight: bold; }"
         ".section-label { font-weight: bold; }"
         ".progress-area { min-height: 14px; }"
-        ".dialog-action-button { padding: 4px 0; margin: 0; min-height: 0; min-width: 0; }";
+        ".dialog-action-button { padding: 4px 0; margin: 0; min-height: 0; min-width: 0; }"
+        ".alsa-probe-cell { border: 1px solid #9aa1a8; padding: 4px 8px; color: #25313a; background-color: #f7f7f7; }"
+        ".alsa-probe-header { font-weight: bold; color: #25313a; background-color: #e6e9ec; }"
+        ".alsa-probe-ok { color: #1a7f37; font-weight: bold; }"
+        ".alsa-probe-fail { color: #a12a2a; font-weight: bold; }";
     gtk_css_provider_load_from_data(provider, css, -1, nullptr);
     gtk_style_context_add_provider_for_screen(gdk_screen_get_default(),
                                               GTK_STYLE_PROVIDER(provider),
@@ -1835,7 +1935,6 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     gtk_widget_set_size_request(scrolled, -1, 285);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     gtk_box_pack_start(GTK_BOX(content_row), scrolled, TRUE, TRUE, 0);
-    g_signal_connect(scrolled, "size-allocate", G_CALLBACK(GtkPlayerWindow::on_playlist_area_size_allocate), this);
 
     GtkWidget* softvol_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_widget_set_size_request(softvol_box, 58, -1);
@@ -1964,7 +2063,7 @@ gboolean GtkPlayerWindow::on_timer_tick(gpointer user_data) {
     const unsigned int progress_refresh_ticks = self->progress_blink_enabled_ ? kUiProgressRefreshTicks : kUiTextRefreshTicks;
     const bool update_progress = (self->ui_refresh_tick_ % progress_refresh_ticks) == 0;
     const bool update_text = (self->ui_refresh_tick_ % kUiTextRefreshTicks) == 0;
-    self->refresh_display(update_text, update_progress, update_meter, false);
+    self->refresh_display(update_text, update_progress, update_meter);
 
     return G_SOURCE_CONTINUE;
 }
@@ -2948,8 +3047,8 @@ void GtkPlayerWindow::append_path_to_playlist(const std::string& path) {
             }
             entry.codec_name = cue_native ? std::string("flac") : cue_external_info.codec_name;
             entry.lossless_source = cue_native || (cue_external_info_ready && cue_external_info.lossless) ||
-                                    (cue_audio_ext == ".flac" || cue_audio_ext == ".wav" || cue_audio_ext == ".aiff" || cue_audio_ext == ".aif" || cue_audio_ext == ".ape" || cue_audio_ext == ".wv");
-            entry.lossy_source = (!entry.lossless_source && (cue_audio_ext == ".mp3" || cue_audio_ext == ".m4a" || cue_audio_ext == ".aac" || cue_audio_ext == ".ogg" || cue_audio_ext == ".opus"));
+                                    (cue_audio_ext == ".flac" || cue_audio_ext == ".wav" || cue_audio_ext == ".wave" || cue_audio_ext == ".bwf" || cue_audio_ext == ".aiff" || cue_audio_ext == ".aif" || cue_audio_ext == ".au" || cue_audio_ext == ".snd" || cue_audio_ext == ".caf" || cue_audio_ext == ".ape" || cue_audio_ext == ".wv" || cue_audio_ext == ".tak" || cue_audio_ext == ".tta" || cue_audio_ext == ".dsf");
+            entry.lossy_source = (!entry.lossless_source && (cue_audio_ext == ".mp3" || cue_audio_ext == ".m4a" || cue_audio_ext == ".aac" || cue_audio_ext == ".ogg" || cue_audio_ext == ".oga" || cue_audio_ext == ".opus" || cue_audio_ext == ".wma" || cue_audio_ext == ".asf" || cue_audio_ext == ".xwma" || cue_audio_ext == ".oma" || cue_audio_ext == ".aa3" || cue_audio_ext == ".at3" || cue_audio_ext == ".mpc" || cue_audio_ext == ".mp+" || cue_audio_ext == ".mpp"));
             entry.title = safe_utf8_for_display(entry.title);
             entry.performer = safe_utf8_for_display(entry.performer);
             entry.source_label = safe_utf8_for_display(entry.source_label);
@@ -3023,8 +3122,8 @@ void GtkPlayerWindow::append_path_to_playlist(const std::string& path) {
     }
     entry.codec_name = native_decode ? std::string("flac") : external_info.codec_name;
     entry.lossless_source = native_decode || (have_external_info && external_info.lossless) ||
-                            (ext == ".flac" || ext == ".wav" || ext == ".aiff" || ext == ".aif" || ext == ".ape" || ext == ".wv");
-    entry.lossy_source = (!entry.lossless_source && (ext == ".mp3" || ext == ".m4a" || ext == ".aac" || ext == ".ogg" || ext == ".opus"));
+                            (ext == ".flac" || ext == ".wav" || ext == ".wave" || ext == ".bwf" || ext == ".aiff" || ext == ".aif" || ext == ".au" || ext == ".snd" || ext == ".caf" || ext == ".ape" || ext == ".wv" || ext == ".tak" || ext == ".tta" || ext == ".dsf");
+    entry.lossy_source = (!entry.lossless_source && (ext == ".mp3" || ext == ".m4a" || ext == ".aac" || ext == ".ogg" || ext == ".oga" || ext == ".opus" || ext == ".wma" || ext == ".asf" || ext == ".xwma" || ext == ".oma" || ext == ".aa3" || ext == ".at3" || ext == ".mpc" || ext == ".mp+" || ext == ".mpp"));
     entry.title = safe_utf8_for_display(entry.title);
     entry.performer = safe_utf8_for_display(entry.performer);
     entry.source_label = safe_utf8_for_display(entry.source_label);
@@ -3123,9 +3222,11 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index, std::uint64_
         engine_.set_deep_bass_enabled(deep_bass_enabled_);
         engine_.set_deep_bass_preset(deep_bass_internal_from_ui(deep_bass_preset_));
         engine_.set_deep_bass_amount(deep_bass_dsp_amount_from_ui(deep_bass_amount_));
-        engine_.set_simd_dsp_enabled(simd_dsp_enabled_);
+        auto alsa_backend = std::make_unique<AlsaPcmBackend>();
+        alsa_backend->set_24bit_container_preference(alsa_24bit_preference_from_id(alsa_24bit_container_preference_));
+        engine_.set_realtime_priority_enabled(realtime_audio_priority_enabled_);
         engine_.start(std::move(decoder),
-                      std::make_unique<AlsaPcmBackend>(),
+                      std::move(alsa_backend),
                       current_device_,
                       PlaybackStatusCallback(),
                       initial_offset);
@@ -3161,7 +3262,7 @@ void GtkPlayerWindow::open_file_dialog() {
     }
 
     GtkFileFilter* filter = gtk_file_filter_new();
-    gtk_file_filter_set_name(filter, "Audio, cue and playlist files (*.flac, *.mp3, *.m4a, *.aac, *.ogg, *.opus, *.wav, *.aiff, *.aif, *.ape, *.wv, *.cue, *.m3u, *.m3u8)");
+    gtk_file_filter_set_name(filter, "Audio, cue and playlist files");
     gtk_file_filter_add_pattern(filter, "*.flac");
     gtk_file_filter_add_pattern(filter, "*.FLAC");
     gtk_file_filter_add_pattern(filter, "*.mp3");
@@ -3173,9 +3274,45 @@ void GtkPlayerWindow::open_file_dialog() {
     gtk_file_filter_add_pattern(filter, "*.ogg");
     gtk_file_filter_add_pattern(filter, "*.OGG");
     gtk_file_filter_add_pattern(filter, "*.opus");
+    gtk_file_filter_add_pattern(filter, "*.oga");
+    gtk_file_filter_add_pattern(filter, "*.au");
+    gtk_file_filter_add_pattern(filter, "*.snd");
+    gtk_file_filter_add_pattern(filter, "*.caf");
+    gtk_file_filter_add_pattern(filter, "*.bwf");
+    gtk_file_filter_add_pattern(filter, "*.tak");
+    gtk_file_filter_add_pattern(filter, "*.tta");
+    gtk_file_filter_add_pattern(filter, "*.wma");
+    gtk_file_filter_add_pattern(filter, "*.asf");
+    gtk_file_filter_add_pattern(filter, "*.xwma");
+    gtk_file_filter_add_pattern(filter, "*.oma");
+    gtk_file_filter_add_pattern(filter, "*.aa3");
+    gtk_file_filter_add_pattern(filter, "*.at3");
+    gtk_file_filter_add_pattern(filter, "*.mpc");
+    gtk_file_filter_add_pattern(filter, "*.mp+");
+    gtk_file_filter_add_pattern(filter, "*.mpp");
+    gtk_file_filter_add_pattern(filter, "*.dsf");
+    gtk_file_filter_add_pattern(filter, "*.OGA");
+    gtk_file_filter_add_pattern(filter, "*.AU");
+    gtk_file_filter_add_pattern(filter, "*.SND");
+    gtk_file_filter_add_pattern(filter, "*.CAF");
+    gtk_file_filter_add_pattern(filter, "*.BWF");
+    gtk_file_filter_add_pattern(filter, "*.TAK");
+    gtk_file_filter_add_pattern(filter, "*.TTA");
+    gtk_file_filter_add_pattern(filter, "*.WMA");
+    gtk_file_filter_add_pattern(filter, "*.ASF");
+    gtk_file_filter_add_pattern(filter, "*.XWMA");
+    gtk_file_filter_add_pattern(filter, "*.OMA");
+    gtk_file_filter_add_pattern(filter, "*.AA3");
+    gtk_file_filter_add_pattern(filter, "*.AT3");
+    gtk_file_filter_add_pattern(filter, "*.MPC");
+    gtk_file_filter_add_pattern(filter, "*.MP+");
+    gtk_file_filter_add_pattern(filter, "*.MPP");
+    gtk_file_filter_add_pattern(filter, "*.DSF");
     gtk_file_filter_add_pattern(filter, "*.OPUS");
     gtk_file_filter_add_pattern(filter, "*.wav");
     gtk_file_filter_add_pattern(filter, "*.WAV");
+    gtk_file_filter_add_pattern(filter, "*.wave");
+    gtk_file_filter_add_pattern(filter, "*.WAVE");
     gtk_file_filter_add_pattern(filter, "*.aiff");
     gtk_file_filter_add_pattern(filter, "*.AIFF");
     gtk_file_filter_add_pattern(filter, "*.aif");
@@ -3302,18 +3439,45 @@ void GtkPlayerWindow::open_settings_dialog() {
     gtk_label_set_xalign(GTK_LABEL(mixer_info), 0.0f);
     gtk_label_set_line_wrap(GTK_LABEL(mixer_info), TRUE);
 
-    GtkWidget* simd_sep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
-    gtk_widget_set_margin_top(simd_sep, 8);
-    gtk_widget_set_margin_bottom(simd_sep, 8);
+    GtkWidget* advanced_sep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_widget_set_margin_top(advanced_sep, 8);
+    gtk_widget_set_margin_bottom(advanced_sep, 8);
+    GtkWidget* advanced_title = gtk_label_new("Advanced audio:");
+    gtk_label_set_xalign(GTK_LABEL(advanced_title), 0.0f);
 
-    GtkWidget* simd_title = gtk_label_new("SIMD PCM conversion:");
-    gtk_label_set_xalign(GTK_LABEL(simd_title), 0.0f);
-    GtkWidget* simd_check = gtk_check_button_new_with_label("Enable SIMD PCM conversion");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(simd_check), simd_dsp_enabled_ ? TRUE : FALSE);
-    gtk_widget_set_sensitive(simd_check, simd_dsp_supported_ ? TRUE : FALSE);
-    GtkWidget* simd_status = gtk_label_new(simd_dsp_status_text_.c_str());
-    gtk_label_set_xalign(GTK_LABEL(simd_status), 0.0f);
-    gtk_label_set_line_wrap(GTK_LABEL(simd_status), TRUE);
+    GtkWidget* lbl_alsa_24 = gtk_label_new("24-bit ALSA container:");
+    gtk_label_set_xalign(GTK_LABEL(lbl_alsa_24), 0.0f);
+    GtkWidget* alsa_24_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(alsa_24_combo), "auto", "Auto");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(alsa_24_combo), "s24le", "Prefer S24_LE");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(alsa_24_combo), "s24_3le", "Prefer S24_3LE");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(alsa_24_combo), "s32le", "Prefer S32_LE");
+    gtk_combo_box_set_active(GTK_COMBO_BOX(alsa_24_combo), alsa_24bit_preference_combo_index(alsa_24bit_container_preference_));
+
+    const std::string rt_status_text = realtime_settings_status_text(engine_);
+    GtkWidget* rt_check = gtk_check_button_new_with_label("Use realtime audio thread priority");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(rt_check), realtime_audio_priority_enabled_ ? TRUE : FALSE);
+    gtk_widget_set_tooltip_text(rt_check, "Tries direct SCHED_RR first. Uses RTKit as a runtime fallback when available. Persistent permission can be granted with cap_sys_nice.");
+    GtkWidget* rt_status = gtk_label_new(nullptr);
+    set_realtime_status_label(rt_status, rt_status_text);
+    gtk_widget_set_hexpand(rt_status, FALSE);
+
+    GtkWidget* rt_grant_button = gtk_button_new_with_label("Grant persistent RT permission");
+    GtkWidget* rt_revoke_button = gtk_button_new_with_label("Revoke RT permission");
+    gtk_widget_set_tooltip_text(rt_grant_button, "Runs pkexec setcap cap_sys_nice=eip on the current PCM Transport executable. Restart required.");
+    gtk_widget_set_tooltip_text(rt_revoke_button, "Runs pkexec setcap -r on the current PCM Transport executable. Restart required.");
+
+    GtkWidget* alsa24_row = gtk_grid_new();
+    gtk_grid_set_column_spacing(GTK_GRID(alsa24_row), 8);
+    gtk_grid_attach(GTK_GRID(alsa24_row), lbl_alsa_24, 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(alsa24_row), alsa_24_combo, 1, 0, 1, 1);
+
+    GtkWidget* rt_row = gtk_grid_new();
+    gtk_grid_set_column_spacing(GTK_GRID(rt_row), 8);
+    gtk_grid_attach(GTK_GRID(rt_row), rt_check, 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(rt_row), rt_grant_button, 1, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(rt_row), rt_revoke_button, 2, 0, 1, 1);
+
     GtkWidget* ui_sep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
     gtk_widget_set_margin_top(ui_sep, 8);
     gtk_widget_set_margin_bottom(ui_sep, 8);
@@ -3366,19 +3530,20 @@ void GtkPlayerWindow::open_settings_dialog() {
     gtk_grid_attach(GTK_GRID(grid), dsp_status, 0, 2, 2, 1);
     gtk_grid_attach(GTK_GRID(grid), dsp_diag, 0, 3, 2, 1);
     gtk_grid_attach(GTK_GRID(grid), mixer_info, 0, 4, 2, 1);
-    gtk_grid_attach(GTK_GRID(grid), simd_sep, 0, 5, 2, 1);
-    gtk_grid_attach(GTK_GRID(grid), simd_title, 0, 6, 2, 1);
-    gtk_grid_attach(GTK_GRID(grid), simd_check, 0, 7, 2, 1);
-    gtk_grid_attach(GTK_GRID(grid), simd_status, 0, 8, 2, 1);
-    gtk_grid_attach(GTK_GRID(grid), ui_sep, 0, 9, 2, 1);
-    gtk_grid_attach(GTK_GRID(grid), ui_title, 0, 10, 2, 1);
-    gtk_grid_attach(GTK_GRID(grid), level_meter_check, 0, 11, 2, 1);
-    gtk_grid_attach(GTK_GRID(grid), clip_detect_check, 0, 12, 2, 1);
-    gtk_grid_attach(GTK_GRID(grid), progress_blink_check, 0, 13, 2, 1);
-    gtk_grid_attach(GTK_GRID(grid), log_sep, 0, 14, 2, 1);
-    gtk_grid_attach(GTK_GRID(grid), log_title, 0, 15, 2, 1);
-    gtk_grid_attach(GTK_GRID(grid), log_check, 0, 16, 2, 1);
-    gtk_grid_attach(GTK_GRID(grid), log_row_grid, 0, 17, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), advanced_sep, 0, 5, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), advanced_title, 0, 6, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), alsa24_row, 0, 7, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), rt_row, 0, 8, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), rt_status, 0, 9, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), ui_sep, 0, 10, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), ui_title, 0, 11, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), level_meter_check, 0, 12, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), clip_detect_check, 0, 13, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), progress_blink_check, 0, 14, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), log_sep, 0, 15, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), log_title, 0, 16, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), log_check, 0, 17, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), log_row_grid, 0, 18, 2, 1);
 
     g_signal_connect(log_path_entry, "changed", G_CALLBACK(+[](GtkEditable* editable, gpointer) {
         update_log_path_tooltip(GTK_WIDGET(editable));
@@ -3413,6 +3578,31 @@ void GtkPlayerWindow::open_settings_dialog() {
         gtk_widget_destroy(chooser);
     }), this);
 
+
+    g_object_set_data(G_OBJECT(rt_grant_button), "rt-status-label", rt_status);
+    g_signal_connect(rt_grant_button, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer user_data) {
+        auto* self = static_cast<GtkPlayerWindow*>(user_data);
+        if (self == nullptr) return;
+        const std::string result = apply_persistent_rt_permission(true);
+        GtkWidget* status_label = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "rt-status-label"));
+        if (status_label != nullptr) {
+            set_realtime_status_label(status_label, self->engine_.refresh_realtime_priority_status() + "\n" + persistent_rt_permission_status() + "\n" + result);
+        }
+        show_runtime_message(GTK_WINDOW(self->window_), "Realtime permission", result, result.find("failed") == std::string::npos ? GTK_MESSAGE_INFO : GTK_MESSAGE_WARNING);
+    }), this);
+
+    g_object_set_data(G_OBJECT(rt_revoke_button), "rt-status-label", rt_status);
+    g_signal_connect(rt_revoke_button, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer user_data) {
+        auto* self = static_cast<GtkPlayerWindow*>(user_data);
+        if (self == nullptr) return;
+        const std::string result = apply_persistent_rt_permission(false);
+        GtkWidget* status_label = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "rt-status-label"));
+        if (status_label != nullptr) {
+            set_realtime_status_label(status_label, self->engine_.refresh_realtime_priority_status() + "\n" + persistent_rt_permission_status() + "\n" + result);
+        }
+        show_runtime_message(GTK_WINDOW(self->window_), "Realtime permission", result, result.find("failed") == std::string::npos ? GTK_MESSAGE_INFO : GTK_MESSAGE_WARNING);
+    }), this);
+
     gtk_widget_show_all(dialog);
 
     auto apply_settings_from_dialog = [&]() {
@@ -3420,11 +3610,16 @@ void GtkPlayerWindow::open_settings_dialog() {
         if (selected != nullptr) {
             current_device_ = std::string(selected);
         }
-        const bool requested_simd = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(simd_check)) != 0;
-        simd_dsp_enabled_ = simd_dsp_supported_ ? requested_simd : false;
-        engine_.set_simd_dsp_enabled(simd_dsp_enabled_);
-        simd_dsp_status_text_ = make_simd_status_text(simd_dsp_supported_, simd_dsp_enabled_);
-        gtk_label_set_text(GTK_LABEL(simd_status), simd_dsp_status_text_.c_str());
+        const gchar* alsa24_id = gtk_combo_box_get_active_id(GTK_COMBO_BOX(alsa_24_combo));
+        alsa_24bit_container_preference_ = normalize_alsa_24bit_preference_id(alsa24_id != nullptr ? std::string(alsa24_id) : std::string("auto"));
+        realtime_audio_priority_enabled_ = (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(rt_check)) != 0);
+        engine_.set_realtime_priority_enabled(realtime_audio_priority_enabled_);
+        engine_.set_realtime_priority(60);
+        if (realtime_audio_priority_enabled_) {
+            engine_.request_realtime_priority_for_playback_thread();
+        } else {
+            engine_.refresh_realtime_priority_status();
+        }
         level_meter_enabled_ = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(level_meter_check)) != 0;
         clip_detection_enabled_ = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(clip_detect_check)) != 0;
         progress_blink_enabled_ = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(progress_blink_check)) != 0;
@@ -3469,7 +3664,7 @@ void GtkPlayerWindow::open_about_dialog() {
     gtk_box_pack_start(GTK_BOX(content), box, TRUE, TRUE, 0);
 
     GtkWidget* title = gtk_label_new(nullptr);
-    gtk_label_set_markup(GTK_LABEL(title), "<b>PCM Transport 0.9.103</b>");
+    gtk_label_set_markup(GTK_LABEL(title), "<b>PCM Transport 0.9.109</b>");
     gtk_label_set_xalign(GTK_LABEL(title), 0.5f);
     GtkWidget* subtitle = gtk_label_new("Digital Audio Player");
     gtk_label_set_xalign(GTK_LABEL(subtitle), 0.5f);
@@ -3582,29 +3777,6 @@ void GtkPlayerWindow::on_run_bitperfect_test_clicked(GtkButton*, gpointer user_d
 }
 
 
-struct SimdBenchmarkButtonData {
-    GtkPlayerWindow* self = nullptr;
-    GtkWidget* parent_dialog = nullptr;
-    GtkWidget* duration_combo = nullptr;
-};
-
-void destroy_simd_benchmark_button_data(gpointer data, GClosure*) {
-    delete static_cast<SimdBenchmarkButtonData*>(data);
-}
-
-void GtkPlayerWindow::on_run_simd_benchmark_clicked(GtkButton*, gpointer user_data) {
-    auto* data = static_cast<SimdBenchmarkButtonData*>(user_data);
-    if (data == nullptr || data->self == nullptr) return;
-    int duration_seconds = 30;
-    if (data->duration_combo != nullptr) {
-        const gchar* id = gtk_combo_box_get_active_id(GTK_COMBO_BOX(data->duration_combo));
-        if (id != nullptr) {
-            try { duration_seconds = std::max(1, std::stoi(id)); } catch (...) { duration_seconds = 30; }
-        }
-    }
-    data->self->open_simd_benchmark_dialog(data->parent_dialog, duration_seconds);
-}
-
 void GtkPlayerWindow::open_bitperfect_test_dialog(GtkWidget* parent_dialog, int duration_seconds) {
     if (engine_.is_playing()) {
         GtkWidget* ask = gtk_message_dialog_new(GTK_WINDOW(parent_dialog), GTK_DIALOG_MODAL,
@@ -3668,7 +3840,6 @@ void GtkPlayerWindow::open_bitperfect_test_dialog(GtkWidget* parent_dialog, int 
     const int deep_bass_preset = deep_bass_internal_from_ui(deep_bass_preset_);
     const int deep_bass_amount = deep_bass_amount_;
     const int deep_bass_amount_dsp = deep_bass_dsp_amount_from_ui(deep_bass_amount_);
-    const bool simd_enabled = simd_dsp_enabled_;
     const int bass_hz = bass_shelf_hz_;
     const int treble_hz = treble_shelf_hz_;
     const bool level_meter = level_meter_enabled_;
@@ -3686,7 +3857,7 @@ void GtkPlayerWindow::open_bitperfect_test_dialog(GtkWidget* parent_dialog, int 
         };
         try {
             post_diagnostics_update(text_view, progress, close_button,
-                "PCM Transport FLAC bit-perfect test\nVersion: 0.9.103\nMode: current player processing path before ALSA\nFFmpeg: not used\n", 0.02, false);
+                "PCM Transport FLAC bit-perfect test\nVersion: 0.9.109\nMode: current player processing path before ALSA\nFFmpeg: not used\n", 0.02, false);
             std::ostringstream ctx;
             ctx << "Duration: " << duration_seconds << " sec\n"
                 << "Generated signal: deterministic 16-bit / 44.1 kHz / stereo stress pattern\n"
@@ -3697,7 +3868,6 @@ void GtkPlayerWindow::open_bitperfect_test_dialog(GtkWidget* parent_dialog, int 
                 << "  Pre-EQ headroom: " << (static_cast<double>(headroom) / 10.0) << " dB\n"
                 << "  Deep Bass: " << (deep_bass ? "enabled" : "disabled") << "\n"
                 << "  Deep Bass amount: " << format_signed_step(deep_bass_amount) << "\n"
-                << "  SIMD PCM conversion: " << (simd_enabled ? "enabled" : "disabled") << "\n"
                 << "  Level meter: " << (level_meter ? "enabled" : "disabled") << "\n"
                 << "  Clip detection: " << (clip_detection ? "enabled" : "disabled") << "\n\n";
             post_diagnostics_update(text_view, progress, close_button, ctx.str(), 0.05, false);
@@ -3728,7 +3898,7 @@ void GtkPlayerWindow::open_bitperfect_test_dialog(GtkWidget* parent_dialog, int 
 
             post_diagnostics_update(text_view, progress, close_button, "Decoding with PCM Transport internal libFLAC path...\n", 0.62, false);
             const std::vector<std::int16_t> internal = render_internal_path_16(test_flac, soft_volume, bass_db, treble_db, headroom,
-                                                                               deep_bass, deep_bass_preset, deep_bass_amount_dsp, simd_enabled,
+                                                                               deep_bass, deep_bass_preset, deep_bass_amount_dsp,
                                                                                bass_hz, treble_hz);
 
             post_diagnostics_update(text_view, progress, close_button, "Comparing samples...\n", 0.82, false);
@@ -3751,179 +3921,6 @@ void GtkPlayerWindow::open_bitperfect_test_dialog(GtkWidget* parent_dialog, int 
                 } else {
                     out << "Warning: pure path differs from reference. This should be investigated.\n";
                 }
-            }
-            out << "Temporary files removed.\n";
-            cleanup();
-            post_diagnostics_update(text_view, progress, close_button, out.str(), 1.0, true);
-        } catch (const std::exception& ex) {
-            cleanup();
-            post_diagnostics_update(text_view, progress, close_button, std::string("\nERROR: ") + ex.what() + "\nTemporary files removed.\n", 1.0, true);
-        }
-    }).detach();
-
-    gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
-}
-
-void GtkPlayerWindow::open_simd_benchmark_dialog(GtkWidget* parent_dialog, int duration_seconds) {
-    if (engine_.is_playing()) {
-        GtkWidget* ask = gtk_message_dialog_new(GTK_WINDOW(parent_dialog), GTK_DIALOG_MODAL,
-                                                GTK_MESSAGE_QUESTION, GTK_BUTTONS_NONE,
-                                                "Playback is currently active. Stop playback and run the SIMD benchmark?");
-        gtk_dialog_add_button(GTK_DIALOG(ask), "_Cancel", GTK_RESPONSE_CANCEL);
-        gtk_dialog_add_button(GTK_DIALOG(ask), "_Stop and Run", GTK_RESPONSE_ACCEPT);
-        style_dialog_action_area(ask);
-        const int answer = gtk_dialog_run(GTK_DIALOG(ask));
-        gtk_widget_destroy(ask);
-        if (answer != GTK_RESPONSE_ACCEPT) return;
-        stop_playback();
-    }
-
-    GtkWidget* dialog = gtk_dialog_new_with_buttons("SIMD PCM conversion benchmark",
-                                                    GTK_WINDOW(parent_dialog),
-                                                    GTK_DIALOG_MODAL,
-                                                    NULL);
-    GtkWidget* close_button = gtk_dialog_add_button(GTK_DIALOG(dialog), "_Close", GTK_RESPONSE_CLOSE);
-    gtk_widget_set_sensitive(close_button, FALSE);
-    gtk_window_set_deletable(GTK_WINDOW(dialog), FALSE);
-    style_dialog_action_area(dialog);
-    GtkWidget* area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-    gtk_container_set_border_width(GTK_CONTAINER(area), 14);
-
-    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    gtk_widget_set_size_request(box, 760, 440);
-    gtk_box_pack_start(GTK_BOX(area), box, TRUE, TRUE, 0);
-
-    GtkWidget* title = gtk_label_new(nullptr);
-    gtk_label_set_markup(GTK_LABEL(title), "<b>SIMD PCM conversion benchmark</b>");
-    gtk_label_set_xalign(GTK_LABEL(title), 0.0f);
-    gtk_box_pack_start(GTK_BOX(box), title, FALSE, FALSE, 0);
-
-    GtkWidget* note = gtk_label_new("Runs the current PCM Transport processing path twice before ALSA: once with scalar processing forced, once with SIMD processing forced. The generated output is also compared sample-by-sample.");
-    gtk_label_set_xalign(GTK_LABEL(note), 0.0f);
-    gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);
-    gtk_label_set_line_wrap_mode(GTK_LABEL(note), PANGO_WRAP_WORD_CHAR);
-    gtk_label_set_max_width_chars(GTK_LABEL(note), 74);
-    gtk_widget_set_hexpand(note, FALSE);
-    gtk_widget_set_vexpand(note, FALSE);
-    gtk_box_pack_start(GTK_BOX(box), note, FALSE, FALSE, 0);
-
-    GtkWidget* progress = gtk_progress_bar_new();
-    gtk_box_pack_start(GTK_BOX(box), progress, FALSE, FALSE, 0);
-
-    GtkWidget* scrolled = gtk_scrolled_window_new(nullptr, nullptr);
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
-    gtk_box_pack_start(GTK_BOX(box), scrolled, TRUE, TRUE, 0);
-    GtkWidget* text_view = gtk_text_view_new();
-    gtk_text_view_set_editable(GTK_TEXT_VIEW(text_view), FALSE);
-    gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(text_view), FALSE);
-    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(text_view), GTK_WRAP_WORD_CHAR);
-    gtk_container_add(GTK_CONTAINER(scrolled), text_view);
-
-    const int soft_volume = soft_volume_percent_;
-    const int bass_db = bass_db_;
-    const int treble_db = treble_db_;
-    const int headroom = effective_pre_eq_headroom_tenths_db();
-    const bool deep_bass = deep_bass_enabled_;
-    const int deep_bass_preset = deep_bass_internal_from_ui(deep_bass_preset_);
-    const int deep_bass_amount = deep_bass_amount_;
-    const int deep_bass_amount_dsp = deep_bass_dsp_amount_from_ui(deep_bass_amount_);
-    const int bass_hz = bass_shelf_hz_;
-    const int treble_hz = treble_shelf_hz_;
-    const bool level_meter = level_meter_enabled_;
-    const bool clip_detection = clip_detection_enabled_;
-    const bool simd_supported = simd_dsp_supported_;
-
-    gtk_widget_show_all(dialog);
-
-    std::thread([=]() {
-        std::string tmp_dir;
-        auto cleanup = [&]() {
-            if (!tmp_dir.empty()) {
-                const std::string cmd = std::string("rm -rf -- ") + shell_quote(tmp_dir);
-                std::system(cmd.c_str());
-            }
-        };
-        try {
-            post_diagnostics_update(text_view, progress, close_button,
-                "PCM Transport SIMD PCM conversion benchmark\nVersion: 0.9.103\nMode: current player processing path before ALSA\nOutput: discarded, not sent to ALSA\n", 0.02, false);
-            std::ostringstream ctx;
-            ctx << "Duration: " << duration_seconds << " sec\n"
-                << "Generated signal: deterministic 16-bit / 44.1 kHz / stereo stress pattern\n"
-                << "SIMD support: " << (simd_supported ? "available" : "not available or not built") << "\n"
-                << "Processing context:\n"
-                << "  Soft volume: " << soft_volume << "%\n"
-                << "  Bass: " << bass_db << " dB @ " << bass_hz << " Hz\n"
-                << "  Treble: " << treble_db << " dB @ " << treble_hz << " Hz\n"
-                << "  Pre-EQ headroom: " << (static_cast<double>(headroom) / 10.0) << " dB\n"
-                << "  Deep Bass: " << (deep_bass ? "enabled" : "disabled") << "\n"
-                << "  Deep Bass amount: " << format_signed_step(deep_bass_amount) << "\n"
-                << "  Level meter: " << (level_meter ? "enabled" : "disabled") << "\n"
-                << "  Clip detection: " << (clip_detection ? "enabled" : "disabled") << "\n\n";
-            post_diagnostics_update(text_view, progress, close_button, ctx.str(), 0.05, false);
-
-            char tmpl[] = "/tmp/pcm_transport_simdbench_XXXXXX";
-            char* made = g_mkdtemp(tmpl);
-            if (made == nullptr) throw std::runtime_error(std::string("Cannot create temp directory: ") + std::strerror(errno));
-            tmp_dir = made;
-            const std::string source_wav = tmp_dir + "/source.wav";
-            const std::string test_flac = tmp_dir + "/source.flac";
-
-            post_diagnostics_update(text_view, progress, close_button, "Generating deterministic WAV...\n", 0.12, false);
-            write_test_wav(source_wav, duration_seconds);
-
-            gchar* flac_cli = g_find_program_in_path("flac");
-            if (flac_cli == nullptr) throw std::runtime_error("External flac CLI was not found in PATH");
-            g_free(flac_cli);
-
-            post_diagnostics_update(text_view, progress, close_button, "Encoding WAV to FLAC using flac CLI...\n", 0.25, false);
-            std::string cmd = "flac -f -s " + shell_quote(source_wav) + " -o " + shell_quote(test_flac);
-            if (std::system(cmd.c_str()) != 0) throw std::runtime_error("flac CLI encode failed");
-
-            post_diagnostics_update(text_view, progress, close_button, "Running scalar path...\n", 0.42, false);
-            const SimdBenchmarkRenderResult scalar = render_simd_benchmark_path_16(test_flac, soft_volume, bass_db, treble_db, headroom,
-                                                                                   deep_bass, deep_bass_preset, deep_bass_amount_dsp,
-                                                                                   false, level_meter, clip_detection,
-                                                                                   bass_hz, treble_hz);
-
-            post_diagnostics_update(text_view, progress, close_button, "Running SIMD PCM conversion path...\n", 0.66, false);
-            const SimdBenchmarkRenderResult simd = render_simd_benchmark_path_16(test_flac, soft_volume, bass_db, treble_db, headroom,
-                                                                                 deep_bass, deep_bass_preset, deep_bass_amount_dsp,
-                                                                                 true, level_meter, clip_detection,
-                                                                                 bass_hz, treble_hz);
-
-            post_diagnostics_update(text_view, progress, close_button, "Comparing scalar and SIMD output...\n", 0.86, false);
-            const CompareResult result = compare_samples(scalar.samples, simd.samples);
-            const double speedup = simd.elapsed_ms > 0.0 ? scalar.elapsed_ms / simd.elapsed_ms : 0.0;
-            const double max_time = std::max(scalar.elapsed_ms, simd.elapsed_ms);
-            std::ostringstream out;
-            out << "\nBenchmark result\n"
-                << benchmark_bar("Scalar", scalar.elapsed_ms, max_time) << "\n"
-                << benchmark_bar("SIMD", simd.elapsed_ms, max_time) << "\n\n"
-                << "Scalar run: " << std::fixed << std::setprecision(2) << scalar.elapsed_ms << " ms\n"
-                << "SIMD run:   " << std::fixed << std::setprecision(2) << simd.elapsed_ms << " ms\n"
-                << "Speedup:    " << std::fixed << std::setprecision(2) << speedup << "x\n"
-                << "SIMD converted samples: " << simd.simd_converted_samples << "\n"
-                << "Output comparison: " << (result.pass ? "PASS" : "FAIL") << "\n"
-                << "Compared samples: " << result.compared << "\n"
-                << "Compared frames: " << (result.compared / 2) << "\n"
-                << "Max absolute difference: " << result.max_diff << "\n";
-            if (!result.pass) {
-                out << "First mismatch:\n"
-                    << "  Sample index: " << result.first_mismatch << "\n"
-                    << "  Frame: " << (result.first_mismatch / 2) << "\n"
-                    << "  Channel: " << ((result.first_mismatch % 2) == 0 ? "L" : "R") << "\n"
-                    << "  Scalar: " << result.expected << "\n"
-                    << "  SIMD: " << result.actual << "\n"
-                    << "  Difference: " << (static_cast<int>(result.actual) - static_cast<int>(result.expected)) << "\n";
-            }
-            if (clip_detection) {
-                out << "Scalar clipped samples: " << scalar.clipped_samples << "\n"
-                    << "SIMD clipped samples: " << simd.clipped_samples << "\n";
-            }
-            if (level_meter) {
-                out << "Scalar peak: " << std::fixed << std::setprecision(4) << scalar.peak_level << "\n"
-                    << "SIMD peak: " << std::fixed << std::setprecision(4) << simd.peak_level << "\n";
             }
             out << "Temporary files removed.\n";
             cleanup();
@@ -4595,42 +4592,58 @@ data->self->draw_tone_response_graph(cr, alloc.width, alloc.height);
     auto* diag_btn_data = new BitPerfectButtonData{this, dialog, diag_duration_combo};
     g_signal_connect_data(diag_run_button, "clicked", G_CALLBACK(GtkPlayerWindow::on_run_bitperfect_test_clicked), diag_btn_data, destroy_bitperfect_button_data, static_cast<GConnectFlags>(0));
 
-    GtkWidget* simd_diag_sep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
-    gtk_widget_set_margin_start(simd_diag_sep, section_indent);
-    gtk_widget_set_margin_top(simd_diag_sep, 8);
-    gtk_widget_set_margin_bottom(simd_diag_sep, 4);
-    attach_diagnostics(simd_diag_sep);
+    GtkWidget* diag_alsa_sep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_widget_set_margin_top(diag_alsa_sep, 8);
+    gtk_widget_set_margin_bottom(diag_alsa_sep, 8);
+    attach_diagnostics(diag_alsa_sep);
 
-    attach_diagnostics(make_header("SIMD PCM conversion benchmark", "Generates the same deterministic FLAC test signal and renders the current PCM Transport processing path twice before ALSA: scalar PCM conversion vs SIMD PCM conversion. The outputs are compared sample-by-sample and the render times are reported."));
-    GtkWidget* simd_grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(simd_grid), row_spacing);
-    gtk_grid_set_column_spacing(GTK_GRID(simd_grid), col_spacing);
-    gtk_widget_set_margin_start(simd_grid, section_indent);
-    GtkWidget* simd_duration_label = gtk_label_new("Benchmark length:");
-    gtk_label_set_xalign(GTK_LABEL(simd_duration_label), 0.0f);
-    GtkWidget* simd_duration_combo = gtk_combo_box_text_new();
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(simd_duration_combo), "30", "30 seconds (default)");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(simd_duration_combo), "60", "1 minute");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(simd_duration_combo), "240", "4 minutes");
-    gtk_combo_box_set_active_id(GTK_COMBO_BOX(simd_duration_combo), "30");
-    gtk_widget_set_hexpand(simd_duration_combo, TRUE);
-    GtkWidget* simd_run_button = gtk_button_new_with_label("Run SIMD PCM conversion benchmark");
-    gtk_widget_set_tooltip_text(simd_run_button, "Runs an offline current-path benchmark. Output is discarded, not sent to ALSA. Temporary files are removed after the test.");
-    gtk_grid_attach(GTK_GRID(simd_grid), simd_duration_label, 0, 0, 1, 1);
-    gtk_grid_attach(GTK_GRID(simd_grid), simd_duration_combo, 1, 0, 1, 1);
-    gtk_grid_attach(GTK_GRID(simd_grid), simd_run_button, 0, 1, 2, 1);
-    attach_diagnostics(simd_grid);
-    GtkWidget* simd_note = gtk_label_new("The benchmark uses current processing settings. It compares scalar and SIMD final PCM conversion without changing your saved settings.");
-    gtk_label_set_xalign(GTK_LABEL(simd_note), 0.0f);
-    gtk_label_set_line_wrap(GTK_LABEL(simd_note), TRUE);
-    gtk_label_set_line_wrap_mode(GTK_LABEL(simd_note), PANGO_WRAP_WORD_CHAR);
-    gtk_label_set_max_width_chars(GTK_LABEL(simd_note), 74);
-    gtk_widget_set_hexpand(simd_note, FALSE);
-    gtk_widget_set_vexpand(simd_note, FALSE);
-    gtk_widget_set_margin_start(simd_note, section_indent);
-    attach_diagnostics(simd_note);
-    auto* simd_btn_data = new SimdBenchmarkButtonData{this, dialog, simd_duration_combo};
-    g_signal_connect_data(simd_run_button, "clicked", G_CALLBACK(GtkPlayerWindow::on_run_simd_benchmark_clicked), simd_btn_data, destroy_simd_benchmark_button_data, static_cast<GConnectFlags>(0));
+    attach_diagnostics(make_header("ALSA output diagnostics", "Shows the active ALSA output path and probes the selected PCM device for common PCM containers and sample rates."));
+    GtkWidget* alsa_diag_grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(alsa_diag_grid), row_spacing);
+    gtk_grid_set_column_spacing(GTK_GRID(alsa_diag_grid), col_spacing);
+    gtk_widget_set_margin_start(alsa_diag_grid, section_indent);
+
+    GtkWidget* active_output_label = gtk_label_new("Active ALSA output:");
+    gtk_label_set_xalign(GTK_LABEL(active_output_label), 0.0f);
+    GtkWidget* active_output_value = gtk_label_new(nullptr);
+    std::string active_output_text = engine_.active_output_report();
+    if (active_output_text.empty()) active_output_text = "No active ALSA output yet.";
+    gtk_label_set_text(GTK_LABEL(active_output_value), active_output_text.c_str());
+    gtk_label_set_xalign(GTK_LABEL(active_output_value), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(active_output_value), TRUE);
+    gtk_label_set_line_wrap_mode(GTK_LABEL(active_output_value), PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_max_width_chars(GTK_LABEL(active_output_value), 74);
+    gtk_label_set_selectable(GTK_LABEL(active_output_value), TRUE);
+
+    GtkWidget* refresh_active_output_button = gtk_button_new_with_label("Refresh active output");
+    GtkWidget* probe_alsa_button = gtk_button_new_with_label("Probe selected ALSA device");
+    gtk_widget_set_tooltip_text(probe_alsa_button, "Tests the selected ALSA PCM device for common stereo PCM formats and sample rates. Stop playback first for reliable results.");
+
+    gtk_grid_attach(GTK_GRID(alsa_diag_grid), active_output_label, 0, 0, 2, 1);
+    gtk_grid_attach(GTK_GRID(alsa_diag_grid), active_output_value, 0, 1, 2, 1);
+    gtk_grid_attach(GTK_GRID(alsa_diag_grid), refresh_active_output_button, 0, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(alsa_diag_grid), probe_alsa_button, 1, 2, 1, 1);
+    attach_diagnostics(alsa_diag_grid);
+
+    g_object_set_data(G_OBJECT(refresh_active_output_button), "active-output-label", active_output_value);
+    g_signal_connect(refresh_active_output_button, "clicked", G_CALLBACK(+[](GtkButton* button, gpointer user_data) {
+        auto* self = static_cast<GtkPlayerWindow*>(user_data);
+        if (self == nullptr) return;
+        GtkWidget* label = GTK_WIDGET(g_object_get_data(G_OBJECT(button), "active-output-label"));
+        if (label == nullptr) return;
+        std::string text = self->engine_.active_output_report();
+        if (text.empty()) text = "No active ALSA output yet.";
+        gtk_label_set_text(GTK_LABEL(label), text.c_str());
+    }), this);
+
+    g_signal_connect(probe_alsa_button, "clicked", G_CALLBACK(+[](GtkButton*, gpointer user_data) {
+        auto* self = static_cast<GtkPlayerWindow*>(user_data);
+        if (self == nullptr) return;
+        const AlsaProbeMatrix matrix = AlsaPcmBackend::probe_device_format_matrix(self->current_device_);
+        show_alsa_probe_table_dialog(GTK_WINDOW(self->window_), matrix);
+    }), this);
+
+
 
     gtk_widget_show_all(dialog);
     while (true) {
@@ -4696,7 +4709,7 @@ void GtkPlayerWindow::refresh_dsp_info_for_current_device() {
     current_dsp_info_.status_text = "ALSA mixer controls available";
 }
 
-void GtkPlayerWindow::refresh_display(bool update_text, bool update_progress, bool update_meter, bool update_simd) {
+void GtkPlayerWindow::refresh_display(bool update_text, bool update_progress, bool update_meter) {
     if (ui_closing_) {
         return;
     }
@@ -4737,8 +4750,6 @@ void GtkPlayerWindow::refresh_display(bool update_text, bool update_progress, bo
         update_clip_indicator(false, 0);
     }
 
-    (void)update_simd;
-
     if (!update_text) {
         return;
     }
@@ -4755,14 +4766,23 @@ void GtkPlayerWindow::refresh_display(bool update_text, bool update_progress, bo
 
         std::string source_name = "File";
         if (ext == ".flac") source_name = "FLAC";
-        else if (ext == ".wav") source_name = "WAV";
+        else if (ext == ".wav" || ext == ".wave") source_name = "WAV";
+        else if (ext == ".bwf") source_name = "BWF";
+        else if (ext == ".au" || ext == ".snd") source_name = "AU/SND";
+        else if (ext == ".caf") source_name = "CAF";
         else if (ext == ".aiff" || ext == ".aif") source_name = "AIFF";
         else if (ext == ".ape") source_name = "APE";
         else if (ext == ".wv") source_name = "WavPack";
         else if (ext == ".m4a") source_name = "M4A";
         else if (ext == ".aac") source_name = "AAC";
-        else if (ext == ".ogg") source_name = "OGG";
+        else if (ext == ".ogg" || ext == ".oga") source_name = "OGG";
         else if (ext == ".opus") source_name = "OPUS";
+        else if (ext == ".tak") source_name = "TAK";
+        else if (ext == ".tta") source_name = "TTA";
+        else if (ext == ".wma" || ext == ".asf" || ext == ".xwma") source_name = "WMA";
+        else if (ext == ".oma" || ext == ".aa3" || ext == ".at3") source_name = "ATRAC";
+        else if (ext == ".mpc" || ext == ".mp+" || ext == ".mpp") source_name = "MPC";
+        else if (ext == ".dsf") source_name = "DSF";
         else if (ext == ".mp3") source_name = "MP3";
         const std::uint32_t effective_target_rate = target_sample_rate_for(track.source_sample_rate);
         const std::uint16_t effective_target_bits = target_bits_for(track.source_bits_per_sample);
@@ -4923,8 +4943,6 @@ void GtkPlayerWindow::load_preferences() {
         } else if (key == "deep_bass_amount") {
             try { deep_bass_amount_ = std::stoi(value); } catch (...) {}
             deep_bass_amount_ = clamp_deep_bass_amount_ui(deep_bass_amount_);
-        } else if (key == "simd_dsp_enabled") {
-            simd_dsp_enabled_ = (value == "1" || value == "true" || value == "yes");
         } else if (key == "progress_blink_enabled") {
             progress_blink_enabled_ = (value == "1" || value == "true" || value == "yes");
         } else if (key == "level_meter_enabled") {
@@ -4951,6 +4969,10 @@ void GtkPlayerWindow::load_preferences() {
             resample_quality_ = value;
         } else if (key == "bitdepth_quality") {
             bitdepth_quality_ = value;
+        } else if (key == "alsa_24bit_container_preference") {
+            alsa_24bit_container_preference_ = normalize_alsa_24bit_preference_id(value);
+        } else if (key == "realtime_audio_priority_enabled") {
+            realtime_audio_priority_enabled_ = (value == "1" || value == "true" || value == "yes");
         }
     }
     if (bass_db_ == 0 && treble_db_ == 0 && !deep_bass_enabled_) {
@@ -4958,14 +4980,14 @@ void GtkPlayerWindow::load_preferences() {
     } else if (pre_eq_headroom_tenths_db_ == 0) {
         pre_eq_headroom_tenths_db_ = compute_auto_pre_eq_headroom_tenths_db();
     }
-    simd_dsp_supported_ = detect_simd_dsp_support();
-    if (!simd_dsp_supported_) simd_dsp_enabled_ = false;
-    simd_dsp_status_text_ = make_simd_status_text(simd_dsp_supported_, simd_dsp_enabled_);
+    alsa_24bit_container_preference_ = normalize_alsa_24bit_preference_id(alsa_24bit_container_preference_);
     engine_.set_deep_bass_enabled(deep_bass_enabled_);
     engine_.set_deep_bass_preset(deep_bass_internal_from_ui(deep_bass_preset_));
     engine_.set_deep_bass_amount(deep_bass_dsp_amount_from_ui(deep_bass_amount_));
     engine_.set_level_meter_enabled(level_meter_enabled_);
     engine_.set_clip_detection_enabled(clip_detection_enabled_);
+    engine_.set_realtime_priority_enabled(realtime_audio_priority_enabled_);
+    engine_.set_realtime_priority(60);
 }
 
 void GtkPlayerWindow::save_preferences() const {
@@ -4991,7 +5013,6 @@ void GtkPlayerWindow::save_preferences() const {
     out << "deep_bass_enabled=" << (deep_bass_enabled_ ? 1 : 0) << '\n';
     out << "deep_bass_preset=" << clamp_deep_bass_preset_ui(deep_bass_preset_) << '\n';
     out << "deep_bass_amount=" << deep_bass_amount_ << '\n';
-    out << "simd_dsp_enabled=" << (simd_dsp_enabled_ ? 1 : 0) << '\n';
     out << "progress_blink_enabled=" << (progress_blink_enabled_ ? 1 : 0) << '\n';
     out << "level_meter_enabled=" << (level_meter_enabled_ ? 1 : 0) << '\n';
     out << "clip_detection_enabled=" << (clip_detection_enabled_ ? 1 : 0) << '\n';
@@ -5004,6 +5025,8 @@ void GtkPlayerWindow::save_preferences() const {
     out << "treble_shelf_hz=" << treble_shelf_hz_ << '\n';
     out << "resample_quality=" << resample_quality_ << '\n';
     out << "bitdepth_quality=" << bitdepth_quality_ << '\n';
+    out << "alsa_24bit_container_preference=" << normalize_alsa_24bit_preference_id(alsa_24bit_container_preference_) << '\n';
+    out << "realtime_audio_priority_enabled=" << (realtime_audio_priority_enabled_ ? 1 : 0) << '\n';
 }
 
 } // namespace pcmtp

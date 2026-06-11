@@ -31,7 +31,7 @@
     "name": "PCM Transport",
     "applicationCategory": "MultimediaApplication",
     "operatingSystem": "Linux",
-    "softwareVersion": "0.9.103",
+    "softwareVersion": "0.9.109",
     "description": "PCM Transport is a lightweight open-source Linux audio player with native FLAC playback through libFLAC, direct ALSA output, GTK interface, DSP Studio and transparent signal-path diagnostics.",
     "author": {
       "@type": "Person",
@@ -515,7 +515,7 @@
           </svg>
         </div>
         <h3>Additional formats via FFmpeg</h3>
-        <p>Uses FFmpeg and FFprobe at runtime for MP3, M4A, AAC, OGG, OPUS, WAV, AIFF, APE, WV, metadata probing, ALAC-in-M4A handling and conversion paths.</p>
+        <p>Uses FFmpeg and FFprobe at runtime for MP3, M4A, AAC, OGG, OPUS, WAV, AIFF, APE, WV and selected legacy formats.</p>
       </div>
 
       <div class="card">
@@ -578,7 +578,7 @@
           </svg>
         </div>
         <h3>Diagnostics and indicators</h3>
-        <p>Provides level metering, clip detection, bit-perfect testing and a SIMD conversion benchmark.</p>
+        <p>Provides level metering, clip detection, active ALSA output reporting, ALSA device probing and bit-perfect testing.</p>
       </div>
     </div>
 
@@ -598,6 +598,27 @@
         an ALSA-based FLAC player, a GTK desktop player, or a compact tool for experimenting with
         transparent DSP and playback diagnostics.
       </p>
+    </div>
+
+    <h2>Supported formats</h2>
+    <p class="section-intro">
+      Native FLAC playback is handled through libFLAC. Additional formats use FFmpeg and FFprobe at runtime.
+      Rare-format support depends on the local FFmpeg build.
+    </p>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Native / primary</h3>
+        <p><code>*.flac</code>, <code>*.wav</code>, <code>*.wave</code>, <code>*.cue</code>, <code>*.m3u</code>, <code>*.m3u8</code></p>
+      </div>
+      <div class="card">
+        <h3>FFmpeg-backed lossless / PCM / containers</h3>
+        <p><code>*.aif</code>, <code>*.aiff</code>, <code>*.ape</code>, <code>*.wv</code>, <code>*.bwf</code>, <code>*.au</code>, <code>*.snd</code>, <code>*.caf</code>, <code>*.tak</code>, <code>*.tta</code></p>
+      </div>
+      <div class="card">
+        <h3>FFmpeg-backed lossy</h3>
+        <p><code>*.mp3</code>, <code>*.m4a</code>, <code>*.aac</code>, <code>*.ogg</code>, <code>*.oga</code>, <code>*.opus</code>, <code>*.wma</code>, <code>*.asf</code>, <code>*.xwma</code>, <code>*.oma</code>, <code>*.aa3</code>, <code>*.at3</code>, <code>*.mpc</code>, <code>*.mp+</code>, <code>*.mpp</code></p>
+      </div>
     </div>
 
     <h2>Download and run</h2>
@@ -635,7 +656,7 @@
         </div>
         <div class="build-content">
           <pre><code>sudo apt install build-essential cmake pkg-config \
-    libasound2-dev libflac++-dev libgtk-3-dev ffmpeg</code></pre>
+    libasound2-dev libflac-dev libgtk-3-dev ffmpeg</code></pre>
         </div>
       </div>
 
@@ -662,15 +683,16 @@ cmake --build build -j</code></pre>
     </div>
 
     <p class="note">
-      Runtime dependencies include ALSA, GTK 3, libFLAC++, FFmpeg and FFprobe.
-      Native FLAC playback can work without FFmpeg. FFmpeg/FFprobe are required for MP3, M4A, AAC, OGG, OPUS, WAV, AIFF, APE, WV,
-      metadata probing and conversion paths.
+      Runtime dependencies include ALSA, GTK 3, libFLAC, FFmpeg and FFprobe. RTKit is optional for realtime audio-thread priority. pkexec/setcap is optional for persistent cap_sys_nice permission.
+      Native FLAC playback can work without FFmpeg. FFmpeg/FFprobe are required for external formats, metadata probing and conversion paths.
+      RTKit support uses GLib/GIO D-Bus from GTK 3 and does not add a separate build dependency. Persistent realtime permission uses pkexec/setcap cap_sys_nice and requires restart.
+      Selected FFmpeg-backed legacy formats include AU/SND, BWF, CAF, TAK, TTA, WMA, ATRAC and MPC.
     </p>
 
     <h2>Project goals</h2>
     <p>
       The project is developed as a small, understandable and conservative Linux player:
-      stable playback first, transparent signal path, predictable DSP behavior and no hidden processing.
+      stable playback first, transparent signal path, predictable DSP behavior, ALSA diagnostics and no hidden processing.
     </p>
 
     <h2>Source code</h2>
