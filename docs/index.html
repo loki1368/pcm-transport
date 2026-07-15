@@ -31,7 +31,6 @@
     "name": "PCM Transport",
     "applicationCategory": "MultimediaApplication",
     "operatingSystem": "Linux",
-    "softwareVersion": "0.9.109",
     "description": "PCM Transport is a lightweight open-source Linux audio player with native FLAC playback through libFLAC, direct ALSA output, GTK interface, DSP Studio and transparent signal-path diagnostics.",
     "author": {
       "@type": "Person",
@@ -353,8 +352,7 @@
       margin-bottom: 0;
     }
 
-    .license-box,
-    .support-box {
+    .license-box {
       margin-top: 48px;
       background: #ffffff;
       border: 1px solid var(--border);
@@ -656,7 +654,19 @@
         </div>
         <div class="build-content">
           <pre><code>sudo apt install build-essential cmake pkg-config \
-    libasound2-dev libflac-dev libgtk-3-dev ffmpeg</code></pre>
+libasound2-dev libflac-dev libgtk-3-dev ffmpeg</code></pre>
+        </div>
+      </div>
+
+      <div class="build-row">
+        <div class="build-label">
+          <strong>ALT Linux</strong>
+          <span>Build dependencies</span>
+        </div>
+        <div class="build-content">
+          <pre><code>su -
+apt-get install build-essential cmake pkg-config libalsa-devel libflac-devel libgtk+3-devel ffmpeg
+exit</code></pre>
         </div>
       </div>
 
@@ -701,6 +711,13 @@ cmake --build build -j</code></pre>
       <a href="https://github.com/andreyberestov/pcm-transport">github.com/andreyberestov/pcm-transport</a>.
     </p>
 
+    <section class="development-box">
+      <h2>Development note</h2>
+      <p>
+        PCM Transport is an independently maintained project developed with the assistance of AI coding tools. The project author defines the requirements and product direction, reviews and integrates changes, and tests each release before publication.
+      </p>
+    </section>
+
     <section class="license-box">
       <h2>License</h2>
       <p>
@@ -708,14 +725,6 @@ cmake --build build -j</code></pre>
         See the <a href="https://github.com/andreyberestov/pcm-transport/blob/main/LICENSE">LICENSE</a>
         file in the repository for details.
       </p>
-    </section>
-
-    <section class="support-box">
-      <h2>Support</h2>
-      <p>
-        PCM Transport is an independent open-source project. If you enjoy PCM Transport, you can buy the author a cup of coffee.
-      </p>
-      <span class="wallet">ETH (ERC-20): 0x37385DA1388F2921583d4750FB44Def7D76cAb23</span>
     </section>
 
     <footer class="footer">

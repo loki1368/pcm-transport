@@ -139,6 +139,14 @@ sudo apt install build-essential cmake pkg-config \
     libasound2-dev libflac-dev libgtk-3-dev ffmpeg
 ```
 
+### ALT Linux
+
+```bash
+su -
+apt-get install build-essential cmake pkg-config libalsa-devel libflac-devel libgtk+3-devel ffmpeg
+exit
+```
+
 ### Runtime
 
 - ALSA
@@ -174,22 +182,17 @@ cmake --build build -j
 
 - C++17
 - GTK 3
-- Arch, Debian, Ubuntu and similar Linux distributions
+- Arch, Debian, Ubuntu, ALT Linux and similar Linux distributions
 - X11 and Wayland through GTK
+
+---
+
+## Development note
+
+PCM Transport is an independently maintained project developed with the assistance of AI coding tools. The project author defines the requirements and product direction, reviews and integrates changes, and tests each release before publication.
 
 ---
 
 ## License
 
 GNU General Public License v3.0. See `LICENSE`.
-
----
-
-## Support
-
-If you enjoy PCM Transport, you can buy the author a cup of coffee:
-
-```text
-ETH / USDT (ERC-20):
-0x37385DA1388F2921583d4750FB44Def7D76cAb23
-```
