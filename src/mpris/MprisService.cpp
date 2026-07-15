@@ -89,17 +89,20 @@ GVariant* metadata_variant(const MprisPlayerState& state) {
     g_variant_builder_init(&builder, G_VARIANT_TYPE("a{sv}"));
 
     if (state.has_track) {
-        g_variant_builder_add(&builder, "{sv}", "xes:title", g_variant_new_string(state.title.c_str()));
+        g_variant_builder_add(&builder, "{sv}", "xesam:title", g_variant_new_string(state.title.c_str()));
+
+        GVariantBuilder artist_builder;
+        g_variant_builder_init(&artist_builder, G_VARIANT_TYPE("as"));
         if (!state.artist.empty()) {
-            GVariantBuilder artist_builder;
-            g_variant_builder_init(&artist_builder, G_VARIANT_TYPE("as"));
             g_variant_builder_add(&artist_builder, "s", state.artist.c_str());
-            g_variant_builder_add(&builder, "{sv}", "xes:artist", g_variant_builder_end(&artist_builder));
-        } else {
-            g_variant_builder_add(&builder, "{sv}", "xes:artist", g_variant_new_array(G_VARIANT_TYPE("s"), nullptr, 0));
         }
+        g_variant_builder_add(&builder, "{sv}", "xesam:artist", g_variant_builder_end(&artist_builder));
+
         if (!state.url.empty()) {
             g_variant_builder_add(&builder, "{sv}", "xes:url", g_variant_new_string(state.url.c_str()));
+        }
+        if (!state.art_url.empty()) {
+            g_variant_builder_add(&builder, "{sv}", "mpris:artUrl", g_variant_new_string(state.art_url.c_str()));
         }
         if (state.length_usec > 0) {
             g_variant_builder_add(&builder, "{sv}", "mpris:length", g_variant_new_int64(state.length_usec));
@@ -122,7 +125,7 @@ GVariant* metadata_variant(const MprisPlayerState& state) {
 }
 
 std::string metadata_signature(const MprisPlayerState& state) {
-    return state.title + "|" + state.artist + "|" + state.url + "|" +
+    return state.title + "|" + state.artist + "|" + state.url + "|" + state.art_url + "|" +
            std::to_string(state.length_usec) + "|" + std::to_string(state.track_number) + "|" +
            (state.has_track ? "1" : "0");
 }

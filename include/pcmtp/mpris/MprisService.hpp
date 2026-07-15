@@ -23,6 +23,7 @@ struct MprisPlayerState {
     std::string title;
     std::string artist;
     std::string url;
+    std::string art_url;
     int track_number = 0;
     bool repeat_playlist = false;
     bool has_track = false;

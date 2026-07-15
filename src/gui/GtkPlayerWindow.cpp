@@ -3,9 +3,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <filesystem>
 #include <cerrno>
 #include <cstring>
 #include <thread>
@@ -21,6 +23,7 @@
 #include <string>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include <pango/pango.h>
 #include <gdk/gdkkeysyms.h>
@@ -75,6 +78,55 @@ std::string file_uri_for_path(const std::string& path) {
     g_free(uri);
     return result;
 }
+
+bool is_jpg_cover_extension(const std::string& extension) {
+    std::string lower = extension;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return lower == ".jpg" || lower == ".jpeg";
+}
+
+bool is_cover_jpg_filename(const std::filesystem::path& path) {
+    std::string stem = path.stem().string();
+    std::transform(stem.begin(), stem.end(), stem.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return stem == "cover";
+}
+
+std::string find_cover_art_in_directory(const std::string& audio_file_path) {
+    namespace fs = std::filesystem;
+
+    const fs::path directory = fs::path(audio_file_path).parent_path();
+    if (directory.empty() || !fs::is_directory(directory)) {
+        return {};
+    }
+
+    std::vector<fs::path> candidates;
+    for (const fs::directory_entry& entry : fs::directory_iterator(directory)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+        const fs::path path = entry.path();
+        if (is_jpg_cover_extension(path.extension().string())) {
+            candidates.push_back(path);
+        }
+    }
+
+    if (candidates.empty()) {
+        return {};
+    }
+    if (candidates.size() == 1) {
+        return candidates.front().string();
+    }
+
+    for (const fs::path& candidate : candidates) {
+        if (is_cover_jpg_filename(candidate)) {
+            return candidate.string();
+        }
+    }
+
+    std::sort(candidates.begin(), candidates.end());
+    return candidates.front().string();
+}
+
 constexpr int kUiRefreshIntervalMs = 20;
 constexpr unsigned int kUiProgressRefreshTicks = 5;
 constexpr unsigned int kUiTextRefreshTicks = 25;
@@ -5177,6 +5229,10 @@ MprisPlayerState GtkPlayerWindow::build_mpris_state() const {
         state.artist = track.performer;
         state.track_number = track.track_number;
         state.url = file_uri_for_path(track.audio_file_path);
+        const std::string cover_path = find_cover_art_in_directory(track.audio_file_path);
+        if (!cover_path.empty()) {
+            state.art_url = file_uri_for_path(cover_path);
+        }
         state.position_usec = static_cast<std::int64_t>((position_samples * 1000000ULL) / sample_rate);
         state.length_usec = static_cast<std::int64_t>((length_samples * 1000000ULL) / sample_rate);
         state.can_seek = length_samples > 0;
