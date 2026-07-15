@@ -17,6 +17,7 @@
 #include "pcmtp/decoder/GaplessChainDecoder.hpp"
 #include "pcmtp/dsp/AlsaControlBridge.hpp"
 #include "pcmtp/hardware/CardProfileRegistry.hpp"
+#include "pcmtp/mpris/MprisService.hpp"
 
 namespace pcmtp {
 
@@ -93,6 +94,11 @@ private:
                                           GtkTreePath* path,
                                           GtkTreeViewColumn* column,
                                           gpointer user_data);
+    static gboolean on_window_key_press(GtkWidget* widget, GdkEvent* event, gpointer user_data);
+    static void on_media_play_pause(GSimpleAction* action, GVariant* parameter, gpointer user_data);
+    static void on_media_stop(GSimpleAction* action, GVariant* parameter, gpointer user_data);
+    static void on_media_next(GSimpleAction* action, GVariant* parameter, gpointer user_data);
+    static void on_media_previous(GSimpleAction* action, GVariant* parameter, gpointer user_data);
 
     void build_ui(GtkApplication* app);
     void append_path_to_playlist(const std::string& path);
@@ -138,6 +144,21 @@ private:
     void apply_auto_pre_eq_headroom(bool save_preferences_after = true);
     void draw_tone_response_graph(cairo_t* cr, int width, int height) const;
     std::uint32_t current_tone_control_sample_rate() const;
+    void setup_mpris();
+    void setup_media_keys(GtkApplication* app);
+    void handle_media_play_pause();
+    void handle_media_stop();
+    void handle_media_next();
+    void handle_media_previous();
+    bool handle_media_key(guint keyval);
+    void notify_mpris_state_changed();
+    MprisPlayerState build_mpris_state() const;
+    void mpris_open_uri(const std::string& uri);
+    void mpris_seek(std::int64_t offset_usec);
+    void mpris_set_position(std::int64_t position_usec);
+    void mpris_set_volume(double volume);
+    void mpris_set_repeat_playlist(bool enabled);
+    void mpris_raise();
 
     static std::string format_time(std::uint64_t samples_per_channel, std::uint32_t sample_rate = 44100);
     static std::string display_title_for(const PlaylistEntry& entry);
@@ -229,6 +250,7 @@ private:
     std::size_t pending_seek_index_ = 0;
     std::uint64_t pending_seek_offset_ = 0;
     bool ui_closing_ = false;
+    std::unique_ptr<MprisService> mpris_service_;
 };
 
 } // namespace pcmtp

@@ -23,6 +23,8 @@
 #include <utility>
 
 #include <pango/pango.h>
+#include <gdk/gdkkeysyms.h>
+#include <gio/gio.h>
 #include "pcmtp/backend/AlsaPcmBackend.hpp"
 #include "pcmtp/decoder/ExternalAudioDecoder.hpp"
 #include "pcmtp/decoder/GaplessChainDecoder.hpp"
@@ -31,6 +33,7 @@
 #include "pcmtp/decoder/RangeLimitedDecoder.hpp"
 #include "pcmtp/dsp/ToneControlDesign.hpp"
 #include "pcmtp/playlist/M3uPlaylistReader.hpp"
+#include "pcmtp/mpris/MprisService.hpp"
 #include "pcmtp/util/Logger.hpp"
 
 namespace pcmtp {
@@ -38,6 +41,40 @@ namespace pcmtp {
 namespace {
 
 constexpr int kClipIndicatorHoldMs = 700;
+
+std::string path_from_mpris_uri(const std::string& uri) {
+    if (uri.compare(0, 7, "file://") != 0) {
+        return uri;
+    }
+
+    GError* error = nullptr;
+    gchar* path = g_filename_from_uri(uri.c_str(), nullptr, &error);
+    if (path == nullptr) {
+        if (error != nullptr) {
+            g_error_free(error);
+        }
+        return uri.substr(7);
+    }
+
+    const std::string result(path);
+    g_free(path);
+    return result;
+}
+
+std::string file_uri_for_path(const std::string& path) {
+    GError* error = nullptr;
+    gchar* uri = g_filename_to_uri(path.c_str(), nullptr, &error);
+    if (uri == nullptr) {
+        if (error != nullptr) {
+            g_error_free(error);
+        }
+        return "file://" + path;
+    }
+
+    const std::string result(uri);
+    g_free(uri);
+    return result;
+}
 constexpr int kUiRefreshIntervalMs = 20;
 constexpr unsigned int kUiProgressRefreshTicks = 5;
 constexpr unsigned int kUiTextRefreshTicks = 25;
@@ -1710,6 +1747,7 @@ GtkPlayerWindow::~GtkPlayerWindow() {
     ui_closing_ = true;
     stop_ui_updates();
     cancel_pending_seek();
+    mpris_service_.reset();
     stop_playback();
 }
 
@@ -2000,11 +2038,15 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     g_signal_connect(playlist_view_, "row-activated", G_CALLBACK(GtkPlayerWindow::on_playlist_row_activated), this);
     g_signal_connect(window_, "delete-event", G_CALLBACK(GtkPlayerWindow::on_window_delete_event), this);
     g_signal_connect(window_, "destroy", G_CALLBACK(GtkPlayerWindow::on_window_destroy), this);
+    gtk_widget_add_events(window_, GDK_KEY_PRESS_MASK);
+    g_signal_connect(window_, "key-press-event", G_CALLBACK(GtkPlayerWindow::on_window_key_press), this);
 
     refresh_device_list();
     refresh_dsp_info_for_current_device();
     refresh_display();
     ui_timer_id_ = g_timeout_add(kUiRefreshIntervalMs, GtkPlayerWindow::on_timer_tick, this);
+    setup_media_keys(app);
+    setup_mpris();
 
     gtk_widget_show_all(window_);
 }
@@ -2138,7 +2180,9 @@ void GtkPlayerWindow::on_open_clicked(GtkButton*, gpointer user_data) {
 }
 
 void GtkPlayerWindow::on_play_clicked(GtkButton*, gpointer user_data) {
-    static_cast<GtkPlayerWindow*>(user_data)->start_current_track(true);
+    auto* self = static_cast<GtkPlayerWindow*>(user_data);
+    self->start_current_track(true);
+    self->notify_mpris_state_changed();
 }
 
 void GtkPlayerWindow::on_pause_clicked(GtkButton*, gpointer user_data) {
@@ -2148,10 +2192,13 @@ void GtkPlayerWindow::on_pause_clicked(GtkButton*, gpointer user_data) {
     } else {
         self->engine_.pause();
     }
+    self->notify_mpris_state_changed();
 }
 
 void GtkPlayerWindow::on_stop_clicked(GtkButton*, gpointer user_data) {
-    static_cast<GtkPlayerWindow*>(user_data)->stop_playback();
+    auto* self = static_cast<GtkPlayerWindow*>(user_data);
+    self->stop_playback();
+    self->notify_mpris_state_changed();
 }
 
 void GtkPlayerWindow::on_prev_clicked(GtkButton*, gpointer user_data) {
@@ -2164,6 +2211,7 @@ void GtkPlayerWindow::on_prev_clicked(GtkButton*, gpointer user_data) {
     } else {
         self->play_track_index(0);
     }
+    self->notify_mpris_state_changed();
 }
 
 void GtkPlayerWindow::on_next_clicked(GtkButton*, gpointer user_data) {
@@ -2174,6 +2222,7 @@ void GtkPlayerWindow::on_next_clicked(GtkButton*, gpointer user_data) {
     if (self->current_track_index_ + 1 < self->playlist_.size()) {
         self->play_track_index(self->current_track_index_ + 1);
     }
+    self->notify_mpris_state_changed();
 }
 
 void GtkPlayerWindow::on_settings_clicked(GtkButton*, gpointer user_data) {
@@ -2197,6 +2246,7 @@ void GtkPlayerWindow::on_repeat_clicked(GtkButton*, gpointer user_data) {
     self->repeat_enabled_ = !self->repeat_enabled_;
     self->save_preferences();
     self->refresh_display();
+    self->notify_mpris_state_changed();
 }
 
 
@@ -2341,6 +2391,7 @@ gboolean GtkPlayerWindow::on_softvol_button_release(GtkWidget*, GdkEventButton* 
     auto* self = static_cast<GtkPlayerWindow*>(user_data);
     if (event != nullptr && event->button == 1) {
         self->softvol_dragging_ = false;
+        self->notify_mpris_state_changed();
         return TRUE;
     }
     return FALSE;
@@ -3233,6 +3284,7 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index, std::uint64_
         track_switch_in_progress_ = false;
         finish_handled_ = false;
         refresh_display();
+        notify_mpris_state_changed();
     } catch (const std::exception& ex) {
         clear_gapless_chain();
         track_switch_in_progress_ = false;
@@ -4386,6 +4438,7 @@ data->self->draw_tone_response_graph(cr, alloc.width, alloc.height);
         self->engine_.set_soft_volume_percent(self->soft_volume_percent_);
         self->save_preferences();
         self->refresh_display();
+        self->notify_mpris_state_changed();
         if (self->soft_volume_scale_ != nullptr) gtk_widget_queue_draw(self->soft_volume_scale_);
     }), this);
     g_signal_connect(pre_eq_headroom_scale, "value-changed", G_CALLBACK(+[](GtkRange* range, gpointer user_data) {
@@ -5027,6 +5080,282 @@ void GtkPlayerWindow::save_preferences() const {
     out << "bitdepth_quality=" << bitdepth_quality_ << '\n';
     out << "alsa_24bit_container_preference=" << normalize_alsa_24bit_preference_id(alsa_24bit_container_preference_) << '\n';
     out << "realtime_audio_priority_enabled=" << (realtime_audio_priority_enabled_ ? 1 : 0) << '\n';
+}
+
+void GtkPlayerWindow::setup_mpris() {
+    MprisService::Actions actions;
+    actions.play = [this]() { start_current_track(true); };
+    actions.pause = [this]() {
+        if (engine_.is_playing() && !engine_.is_paused()) {
+            engine_.pause();
+        }
+    };
+    actions.play_pause = [this]() {
+        if (engine_.is_playing() && engine_.is_paused()) {
+            engine_.resume();
+        } else if (engine_.is_playing()) {
+            engine_.pause();
+        } else {
+            start_current_track(true);
+        }
+    };
+    actions.stop = [this]() { stop_playback(); };
+    actions.next = [this]() {
+        if (playlist_.empty()) {
+            return;
+        }
+        if (current_track_index_ + 1 < playlist_.size()) {
+            play_track_index(current_track_index_ + 1);
+        }
+    };
+    actions.previous = [this]() {
+        if (playlist_.empty()) {
+            return;
+        }
+        if (current_track_index_ > 0) {
+            play_track_index(current_track_index_ - 1);
+        } else {
+            play_track_index(0);
+        }
+    };
+    actions.seek = [this](std::int64_t offset_usec) { mpris_seek(offset_usec); };
+    actions.set_position = [this](std::int64_t position_usec) { mpris_set_position(position_usec); };
+    actions.open_uri = [this](const std::string& uri) { mpris_open_uri(uri); };
+    actions.set_volume = [this](double volume) { mpris_set_volume(volume); };
+    actions.set_repeat_playlist = [this](bool enabled) { mpris_set_repeat_playlist(enabled); };
+    actions.raise = [this]() { mpris_raise(); };
+    actions.get_state = [this]() {
+        if (ui_closing_) {
+            return MprisPlayerState{};
+        }
+        return build_mpris_state();
+    };
+
+    mpris_service_ = std::make_unique<MprisService>(std::move(actions));
+    mpris_service_->start();
+}
+
+void GtkPlayerWindow::notify_mpris_state_changed() {
+    if (mpris_service_ != nullptr) {
+        mpris_service_->notify_state_changed();
+    }
+}
+
+MprisPlayerState GtkPlayerWindow::build_mpris_state() const {
+    MprisPlayerState state;
+    state.volume = static_cast<double>(soft_volume_percent_) / 100.0;
+    state.repeat_playlist = repeat_enabled_;
+    state.can_control = !playlist_.empty();
+    state.can_play = !playlist_.empty();
+    state.can_go_next = !playlist_.empty() &&
+                        (current_track_index_ + 1 < playlist_.size() || repeat_enabled_);
+    state.can_go_previous = !playlist_.empty() && current_track_index_ > 0;
+    state.can_seek = !playlist_.empty() && current_track_index_ < playlist_.size();
+
+    if (engine_.is_playing() && engine_.is_paused()) {
+        state.playback_status = "Paused";
+        state.can_pause = true;
+    } else if (engine_.is_playing()) {
+        state.playback_status = "Playing";
+        state.can_pause = true;
+    } else {
+        state.playback_status = "Stopped";
+        state.can_pause = false;
+    }
+
+    if (!playlist_.empty() && current_track_index_ < playlist_.size()) {
+        const PlaylistEntry& track = playlist_[current_track_index_];
+        const PlaybackStatusSnapshot status = engine_.snapshot();
+        const std::uint32_t sample_rate = track.decoded_format.sample_rate > 0
+            ? track.decoded_format.sample_rate
+            : 44100U;
+        const std::uint64_t position_samples = current_track_position_from_status(status);
+        const std::uint64_t length_samples = track_length_samples(track);
+
+        state.has_track = true;
+        state.title = track.title;
+        state.artist = track.performer;
+        state.track_number = track.track_number;
+        state.url = file_uri_for_path(track.audio_file_path);
+        state.position_usec = static_cast<std::int64_t>((position_samples * 1000000ULL) / sample_rate);
+        state.length_usec = static_cast<std::int64_t>((length_samples * 1000000ULL) / sample_rate);
+        state.can_seek = length_samples > 0;
+    }
+
+    return state;
+}
+
+void GtkPlayerWindow::mpris_open_uri(const std::string& uri) {
+    const std::string path = path_from_mpris_uri(uri);
+    try {
+        const std::size_t before = playlist_.size();
+        append_path_to_playlist(path);
+        rebuild_playlist_view();
+        if (playlist_.size() > before) {
+            play_track_index(before);
+        }
+    } catch (const std::exception& ex) {
+        Logger::instance().error(std::string("MPRIS OpenUri failed: ") + ex.what());
+    }
+}
+
+void GtkPlayerWindow::mpris_seek(std::int64_t offset_usec) {
+    if (playlist_.empty() || current_track_index_ >= playlist_.size()) {
+        return;
+    }
+
+    const PlaylistEntry& track = playlist_[current_track_index_];
+    const std::uint32_t sample_rate = track.decoded_format.sample_rate > 0
+        ? track.decoded_format.sample_rate
+        : 44100U;
+    const PlaybackStatusSnapshot status = engine_.snapshot();
+    const std::int64_t current_usec = static_cast<std::int64_t>(
+        (current_track_position_from_status(status) * 1000000ULL) / sample_rate);
+    mpris_set_position(std::max<std::int64_t>(0, current_usec + offset_usec));
+}
+
+void GtkPlayerWindow::mpris_set_position(std::int64_t position_usec) {
+    if (playlist_.empty() || current_track_index_ >= playlist_.size()) {
+        return;
+    }
+
+    const PlaylistEntry& track = playlist_[current_track_index_];
+    const std::uint32_t sample_rate = track.decoded_format.sample_rate > 0
+        ? track.decoded_format.sample_rate
+        : 44100U;
+    const std::uint64_t target_samples = static_cast<std::uint64_t>(
+        (static_cast<std::uint64_t>(std::max<std::int64_t>(0, position_usec)) * sample_rate) / 1000000ULL);
+    play_track_index_at_offset(current_track_index_, target_samples);
+}
+
+void GtkPlayerWindow::mpris_set_volume(double volume) {
+    soft_volume_percent_ = static_cast<int>(std::round(std::max(0.0, std::min(1.0, volume)) * 100.0));
+    engine_.set_soft_volume_percent(soft_volume_percent_);
+    save_preferences();
+    if (!ui_closing_) {
+        refresh_display(false, false, false);
+    }
+    notify_mpris_state_changed();
+}
+
+void GtkPlayerWindow::mpris_set_repeat_playlist(bool enabled) {
+    repeat_enabled_ = enabled;
+    save_preferences();
+    if (!ui_closing_) {
+        refresh_display();
+    }
+    notify_mpris_state_changed();
+}
+
+void GtkPlayerWindow::mpris_raise() {
+    if (window_ != nullptr) {
+        gtk_window_present(GTK_WINDOW(window_));
+    }
+}
+
+void GtkPlayerWindow::setup_media_keys(GtkApplication* app) {
+    const GActionEntry actions[] = {
+        {"media-play-pause", on_media_play_pause, nullptr, nullptr, nullptr, {0}},
+        {"media-stop", on_media_stop, nullptr, nullptr, nullptr, {0}},
+        {"media-next", on_media_next, nullptr, nullptr, nullptr, {0}},
+        {"media-previous", on_media_previous, nullptr, nullptr, nullptr, {0}},
+    };
+    g_action_map_add_action_entries(G_ACTION_MAP(app), actions, G_N_ELEMENTS(actions), this);
+
+    static const char* kPlayPauseKeys[] = {"XF86AudioPlay", "XF86AudioPause", nullptr};
+    static const char* kStopKeys[] = {"XF86AudioStop", nullptr};
+    static const char* kNextKeys[] = {"XF86AudioNext", nullptr};
+    static const char* kPreviousKeys[] = {"XF86AudioPrev", nullptr};
+
+    gtk_application_set_accels_for_action(app, "app.media-play-pause", kPlayPauseKeys);
+    gtk_application_set_accels_for_action(app, "app.media-stop", kStopKeys);
+    gtk_application_set_accels_for_action(app, "app.media-next", kNextKeys);
+    gtk_application_set_accels_for_action(app, "app.media-previous", kPreviousKeys);
+}
+
+void GtkPlayerWindow::handle_media_play_pause() {
+    if (engine_.is_playing() && engine_.is_paused()) {
+        engine_.resume();
+    } else if (engine_.is_playing()) {
+        engine_.pause();
+    } else {
+        start_current_track(true);
+    }
+    notify_mpris_state_changed();
+}
+
+void GtkPlayerWindow::handle_media_stop() {
+    stop_playback();
+    notify_mpris_state_changed();
+}
+
+void GtkPlayerWindow::handle_media_next() {
+    if (playlist_.empty()) {
+        return;
+    }
+    if (current_track_index_ + 1 < playlist_.size()) {
+        play_track_index(current_track_index_ + 1);
+    } else if (repeat_enabled_) {
+        play_track_index(0);
+    }
+    notify_mpris_state_changed();
+}
+
+void GtkPlayerWindow::handle_media_previous() {
+    if (playlist_.empty()) {
+        return;
+    }
+    if (current_track_index_ > 0) {
+        play_track_index(current_track_index_ - 1);
+    } else {
+        play_track_index(0);
+    }
+    notify_mpris_state_changed();
+}
+
+bool GtkPlayerWindow::handle_media_key(guint keyval) {
+    switch (keyval) {
+        case GDK_KEY_AudioPlay:
+        case GDK_KEY_AudioPause:
+            handle_media_play_pause();
+            return true;
+        case GDK_KEY_AudioStop:
+            handle_media_stop();
+            return true;
+        case GDK_KEY_AudioNext:
+            handle_media_next();
+            return true;
+        case GDK_KEY_AudioPrev:
+            handle_media_previous();
+            return true;
+        default:
+            return false;
+    }
+}
+
+gboolean GtkPlayerWindow::on_window_key_press(GtkWidget*, GdkEvent* event, gpointer user_data) {
+    auto* self = static_cast<GtkPlayerWindow*>(user_data);
+    if (self == nullptr || event == nullptr || event->type != GDK_KEY_PRESS) {
+        return FALSE;
+    }
+    const auto* key_event = reinterpret_cast<GdkEventKey*>(event);
+    return self->handle_media_key(key_event->keyval) ? TRUE : FALSE;
+}
+
+void GtkPlayerWindow::on_media_play_pause(GSimpleAction*, GVariant*, gpointer user_data) {
+    static_cast<GtkPlayerWindow*>(user_data)->handle_media_play_pause();
+}
+
+void GtkPlayerWindow::on_media_stop(GSimpleAction*, GVariant*, gpointer user_data) {
+    static_cast<GtkPlayerWindow*>(user_data)->handle_media_stop();
+}
+
+void GtkPlayerWindow::on_media_next(GSimpleAction*, GVariant*, gpointer user_data) {
+    static_cast<GtkPlayerWindow*>(user_data)->handle_media_next();
+}
+
+void GtkPlayerWindow::on_media_previous(GSimpleAction*, GVariant*, gpointer user_data) {
+    static_cast<GtkPlayerWindow*>(user_data)->handle_media_previous();
 }
 
 } // namespace pcmtp
