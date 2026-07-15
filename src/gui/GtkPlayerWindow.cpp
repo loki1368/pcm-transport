@@ -3256,6 +3256,7 @@ void GtkPlayerWindow::stop_playback() {
     engine_.stop();
     if (!ui_closing_) {
         refresh_display();
+        notify_mpris_state_changed();
     }
 }
 
@@ -3350,6 +3351,7 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index, std::uint64_
                                                 ex.what());
         gtk_dialog_run(GTK_DIALOG(msg));
         gtk_widget_destroy(msg);
+        notify_mpris_state_changed();
     }
 }
 
@@ -3472,6 +3474,7 @@ void GtkPlayerWindow::open_file_dialog() {
             track_switch_in_progress_ = false;
             finish_handled_ = true;
             refresh_display();
+            notify_mpris_state_changed();
         }
         if (current_folder != nullptr) {
             g_free(current_folder);
@@ -5202,20 +5205,23 @@ MprisPlayerState GtkPlayerWindow::build_mpris_state() const {
     state.can_go_next = !playlist_.empty() &&
                         (current_track_index_ + 1 < playlist_.size() || repeat_enabled_);
     state.can_go_previous = !playlist_.empty() && current_track_index_ > 0;
-    state.can_seek = !playlist_.empty() && current_track_index_ < playlist_.size();
 
-    if (engine_.is_playing() && engine_.is_paused()) {
+    const bool transport_active = engine_.is_playing();
+
+    if (transport_active && engine_.is_paused()) {
         state.playback_status = "Paused";
         state.can_pause = true;
-    } else if (engine_.is_playing()) {
+    } else if (transport_active) {
         state.playback_status = "Playing";
         state.can_pause = true;
     } else {
         state.playback_status = "Stopped";
         state.can_pause = false;
+        state.can_seek = false;
+        state.position_usec = 0;
     }
 
-    if (!playlist_.empty() && current_track_index_ < playlist_.size()) {
+    if (transport_active && !playlist_.empty() && current_track_index_ < playlist_.size()) {
         const PlaylistEntry& track = playlist_[current_track_index_];
         const PlaybackStatusSnapshot status = engine_.snapshot();
         const std::uint32_t sample_rate = track.decoded_format.sample_rate > 0
