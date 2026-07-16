@@ -79,16 +79,57 @@ std::string file_uri_for_path(const std::string& path) {
     return result;
 }
 
-bool is_jpg_cover_extension(const std::string& extension) {
+bool is_cover_art_extension(const std::string& extension) {
     std::string lower = extension;
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return lower == ".jpg" || lower == ".jpeg";
+    return lower == ".jpg" || lower == ".jpeg" || lower == ".png" || lower == ".tif";
 }
 
-bool is_cover_jpg_filename(const std::filesystem::path& path) {
-    std::string stem = path.stem().string();
-    std::transform(stem.begin(), stem.end(), stem.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return stem == "cover";
+int cover_art_stem_priority(const std::string& stem) {
+    std::string lower = stem;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (lower == "cover") {
+        return 0;
+    }
+    if (lower == "folder") {
+        return 1;
+    }
+    if (lower == "front") {
+        return 2;
+    }
+    return 100;
+}
+
+int cover_art_extension_priority(const std::string& extension) {
+    std::string lower = extension;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (lower == ".jpg") {
+        return 0;
+    }
+    if (lower == ".jpeg") {
+        return 1;
+    }
+    if (lower == ".png") {
+        return 2;
+    }
+    if (lower == ".tif") {
+        return 3;
+    }
+    return 100;
+}
+
+bool cover_art_path_preferred(const std::filesystem::path& left, const std::filesystem::path& right) {
+    const int left_stem = cover_art_stem_priority(left.stem().string());
+    const int right_stem = cover_art_stem_priority(right.stem().string());
+    if (left_stem != right_stem) {
+        return left_stem < right_stem;
+    }
+    const int left_ext = cover_art_extension_priority(left.extension().string());
+    const int right_ext = cover_art_extension_priority(right.extension().string());
+    if (left_ext != right_ext) {
+        return left_ext < right_ext;
+    }
+    return left.filename().string() < right.filename().string();
 }
 
 std::string find_cover_art_in_directory(const std::string& audio_file_path) {
@@ -105,7 +146,7 @@ std::string find_cover_art_in_directory(const std::string& audio_file_path) {
             continue;
         }
         const fs::path path = entry.path();
-        if (is_jpg_cover_extension(path.extension().string())) {
+        if (is_cover_art_extension(path.extension().string())) {
             candidates.push_back(path);
         }
     }
@@ -113,17 +154,8 @@ std::string find_cover_art_in_directory(const std::string& audio_file_path) {
     if (candidates.empty()) {
         return {};
     }
-    if (candidates.size() == 1) {
-        return candidates.front().string();
-    }
 
-    for (const fs::path& candidate : candidates) {
-        if (is_cover_jpg_filename(candidate)) {
-            return candidate.string();
-        }
-    }
-
-    std::sort(candidates.begin(), candidates.end());
+    std::sort(candidates.begin(), candidates.end(), cover_art_path_preferred);
     return candidates.front().string();
 }
 
