@@ -127,7 +127,7 @@ GVariant* metadata_variant(const MprisPlayerState& state) {
 std::string metadata_signature(const MprisPlayerState& state) {
     return state.title + "|" + state.artist + "|" + state.url + "|" + state.art_url + "|" +
            std::to_string(state.length_usec) + "|" + std::to_string(state.track_number) + "|" +
-           (state.has_track ? "1" : "0");
+           std::to_string(state.track_epoch) + "|" + (state.has_track ? "1" : "0");
 }
 
 const char* loop_status_for(bool repeat_playlist) {
@@ -710,6 +710,7 @@ void MprisService::notify_state_changed() {
         if (metadata != nullptr) {
             g_variant_builder_add(&changed_builder, "{sv}", "Metadata", metadata);
         }
+        g_variant_builder_add(&changed_builder, "{sv}", "Position", g_variant_new_int64(state.position_usec));
         g_variant_builder_add(&changed_builder, "{sv}", "CanGoNext", g_variant_new_boolean(state.can_go_next));
         g_variant_builder_add(&changed_builder, "{sv}", "CanGoPrevious", g_variant_new_boolean(state.can_go_previous));
         g_variant_builder_add(&changed_builder, "{sv}", "CanSeek", g_variant_new_boolean(state.can_seek));

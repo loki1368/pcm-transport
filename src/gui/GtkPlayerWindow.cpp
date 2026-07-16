@@ -2802,6 +2802,7 @@ void GtkPlayerWindow::update_gapless_chain_track_from_status(const PlaybackStatu
     if (active != current_track_index_ && active < playlist_.size()) {
         current_track_index_ = active;
         select_playlist_row(current_track_index_);
+        mark_mpris_track_changed();
     }
 }
 
@@ -3337,7 +3338,7 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index, std::uint64_
         track_switch_in_progress_ = false;
         finish_handled_ = false;
         refresh_display();
-        notify_mpris_state_changed();
+        mark_mpris_track_changed();
     } catch (const std::exception& ex) {
         clear_gapless_chain();
         track_switch_in_progress_ = false;
@@ -3474,7 +3475,7 @@ void GtkPlayerWindow::open_file_dialog() {
             track_switch_in_progress_ = false;
             finish_handled_ = true;
             refresh_display();
-            notify_mpris_state_changed();
+            mark_mpris_track_changed();
         }
         if (current_folder != nullptr) {
             g_free(current_folder);
@@ -5196,6 +5197,11 @@ void GtkPlayerWindow::notify_mpris_state_changed() {
     }
 }
 
+void GtkPlayerWindow::mark_mpris_track_changed() {
+    ++mpris_track_epoch_;
+    notify_mpris_state_changed();
+}
+
 MprisPlayerState GtkPlayerWindow::build_mpris_state() const {
     MprisPlayerState state;
     state.volume = static_cast<double>(soft_volume_percent_) / 100.0;
@@ -5205,6 +5211,7 @@ MprisPlayerState GtkPlayerWindow::build_mpris_state() const {
     state.can_go_next = !playlist_.empty() &&
                         (current_track_index_ + 1 < playlist_.size() || repeat_enabled_);
     state.can_go_previous = !playlist_.empty() && current_track_index_ > 0;
+    state.track_epoch = mpris_track_epoch_;
 
     const bool transport_active = engine_.is_playing();
 

@@ -152,6 +152,7 @@ private:
     void handle_media_previous();
     bool handle_media_key(guint keyval);
     void notify_mpris_state_changed();
+    void mark_mpris_track_changed();
     MprisPlayerState build_mpris_state() const;
     void mpris_open_uri(const std::string& uri);
     void mpris_seek(std::int64_t offset_usec);
@@ -250,6 +251,7 @@ private:
     std::size_t pending_seek_index_ = 0;
     std::uint64_t pending_seek_offset_ = 0;
     bool ui_closing_ = false;
+    std::uint64_t mpris_track_epoch_ = 0;
     std::unique_ptr<MprisService> mpris_service_;
 };
 
