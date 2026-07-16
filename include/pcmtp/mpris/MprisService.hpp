@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <functional>
 #include <string>
-#include <vector>
 
 namespace pcmtp {
 
@@ -17,6 +16,8 @@ struct MprisPlayerState {
     bool can_seek = false;
     bool can_go_next = false;
     bool can_go_previous = false;
+    bool can_shuffle = false;
+    bool shuffle = false;
     double volume = 1.0;
     std::int64_t position_usec = 0;
     std::int64_t length_usec = 0;
@@ -24,6 +25,7 @@ struct MprisPlayerState {
     std::string artist;
     std::string url;
     std::string art_url;
+    std::string track_id;
     int track_number = 0;
     std::uint64_t track_epoch = 0;
     bool repeat_playlist = false;
@@ -40,8 +42,8 @@ public:
         std::function<void()> next;
         std::function<void()> previous;
         std::function<void(std::int64_t offset_usec)> seek;
-        std::function<void(std::int64_t position_usec)> set_position;
-        std::function<void(const std::string& uri)> open_uri;
+        std::function<bool(std::int64_t position_usec, const std::string& track_id)> set_position;
+        std::function<bool(const std::string& uri)> open_uri;
         std::function<void(double volume)> set_volume;
         std::function<void(bool repeat_playlist)> set_repeat_playlist;
         std::function<void()> raise;
@@ -57,8 +59,7 @@ public:
     void start();
     void stop();
     void notify_state_changed();
-    void notify_metadata_changed();
-    void notify_playback_status_changed();
+    void notify_seeked(std::int64_t position_usec);
 
 private:
     void disconnect_bus();
@@ -80,12 +81,11 @@ private:
                                          const gchar* property_name,
                                          GError** error,
                                          gpointer user_data);
-    static gboolean on_position_timer(gpointer user_data);
 
     void register_object(GDBusConnection* connection);
     void unregister_object();
-    void update_position_timer();
     void emit_player_properties(GVariantBuilder* changed_builder);
+    void emit_seeked(std::int64_t position_usec);
     GVariant* player_property(const char* property_name) const;
     MprisPlayerState current_state() const;
 
@@ -93,9 +93,11 @@ private:
     GDBusConnection* connection_ = nullptr;
     std::vector<unsigned int> registration_ids_;
     unsigned int bus_owner_id_ = 0;
-    unsigned int position_timer_id_ = 0;
     std::string last_playback_status_;
     std::string last_metadata_signature_;
+    std::string last_capabilities_signature_;
+    double last_volume_ = -1.0;
+    bool last_repeat_playlist_ = false;
     bool bus_connected_ = false;
 };
 

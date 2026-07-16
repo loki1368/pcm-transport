@@ -94,8 +94,8 @@ private:
                                           GtkTreePath* path,
                                           GtkTreeViewColumn* column,
                                           gpointer user_data);
-    static gboolean on_window_key_press(GtkWidget* widget, GdkEvent* event, gpointer user_data);
-    static void on_media_play_pause(GSimpleAction* action, GVariant* parameter, gpointer user_data);
+    static void on_media_play(GSimpleAction* action, GVariant* parameter, gpointer user_data);
+    static void on_media_pause(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_stop(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_next(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_previous(GSimpleAction* action, GVariant* parameter, gpointer user_data);
@@ -105,7 +105,11 @@ private:
     void start_current_track(bool restart_if_paused = true);
     void stop_playback();
     void play_track_index(std::size_t index);
-    void play_track_index_at_offset(std::size_t index, std::uint64_t offset_samples);
+    void play_track_index_at_offset(std::size_t index,
+                                    std::uint64_t offset_samples,
+                                    bool start_playback = true,
+                                    bool preserve_paused = false,
+                                    bool update_mpris_track = true);
     void open_file_dialog();
     void open_settings_dialog();
     void open_about_dialog();
@@ -146,17 +150,23 @@ private:
     std::uint32_t current_tone_control_sample_rate() const;
     void setup_mpris();
     void setup_media_keys(GtkApplication* app);
-    void handle_media_play_pause();
+    void handle_media_play();
+    void handle_media_pause();
     void handle_media_stop();
     void handle_media_next();
     void handle_media_previous();
-    bool handle_media_key(guint keyval);
     void notify_mpris_state_changed();
     void mark_mpris_track_changed();
+    void invalidate_mpris_cover_cache();
+    std::string cached_cover_art_for(const std::string& audio_file_path) const;
+    std::string current_mpris_track_id() const;
     MprisPlayerState build_mpris_state() const;
-    void mpris_open_uri(const std::string& uri);
+    void mpris_play();
+    void mpris_advance_track(int direction);
+    bool mpris_open_uri(const std::string& uri);
+    bool validate_mpris_file_uri(const std::string& uri, std::string* local_path) const;
     void mpris_seek(std::int64_t offset_usec);
-    void mpris_set_position(std::int64_t position_usec);
+    bool mpris_set_position(std::int64_t position_usec, const std::string& track_id);
     void mpris_set_volume(double volume);
     void mpris_set_repeat_playlist(bool enabled);
     void mpris_raise();
@@ -252,6 +262,10 @@ private:
     std::uint64_t pending_seek_offset_ = 0;
     bool ui_closing_ = false;
     std::uint64_t mpris_track_epoch_ = 0;
+    mutable std::string mpris_cover_cache_audio_path_;
+    mutable std::string mpris_cover_cache_directory_;
+    mutable std::string mpris_cover_cache_art_path_;
+    mutable bool mpris_cover_cache_valid_ = false;
     std::unique_ptr<MprisService> mpris_service_;
 };
 
