@@ -1861,7 +1861,7 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
         ".display-track { font-size: 18px; }"
         ".display-time { font-size: 24px; font-weight: bold; }"
         ".transport-button { min-height: 42px; min-width: 46px; font-weight: bold; padding: 2px 8px; }"
-        ".transport-button-thin { min-height: 19px; min-width: 86px; font-weight: bold; padding: 1px 8px; }"
+        ".transport-button-thin { min-height: 26px; min-width: 64px; font-weight: bold; padding: 1px 6px; font-size: 12px; }"
         ".transport-icon { font-size: 18px; color: #25313a; }"
         "treeview.view:selected, treeview.view:selected:focus { background-color: #6f7780; color: #ffffff; }"
         "treeview.view:selected:hover { background-color: #78818a; color: #ffffff; }"
@@ -2011,8 +2011,8 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     btn_open_ = create_symbolic_button("media-eject-symbolic", "document-open-symbolic", "OPEN");
     btn_repeat_ = create_symbolic_button("media-playlist-repeat-symbolic", "view-refresh-symbolic", "Repeat");
     btn_settings_ = gtk_button_new_with_label("Settings");
-    btn_eq_ = gtk_button_new_with_label("DSP Studio");
-    btn_alsamixer_ = gtk_button_new_with_label("alsamixer");
+    btn_eq_ = gtk_button_new_with_label("DSP");
+    btn_alsamixer_ = gtk_button_new_with_label("Mixer");
     btn_about_ = gtk_button_new_with_label("About");
 
     GtkWidget* transport_buttons_all[] = {btn_prev_, btn_play_, btn_pause_, btn_stop_, btn_next_, btn_open_, btn_repeat_};
@@ -2024,7 +2024,7 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
 
     GtkWidget* text_buttons[] = {btn_settings_, btn_eq_, btn_alsamixer_, btn_about_};
     for (GtkWidget* button : text_buttons) {
-        gtk_style_context_add_class(gtk_widget_get_style_context(button), "transport-button");
+        /* Thin class only — avoid conflicting min-size from .transport-button. */
         gtk_style_context_add_class(gtk_widget_get_style_context(button), "transport-button-thin");
     }
     gtk_grid_attach(GTK_GRID(controls_text), btn_settings_, 0, 0, 1, 1);
@@ -2043,7 +2043,7 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     }
     GtkWidget* text_buttons_sized[] = {btn_settings_, btn_eq_, btn_alsamixer_, btn_about_};
     for (GtkWidget* button : text_buttons_sized) {
-        gtk_widget_set_size_request(button, 116, 19);
+        gtk_widget_set_size_request(button, 72, 26);
     }
     GtkWidget* transport_buttons[] = {btn_prev_, btn_play_, btn_pause_, btn_stop_, btn_next_};
     for (GtkWidget* button : transport_buttons) {
