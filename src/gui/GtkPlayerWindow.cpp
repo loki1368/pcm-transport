@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <cstring>
 #include <thread>
+#include <unordered_set>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -270,6 +271,48 @@ std::string join_directory_entry(const std::string& directory, const char* name)
     return directory + "/" + name;
 }
 
+std::string media_path_key(const std::string& path) {
+    std::string key = path;
+    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return key;
+}
+
+void prefer_cue_over_audio_files(std::vector<std::string>* paths) {
+    if (paths == nullptr || paths->empty()) {
+        return;
+    }
+
+    std::unordered_set<std::string> audio_paths_from_cues;
+    for (const std::string& path : *paths) {
+        if (!CueParser::looks_like_cue_path(path)) {
+            continue;
+        }
+        try {
+            audio_paths_from_cues.insert(media_path_key(CueParser::resolve_audio_file_path(path)));
+        } catch (...) {
+        }
+    }
+
+    if (audio_paths_from_cues.empty()) {
+        return;
+    }
+
+    paths->erase(std::remove_if(paths->begin(), paths->end(),
+                                [&](const std::string& path) {
+                                    if (CueParser::looks_like_cue_path(path) ||
+                                        M3uPlaylistReader::looks_like_playlist_path(path)) {
+                                        return false;
+                                    }
+                                    if (!is_audio_file_path(path)) {
+                                        return false;
+                                    }
+                                    return audio_paths_from_cues.count(media_path_key(path)) != 0;
+                                }),
+                     paths->end());
+}
+
 void collect_audio_files_recursive(const std::string& directory, std::vector<std::string>* out) {
     if (out == nullptr) {
         return;
@@ -300,7 +343,8 @@ void collect_audio_files_recursive(const std::string& directory, std::vector<std
 
         if (S_ISDIR(st.st_mode)) {
             entries.push_back(DirEntry{entry->d_name, true});
-        } else if (S_ISREG(st.st_mode) && is_audio_file_path(full_path)) {
+        } else if (S_ISREG(st.st_mode) &&
+                   (is_audio_file_path(full_path) || CueParser::looks_like_cue_path(full_path))) {
             entries.push_back(DirEntry{entry->d_name, false});
         }
     }
@@ -4253,6 +4297,7 @@ void GtkPlayerWindow::open_file_dialog() {
                     paths_to_add.push_back(path);
                 }
             }
+            prefer_cue_over_audio_files(&paths_to_add);
 
             std::size_t plain_audio_count = 0;
             for (const std::string& path : paths_to_add) {
