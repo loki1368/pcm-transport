@@ -59,6 +59,7 @@ private:
         bool processed_by_ffmpeg = false;
         std::string codec_name;
         bool cue_track = false;
+        bool is_stream = false;
         std::uint64_t cue_album_end_sample = 0;
         std::shared_ptr<PcmBuffer> normalized_pcm;
         AudioFormat normalized_format{};
@@ -67,6 +68,7 @@ private:
 
     static void on_activate(GtkApplication* app, gpointer user_data);
     static void on_open_clicked(GtkButton* button, gpointer user_data);
+    static void on_open_url_clicked(GtkButton* button, gpointer user_data);
     static void on_play_clicked(GtkButton* button, gpointer user_data);
     static void on_pause_clicked(GtkButton* button, gpointer user_data);
     static void on_stop_clicked(GtkButton* button, gpointer user_data);
@@ -102,6 +104,10 @@ private:
 
     void build_ui(GtkApplication* app);
     void append_path_to_playlist(const std::string& path);
+    void append_media_to_playlist(const std::string& path,
+                                  const std::string& hint_title = std::string(),
+                                  const std::string& hint_artist = std::string());
+    void open_stream_url_dialog();
     void start_current_track(bool restart_if_paused = true);
     void stop_playback();
     void play_track_index(std::size_t index);
@@ -164,7 +170,7 @@ private:
     void mpris_play();
     void mpris_advance_track(int direction);
     bool mpris_open_uri(const std::string& uri);
-    bool validate_mpris_file_uri(const std::string& uri, std::string* local_path) const;
+    bool validate_mpris_open_uri(const std::string& uri, std::string* resolved_location) const;
     std::int64_t mpris_seek(std::int64_t offset_usec);
     std::int64_t mpris_set_position(std::int64_t position_usec, const std::string& track_id);
     std::int64_t current_mpris_track_length_usec() const;
@@ -207,6 +213,7 @@ private:
     GtkWidget* btn_stop_ = nullptr;
     GtkWidget* btn_next_ = nullptr;
     GtkWidget* btn_open_ = nullptr;
+    GtkWidget* btn_open_url_ = nullptr;
     GtkWidget* btn_repeat_ = nullptr;
     GtkWidget* btn_settings_ = nullptr;
     GtkWidget* btn_alsamixer_ = nullptr;

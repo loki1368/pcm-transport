@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "pcmtp/util/Logger.hpp"
+#include "pcmtp/util/MediaUri.hpp"
 
 namespace pcmtp {
 namespace {
@@ -496,7 +497,14 @@ std::string ExternalAudioDecoder::to_lower_extension(const std::string& path) {
     return ext;
 }
 
+bool ExternalAudioDecoder::is_stream_uri(const std::string& path) {
+    return is_remote_media_uri(path);
+}
+
 bool ExternalAudioDecoder::looks_supported(const std::string& path) {
+    if (is_stream_uri(path)) {
+        return true;
+    }
     static const std::array<const char*, 29> exts = {{".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".wave", ".bwf", ".au", ".snd", ".caf", ".ape", ".wv", ".flac", ".aiff", ".aif", ".tak", ".tta", ".wma", ".asf", ".xwma", ".oma", ".aa3", ".at3", ".mpc", ".mp+", ".mpp", ".dsf", ".oga"}};
     const std::string ext = to_lower_extension(path);
     for (const char* item : exts) {
@@ -538,6 +546,78 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path, 
     info.format.sample_rate = 44100;
     info.format.channels = 2;
     info.format.bits_per_sample = 16;
+
+    if (is_stream_uri(path)) {
+        const std::string probe_cmd =
+            "ffprobe -v error -select_streams a:0 "
+            "-show_entries stream=codec_name,sample_fmt,sample_rate,channels,bits_per_sample,bits_per_raw_sample:format=duration:format_tags=title,artist "
+            "-of default=nokey=0:noprint_wrappers=1 " +
+            shell_escape_for_command(path);
+        Logger::instance().debug("ExternalAudioDecoder stream probe: " + path);
+        const CommandCaptureResult probe = run_command_capture(probe_cmd);
+        if (probe.status != 0) {
+            Logger::instance().error("ffprobe failed for stream: " + path +
+                                     (probe.stderr_text.empty() ? std::string() : ("\nffprobe stderr:\n" + probe.stderr_text)));
+        }
+
+        std::istringstream ps(probe.stdout_text);
+        std::string line;
+        std::string sample_fmt;
+        while (std::getline(ps, line)) {
+            line = trim_copy(line);
+            const std::size_t pos = line.find('=');
+            if (pos == std::string::npos) {
+                continue;
+            }
+            const std::string key = line.substr(0, pos);
+            const std::string value = line.substr(pos + 1);
+            try {
+                if (key == "codec_name") {
+                    info.codec_name = lower_copy(value);
+                } else if (key == "sample_fmt") {
+                    sample_fmt = lower_copy(value);
+                } else if (key == "sample_rate") {
+                    info.format.sample_rate = static_cast<std::uint32_t>(std::stoul(value));
+                } else if (key == "channels") {
+                    info.format.channels = static_cast<std::uint16_t>(std::stoul(value));
+                } else if ((key == "bits_per_sample" || key == "bits_per_raw_sample") && !value.empty() && value != "N/A") {
+                    const std::uint16_t bits = static_cast<std::uint16_t>(std::stoul(value));
+                    if (bits == 16 || bits == 24 || bits == 32) {
+                        info.format.bits_per_sample = bits;
+                    }
+                } else if (key == "TAG:title" || key == "title") {
+                    info.tags.title = value;
+                } else if (key == "TAG:artist" || key == "artist") {
+                    info.tags.artist = value;
+                }
+            } catch (...) {
+            }
+        }
+
+        const std::uint16_t fmt_bits = bits_from_sample_fmt(sample_fmt);
+        if ((info.format.bits_per_sample == 0 || info.format.bits_per_sample == 16) && fmt_bits > 0) {
+            info.format.bits_per_sample = fmt_bits;
+        }
+        if (info.format.channels == 0) {
+            info.format.channels = 2;
+        }
+        if (info.format.bits_per_sample != 16 && info.format.bits_per_sample != 24 && info.format.bits_per_sample != 32) {
+            info.format.bits_per_sample = 16;
+        }
+        info.total_samples_per_channel = 0;
+        info.source_total_samples_per_channel = 0;
+        info.duration_reliable = false;
+        info.lossless = codec_is_lossless(info.codec_name, std::string());
+        info.source_format = info.format;
+        if (forced_output_sample_rate > 0) {
+            info.format.sample_rate = forced_output_sample_rate;
+        }
+        if (forced_output_bits_per_sample == 16 || forced_output_bits_per_sample == 24 ||
+            forced_output_bits_per_sample == 32) {
+            info.format.bits_per_sample = forced_output_bits_per_sample;
+        }
+        return info;
+    }
 
     const std::string ext = to_lower_extension(path);
     const bool can_use_fast_wav = (ext == ".wav") || (ext == ".wave") || (ext == ".bwf");
@@ -716,6 +796,10 @@ std::string ExternalAudioDecoder::decode_command(double seconds) const {
     }
 
     std::string cmd = "ffmpeg -v error -nostdin ";
+    if (is_stream_uri(path_)) {
+        cmd += "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -rw_timeout 15000000 -multiple_requests 1 ";
+        cmd += "-user_agent " + shell_escape("pcm-transport/0.9") + " ";
+    }
     if (is_raw_aac) {
         cmd += "-fflags +genpts ";
     }
