@@ -550,6 +550,8 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path, 
     if (is_stream_uri(path)) {
         const std::string probe_cmd =
             "ffprobe -v error -select_streams a:0 "
+            "-timeout 8000000 -rw_timeout 8000000 -analyzeduration 2000000 -probesize 200000 "
+            "-user_agent " + shell_escape_for_command("pcm-transport/0.9") + " "
             "-show_entries stream=codec_name,sample_fmt,sample_rate,channels,bits_per_sample,bits_per_raw_sample:format=duration:format_tags=title,artist "
             "-of default=nokey=0:noprint_wrappers=1 " +
             shell_escape_for_command(path);

@@ -197,8 +197,15 @@ bool parse_extinf_line(const std::string& line, int* duration_seconds, std::stri
         *artist = trim_copy(info.substr(0, separator));
         *title = trim_copy(info.substr(separator + 3));
     } else {
-        *title = info;
+        *title = trim_copy(info);
         artist->clear();
+    }
+    if (artist->empty() && !title->empty() && (*title)[0] == '-') {
+        std::size_t start = 1;
+        while (start < title->size() && std::isspace(static_cast<unsigned char>((*title)[start])) != 0) {
+            ++start;
+        }
+        *title = trim_copy(title->substr(start));
     }
     return true;
 }

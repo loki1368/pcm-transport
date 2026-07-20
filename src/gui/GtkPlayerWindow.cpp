@@ -3021,8 +3021,24 @@ std::unique_ptr<IAudioDecoder> GtkPlayerWindow::create_decoder_for_entry(const P
     if (!entry.is_stream && ext == ".flac" && entry.native_decode && !resample_needed && !bitdepth_needed) {
         return std::unique_ptr<IAudioDecoder>(new FlacStreamDecoder());
     }
-    if (entry.is_stream || ExternalAudioDecoder::is_stream_uri(entry.audio_file_path) ||
-        ExternalAudioDecoder::looks_supported(entry.audio_file_path)) {
+    if (entry.is_stream || ExternalAudioDecoder::is_stream_uri(entry.audio_file_path)) {
+        std::unique_ptr<ExternalAudioDecoder> decoder;
+        if (resample_needed || bitdepth_needed) {
+            decoder.reset(new ExternalAudioDecoder(target_rate, target_bits, resample_quality_, bitdepth_quality_));
+        } else {
+            decoder.reset(new ExternalAudioDecoder());
+        }
+        ExternalAudioInfo known = ExternalAudioDecoder::probe_metadata(
+            entry.audio_file_path,
+            resample_needed ? target_rate : 0,
+            bitdepth_needed ? target_bits : 0);
+        known.total_samples_per_channel = 0;
+        known.source_total_samples_per_channel = 0;
+        known.duration_reliable = false;
+        decoder->set_known_info(known);
+        return std::unique_ptr<IAudioDecoder>(decoder.release());
+    }
+    if (ExternalAudioDecoder::looks_supported(entry.audio_file_path)) {
         std::unique_ptr<ExternalAudioDecoder> decoder;
         if (resample_needed || bitdepth_needed) {
             decoder.reset(new ExternalAudioDecoder(target_rate, target_bits, resample_quality_, bitdepth_quality_));
@@ -3253,21 +3269,20 @@ void GtkPlayerWindow::append_media_to_playlist(const std::string& path,
     };
 
     if (ExternalAudioDecoder::is_stream_uri(path)) {
-        const ExternalAudioInfo stream_info = probe_external(path);
         PlaylistEntry entry;
         entry.audio_file_path = path;
         entry.is_stream = true;
         entry.track_number = static_cast<int>(playlist_.size() + 1);
-        entry.title = !hint_title.empty() ? hint_title
-                    : !stream_info.tags.title.empty() ? stream_info.tags.title
-                    : stream_display_label(path);
-        entry.performer = !hint_artist.empty() ? hint_artist : stream_info.tags.artist;
+        entry.title = !hint_title.empty() ? hint_title : stream_display_label(path);
+        entry.performer = hint_artist;
         entry.start_sample = 0;
         entry.end_sample = 0;
         entry.source_label = stream_display_label(path);
-        entry.decoded_format = stream_info.format;
-        entry.source_sample_rate = stream_info.format.sample_rate;
-        entry.source_bits_per_sample = stream_info.format.bits_per_sample;
+        entry.decoded_format.sample_rate = 44100;
+        entry.decoded_format.channels = 2;
+        entry.decoded_format.bits_per_sample = 16;
+        entry.source_sample_rate = entry.decoded_format.sample_rate;
+        entry.source_bits_per_sample = entry.decoded_format.bits_per_sample;
         const std::uint32_t target_rate = target_sample_rate_for(entry.source_sample_rate);
         const std::uint16_t target_bits = target_bits_for(entry.source_bits_per_sample);
         entry.resampled = (target_rate > 0 && target_rate != entry.source_sample_rate);
@@ -3281,9 +3296,9 @@ void GtkPlayerWindow::append_media_to_playlist(const std::string& path,
         if (entry.bitdepth_converted) {
             entry.decoded_format.bits_per_sample = target_bits;
         }
-        entry.codec_name = stream_info.codec_name;
-        entry.lossless_source = stream_info.lossless;
-        entry.lossy_source = !stream_info.lossless;
+        entry.codec_name = "stream";
+        entry.lossless_source = false;
+        entry.lossy_source = true;
         entry.title = safe_utf8_for_display(entry.title);
         entry.performer = safe_utf8_for_display(entry.performer);
         entry.source_label = safe_utf8_for_display(entry.source_label);
