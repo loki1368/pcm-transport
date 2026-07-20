@@ -17,6 +17,7 @@
 #include "pcmtp/decoder/GaplessChainDecoder.hpp"
 #include "pcmtp/dsp/AlsaControlBridge.hpp"
 #include "pcmtp/hardware/CardProfileRegistry.hpp"
+#include "pcmtp/mpris/MprisService.hpp"
 
 namespace pcmtp {
 
@@ -93,13 +94,22 @@ private:
                                           GtkTreePath* path,
                                           GtkTreeViewColumn* column,
                                           gpointer user_data);
+    static void on_media_play(GSimpleAction* action, GVariant* parameter, gpointer user_data);
+    static void on_media_pause(GSimpleAction* action, GVariant* parameter, gpointer user_data);
+    static void on_media_stop(GSimpleAction* action, GVariant* parameter, gpointer user_data);
+    static void on_media_next(GSimpleAction* action, GVariant* parameter, gpointer user_data);
+    static void on_media_previous(GSimpleAction* action, GVariant* parameter, gpointer user_data);
 
     void build_ui(GtkApplication* app);
     void append_path_to_playlist(const std::string& path);
     void start_current_track(bool restart_if_paused = true);
     void stop_playback();
     void play_track_index(std::size_t index);
-    void play_track_index_at_offset(std::size_t index, std::uint64_t offset_samples);
+    void play_track_index_at_offset(std::size_t index,
+                                    std::uint64_t offset_samples,
+                                    bool start_playback = true,
+                                    bool preserve_paused = false,
+                                    bool update_mpris_track = true);
     void open_file_dialog();
     void open_settings_dialog();
     void open_about_dialog();
@@ -138,6 +148,33 @@ private:
     void apply_auto_pre_eq_headroom(bool save_preferences_after = true);
     void draw_tone_response_graph(cairo_t* cr, int width, int height) const;
     std::uint32_t current_tone_control_sample_rate() const;
+    void setup_mpris();
+    void setup_media_keys(GtkApplication* app);
+    void handle_media_play();
+    void handle_media_pause();
+    void handle_media_stop();
+    void handle_media_next();
+    void handle_media_previous();
+    void notify_mpris_state_changed();
+    void mark_mpris_track_changed();
+    void invalidate_mpris_cover_cache();
+    std::string cached_cover_art_for(const std::string& audio_file_path) const;
+    std::string current_mpris_track_id() const;
+    MprisPlayerState build_mpris_state() const;
+    void mpris_play();
+    void mpris_advance_track(int direction);
+    bool mpris_open_uri(const std::string& uri);
+    bool validate_mpris_file_uri(const std::string& uri, std::string* local_path) const;
+    std::int64_t mpris_seek(std::int64_t offset_usec);
+    std::int64_t mpris_set_position(std::int64_t position_usec, const std::string& track_id);
+    std::int64_t current_mpris_track_length_usec() const;
+    std::int64_t current_mpris_track_position_usec() const;
+    void mpris_set_volume(double volume);
+    void mpris_set_loop_status(const std::string& loop_status);
+    void mpris_set_rate(double rate);
+    void mpris_set_fullscreen(bool enabled);
+    void mpris_set_shuffle(bool enabled);
+    void mpris_raise();
 
     static std::string format_time(std::uint64_t samples_per_channel, std::uint32_t sample_rate = 44100);
     static std::string display_title_for(const PlaylistEntry& entry);
@@ -207,6 +244,9 @@ private:
     std::vector<BitDepthRule> bitdepth_rules_;
     bool normalization_in_progress_ = false;
     bool repeat_enabled_ = false;
+    std::string mpris_loop_status_ = "None";
+    bool mpris_shuffle_ = false;
+    bool mpris_fullscreen_ = false;
     bool finish_handled_ = false;
     bool track_switch_in_progress_ = false;
     bool gapless_chain_active_ = false;
@@ -229,6 +269,11 @@ private:
     std::size_t pending_seek_index_ = 0;
     std::uint64_t pending_seek_offset_ = 0;
     bool ui_closing_ = false;
+    std::uint64_t mpris_track_epoch_ = 0;
+    mutable std::string mpris_cover_cache_directory_;
+    mutable std::string mpris_cover_cache_art_path_;
+    mutable bool mpris_cover_cache_valid_ = false;
+    std::unique_ptr<MprisService> mpris_service_;
 };
 
 } // namespace pcmtp

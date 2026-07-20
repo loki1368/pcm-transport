@@ -24,6 +24,7 @@ add_executable(pcm_transport
     src/decoder/MemoryAudioDecoder.cpp
     src/core/TransportFifo.cpp
     src/gui/GtkPlayerWindow.cpp
+    src/mpris/MprisService.cpp
     src/hardware/CardProfileRegistry.cpp
     src/dsp/AlsaControlBridge.cpp
     src/dsp/ToneControlDesign.cpp
