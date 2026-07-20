@@ -238,6 +238,151 @@ bool is_supported_media_path(const std::string& path) {
     return false;
 }
 
+bool is_audio_file_path(const std::string& path) {
+    const std::size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos || dot + 1 >= path.size()) {
+        return false;
+    }
+
+    std::string ext = path.substr(dot);
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    static const char* kAudioExtensions[] = {
+        ".flac", ".mp3", ".wav", ".wave", ".bwf", ".aiff", ".aif", ".au", ".snd", ".caf", ".ape", ".wv", ".tak",
+        ".tta", ".dsf", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".wma", ".asf", ".xwma", ".oma", ".aa3", ".at3",
+        ".mpc", ".mp+", ".mpp",
+    };
+    for (const char* supported : kAudioExtensions) {
+        if (ext == supported) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string join_directory_entry(const std::string& directory, const char* name) {
+    if (directory.empty()) {
+        return name;
+    }
+    if (directory.back() == '/') {
+        return directory + name;
+    }
+    return directory + "/" + name;
+}
+
+void collect_audio_files_recursive(const std::string& directory, std::vector<std::string>* out) {
+    if (out == nullptr) {
+        return;
+    }
+
+    DIR* dir = opendir(directory.c_str());
+    if (dir == nullptr) {
+        return;
+    }
+
+    struct DirEntry {
+        std::string name;
+        bool is_directory = false;
+    };
+    std::vector<DirEntry> entries;
+
+    while (dirent* entry = readdir(dir)) {
+        if (entry->d_name[0] == '.' &&
+            (entry->d_name[1] == '\0' || (entry->d_name[1] == '.' && entry->d_name[2] == '\0'))) {
+            continue;
+        }
+
+        const std::string full_path = join_directory_entry(directory, entry->d_name);
+        struct stat st {};
+        if (stat(full_path.c_str(), &st) != 0) {
+            continue;
+        }
+
+        if (S_ISDIR(st.st_mode)) {
+            entries.push_back(DirEntry{entry->d_name, true});
+        } else if (S_ISREG(st.st_mode) && is_audio_file_path(full_path)) {
+            entries.push_back(DirEntry{entry->d_name, false});
+        }
+    }
+    closedir(dir);
+
+    std::sort(entries.begin(), entries.end(), [](const DirEntry& left, const DirEntry& right) {
+        return left.name < right.name;
+    });
+
+    for (const DirEntry& entry : entries) {
+        const std::string full_path = join_directory_entry(directory, entry.name.c_str());
+        if (entry.is_directory) {
+            collect_audio_files_recursive(full_path, out);
+        } else {
+            out->push_back(full_path);
+        }
+    }
+}
+
+gboolean file_chooser_open_filter(const GtkFileFilterInfo* filter_info, gpointer) {
+    if (filter_info == nullptr || filter_info->filename == nullptr || filter_info->filename[0] == '\0') {
+        return FALSE;
+    }
+    if (g_file_test(filter_info->filename, G_FILE_TEST_IS_DIR)) {
+        return TRUE;
+    }
+    return is_supported_media_path(filter_info->filename) ? TRUE : FALSE;
+}
+
+std::vector<std::string> collect_file_chooser_paths(GtkFileChooser* chooser) {
+    std::vector<std::string> paths;
+    if (chooser == nullptr) {
+        return paths;
+    }
+
+    GSList* uris = gtk_file_chooser_get_uris(chooser);
+    for (GSList* node = uris; node != nullptr; node = node->next) {
+        const char* uri = static_cast<const char*>(node->data);
+        if (uri == nullptr || *uri == '\0') {
+            g_free(node->data);
+            continue;
+        }
+
+        GError* error = nullptr;
+        gchar* path = g_filename_from_uri(uri, nullptr, &error);
+        if (path != nullptr) {
+            paths.emplace_back(path);
+            g_free(path);
+        } else if (error != nullptr) {
+            g_error_free(error);
+        }
+        g_free(node->data);
+    }
+    g_slist_free(uris);
+
+    if (!paths.empty()) {
+        return paths;
+    }
+
+    GSList* filenames = gtk_file_chooser_get_filenames(chooser);
+    for (GSList* node = filenames; node != nullptr; node = node->next) {
+        char* filename = static_cast<char*>(node->data);
+        if (filename != nullptr && *filename != '\0') {
+            paths.emplace_back(filename);
+        }
+        g_free(filename);
+    }
+    g_slist_free(filenames);
+
+    if (!paths.empty()) {
+        return paths;
+    }
+
+    gchar* filename = gtk_file_chooser_get_filename(chooser);
+    if (filename != nullptr && *filename != '\0') {
+        paths.emplace_back(filename);
+        g_free(filename);
+    }
+
+    return paths;
+}
+
 constexpr const char* kMprisNoTrackObjectPath = "/org/mpris/MediaPlayer2/TrackList/NoTrack";
 
 std::int64_t samples_to_usec_safe(std::uint64_t samples, std::uint32_t sample_rate) {
@@ -3528,115 +3673,59 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
 }
 
 void GtkPlayerWindow::open_file_dialog() {
-    GtkWidget* dialog = gtk_file_chooser_dialog_new("Open audio files",
+    GtkWidget* dialog = gtk_dialog_new_with_buttons("Open audio files",
                                                     GTK_WINDOW(window_),
-                                                    GTK_FILE_CHOOSER_ACTION_OPEN,
+                                                    GTK_DIALOG_MODAL,
                                                     "_Cancel", GTK_RESPONSE_CANCEL,
                                                     "_Open", GTK_RESPONSE_ACCEPT,
-                                                    NULL);
-    gtk_file_chooser_set_select_multiple(GTK_FILE_CHOOSER(dialog), TRUE);
+                                                    nullptr);
+
+    GtkWidget* chooser = gtk_file_chooser_widget_new(GTK_FILE_CHOOSER_ACTION_OPEN);
+    GtkFileChooser* file_chooser = GTK_FILE_CHOOSER(chooser);
+    gtk_file_chooser_set_select_multiple(file_chooser, TRUE);
     if (!last_open_directory_.empty()) {
-        gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(dialog), last_open_directory_.c_str());
+        gtk_file_chooser_set_current_folder(file_chooser, last_open_directory_.c_str());
     }
 
     GtkFileFilter* filter = gtk_file_filter_new();
-    gtk_file_filter_set_name(filter, "Audio, cue and playlist files");
-    gtk_file_filter_add_pattern(filter, "*.flac");
-    gtk_file_filter_add_pattern(filter, "*.FLAC");
-    gtk_file_filter_add_pattern(filter, "*.mp3");
-    gtk_file_filter_add_pattern(filter, "*.MP3");
-    gtk_file_filter_add_pattern(filter, "*.m4a");
-    gtk_file_filter_add_pattern(filter, "*.M4A");
-    gtk_file_filter_add_pattern(filter, "*.aac");
-    gtk_file_filter_add_pattern(filter, "*.AAC");
-    gtk_file_filter_add_pattern(filter, "*.ogg");
-    gtk_file_filter_add_pattern(filter, "*.OGG");
-    gtk_file_filter_add_pattern(filter, "*.opus");
-    gtk_file_filter_add_pattern(filter, "*.oga");
-    gtk_file_filter_add_pattern(filter, "*.au");
-    gtk_file_filter_add_pattern(filter, "*.snd");
-    gtk_file_filter_add_pattern(filter, "*.caf");
-    gtk_file_filter_add_pattern(filter, "*.bwf");
-    gtk_file_filter_add_pattern(filter, "*.tak");
-    gtk_file_filter_add_pattern(filter, "*.tta");
-    gtk_file_filter_add_pattern(filter, "*.wma");
-    gtk_file_filter_add_pattern(filter, "*.asf");
-    gtk_file_filter_add_pattern(filter, "*.xwma");
-    gtk_file_filter_add_pattern(filter, "*.oma");
-    gtk_file_filter_add_pattern(filter, "*.aa3");
-    gtk_file_filter_add_pattern(filter, "*.at3");
-    gtk_file_filter_add_pattern(filter, "*.mpc");
-    gtk_file_filter_add_pattern(filter, "*.mp+");
-    gtk_file_filter_add_pattern(filter, "*.mpp");
-    gtk_file_filter_add_pattern(filter, "*.dsf");
-    gtk_file_filter_add_pattern(filter, "*.OGA");
-    gtk_file_filter_add_pattern(filter, "*.AU");
-    gtk_file_filter_add_pattern(filter, "*.SND");
-    gtk_file_filter_add_pattern(filter, "*.CAF");
-    gtk_file_filter_add_pattern(filter, "*.BWF");
-    gtk_file_filter_add_pattern(filter, "*.TAK");
-    gtk_file_filter_add_pattern(filter, "*.TTA");
-    gtk_file_filter_add_pattern(filter, "*.WMA");
-    gtk_file_filter_add_pattern(filter, "*.ASF");
-    gtk_file_filter_add_pattern(filter, "*.XWMA");
-    gtk_file_filter_add_pattern(filter, "*.OMA");
-    gtk_file_filter_add_pattern(filter, "*.AA3");
-    gtk_file_filter_add_pattern(filter, "*.AT3");
-    gtk_file_filter_add_pattern(filter, "*.MPC");
-    gtk_file_filter_add_pattern(filter, "*.MP+");
-    gtk_file_filter_add_pattern(filter, "*.MPP");
-    gtk_file_filter_add_pattern(filter, "*.DSF");
-    gtk_file_filter_add_pattern(filter, "*.OPUS");
-    gtk_file_filter_add_pattern(filter, "*.wav");
-    gtk_file_filter_add_pattern(filter, "*.WAV");
-    gtk_file_filter_add_pattern(filter, "*.wave");
-    gtk_file_filter_add_pattern(filter, "*.WAVE");
-    gtk_file_filter_add_pattern(filter, "*.aiff");
-    gtk_file_filter_add_pattern(filter, "*.AIFF");
-    gtk_file_filter_add_pattern(filter, "*.aif");
-    gtk_file_filter_add_pattern(filter, "*.AIF");
-    gtk_file_filter_add_pattern(filter, "*.ape");
-    gtk_file_filter_add_pattern(filter, "*.APE");
-    gtk_file_filter_add_pattern(filter, "*.wv");
-    gtk_file_filter_add_pattern(filter, "*.WV");
-    gtk_file_filter_add_pattern(filter, "*.cue");
-    gtk_file_filter_add_pattern(filter, "*.CUE");
-    gtk_file_filter_add_pattern(filter, "*.m3u");
-    gtk_file_filter_add_pattern(filter, "*.M3U");
-    gtk_file_filter_add_pattern(filter, "*.m3u8");
-    gtk_file_filter_add_pattern(filter, "*.M3U8");
-    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), filter);
+    gtk_file_filter_set_name(filter, "Audio, cue, playlist files and folders");
+    gtk_file_filter_add_custom(filter, GTK_FILE_FILTER_FILENAME, file_chooser_open_filter, nullptr, nullptr);
+    gtk_file_chooser_add_filter(file_chooser, filter);
+
+    GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    gtk_box_pack_start(GTK_BOX(content), chooser, TRUE, TRUE, 0);
+    gtk_window_set_default_size(GTK_WINDOW(dialog), 900, 600);
+    gtk_widget_show_all(dialog);
 
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-        char* current_folder = gtk_file_chooser_get_current_folder(GTK_FILE_CHOOSER(dialog));
+        char* current_folder = gtk_file_chooser_get_current_folder(file_chooser);
         if (current_folder != nullptr && *current_folder != '\0') {
             last_open_directory_ = current_folder;
             g_free(current_folder);
-            current_folder = nullptr;
         }
 
-        GSList* files = gtk_file_chooser_get_filenames(GTK_FILE_CHOOSER(dialog));
-        if (files != nullptr) {
-            char* first_name = static_cast<char*>(files->data);
-            if (first_name != nullptr && *first_name != '\0') {
-                last_open_directory_ = directory_name(first_name);
-            }
+        const std::vector<std::string> selected_paths = collect_file_chooser_paths(file_chooser);
+        if (!selected_paths.empty()) {
+            last_open_directory_ = directory_name(selected_paths.front());
             stop_playback();
             playlist_.clear();
             cue_cache_.clear();
             external_probe_cache_.clear();
-            for (GSList* node = files; node != nullptr; node = node->next) {
-                char* filename = static_cast<char*>(node->data);
-                if (filename != nullptr) {
-                    try {
-                        append_path_to_playlist(filename);
-                    } catch (const std::exception& ex) {
-                        Logger::instance().error(ex.what());
+            for (const std::string& path : selected_paths) {
+                try {
+                    if (g_file_test(path.c_str(), G_FILE_TEST_IS_DIR)) {
+                        std::vector<std::string> audio_files;
+                        collect_audio_files_recursive(path, &audio_files);
+                        for (const std::string& audio_path : audio_files) {
+                            append_path_to_playlist(audio_path);
+                        }
+                    } else {
+                        append_path_to_playlist(path);
                     }
-                    g_free(filename);
+                } catch (const std::exception& ex) {
+                    Logger::instance().error(ex.what());
                 }
             }
-            g_slist_free(files);
             save_preferences();
             current_track_index_ = 0;
             rebuild_playlist_view();
@@ -3647,9 +3736,6 @@ void GtkPlayerWindow::open_file_dialog() {
             finish_handled_ = true;
             refresh_display();
             mark_mpris_track_changed();
-        }
-        if (current_folder != nullptr) {
-            g_free(current_folder);
         }
     }
 
