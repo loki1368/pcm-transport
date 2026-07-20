@@ -45,7 +45,7 @@ constexpr const char* kIntrospectionXml =
     "    <property name='CanQuit' type='b' access='read'/>"
     "    <property name='CanRaise' type='b' access='read'/>"
     "    <property name='CanSetFullscreen' type='b' access='read'/>"
-    "    <property name='Fullscreen' type='b' access='read'/>"
+    "    <property name='Fullscreen' type='b' access='readwrite'/>"
     "    <property name='HasTrackList' type='b' access='read'/>"
     "    <property name='Identity' type='s' access='read'/>"
     "    <property name='DesktopEntry' type='s' access='read'/>"
@@ -74,7 +74,7 @@ constexpr const char* kIntrospectionXml =
     "    </signal>"
     "    <property name='PlaybackStatus' type='s' access='read'/>"
     "    <property name='LoopStatus' type='s' access='readwrite'/>"
-    "    <property name='Rate' type='d' access='read'/>"
+    "    <property name='Rate' type='d' access='readwrite'/>"
     "    <property name='Metadata' type='a{sv}' access='read'/>"
     "    <property name='Volume' type='d' access='readwrite'/>"
     "    <property name='Position' type='x' access='read'/>"
@@ -86,10 +86,31 @@ constexpr const char* kIntrospectionXml =
     "    <property name='CanPause' type='b' access='read'/>"
     "    <property name='CanSeek' type='b' access='read'/>"
     "    <property name='CanControl' type='b' access='read'/>"
-    "    <property name='CanShuffle' type='b' access='read'/>"
-    "    <property name='Shuffle' type='b' access='read'/>"
+    "    <property name='Shuffle' type='b' access='readwrite'/>"
     "  </interface>"
     "</node>";
+
+class VariantRef {
+public:
+    explicit VariantRef(GVariant* variant)
+        : variant_(variant != nullptr ? g_variant_ref(variant) : nullptr) {}
+
+    VariantRef(const VariantRef&) = delete;
+    VariantRef& operator=(const VariantRef&) = delete;
+
+    ~VariantRef() {
+        if (variant_ != nullptr) {
+            g_variant_unref(variant_);
+        }
+    }
+
+    GVariant* get() const {
+        return variant_;
+    }
+
+private:
+    GVariant* variant_ = nullptr;
+};
 
 GVariant* metadata_variant(const MprisPlayerState& state) {
     GVariantBuilder builder;
@@ -134,53 +155,7 @@ std::string metadata_signature(const MprisPlayerState& state) {
 std::string capabilities_signature(const MprisPlayerState& state) {
     return std::to_string(state.can_control) + "|" + std::to_string(state.can_play) + "|" +
            std::to_string(state.can_pause) + "|" + std::to_string(state.can_seek) + "|" +
-           std::to_string(state.can_go_next) + "|" + std::to_string(state.can_go_previous) + "|" +
-           std::to_string(state.can_shuffle) + "|" + std::to_string(state.shuffle);
-}
-
-const char* loop_status_for(bool repeat_playlist) {
-    return repeat_playlist ? "Playlist" : "None";
-}
-
-GVariant* root_property(const char* property_name) {
-    if (std::strcmp(property_name, "CanQuit") == 0) {
-        return g_variant_new_boolean(FALSE);
-    }
-    if (std::strcmp(property_name, "CanRaise") == 0) {
-        return g_variant_new_boolean(TRUE);
-    }
-    if (std::strcmp(property_name, "CanSetFullscreen") == 0) {
-        return g_variant_new_boolean(FALSE);
-    }
-    if (std::strcmp(property_name, "Fullscreen") == 0) {
-        return g_variant_new_boolean(FALSE);
-    }
-    if (std::strcmp(property_name, "HasTrackList") == 0) {
-        return g_variant_new_boolean(FALSE);
-    }
-    if (std::strcmp(property_name, "Identity") == 0) {
-        return g_variant_new_string(kIdentity);
-    }
-    if (std::strcmp(property_name, "DesktopEntry") == 0) {
-        return g_variant_new_string(kDesktopEntry);
-    }
-    if (std::strcmp(property_name, "SupportedUriSchemes") == 0) {
-        const char* schemes[] = {"file"};
-        return g_variant_new_strv(schemes, 1);
-    }
-    if (std::strcmp(property_name, "SupportedMimeTypes") == 0) {
-        const char* mime_types[] = {
-            "audio/flac",
-            "audio/mpeg",
-            "audio/x-flac",
-            "audio/wav",
-            "audio/x-wav",
-            "application/x-cue",
-            "audio/x-mpegurl",
-        };
-        return g_variant_new_strv(mime_types, G_N_ELEMENTS(mime_types));
-    }
-    return nullptr;
+           std::to_string(state.can_go_next) + "|" + std::to_string(state.can_go_previous);
 }
 
 void emit_properties_changed(GDBusConnection* connection,
@@ -212,8 +187,6 @@ void add_capability_properties(GVariantBuilder* changed_builder, const MprisPlay
     g_variant_builder_add(changed_builder, "{sv}", "CanPlay", g_variant_new_boolean(state.can_play));
     g_variant_builder_add(changed_builder, "{sv}", "CanPause", g_variant_new_boolean(state.can_pause));
     g_variant_builder_add(changed_builder, "{sv}", "CanControl", g_variant_new_boolean(state.can_control));
-    g_variant_builder_add(changed_builder, "{sv}", "CanShuffle", g_variant_new_boolean(state.can_shuffle));
-    g_variant_builder_add(changed_builder, "{sv}", "Shuffle", g_variant_new_boolean(state.shuffle));
 }
 
 } // namespace
@@ -232,14 +205,53 @@ MprisPlayerState MprisService::current_state() const {
     return MprisPlayerState{};
 }
 
-GVariant* MprisService::player_property(const char* property_name) const {
-    const MprisPlayerState state = current_state();
+GVariant* MprisService::root_property_from_state(const char* property_name, const MprisPlayerState& state) const {
+    if (std::strcmp(property_name, "CanQuit") == 0) {
+        return g_variant_new_boolean(FALSE);
+    }
+    if (std::strcmp(property_name, "CanRaise") == 0) {
+        return g_variant_new_boolean(TRUE);
+    }
+    if (std::strcmp(property_name, "CanSetFullscreen") == 0) {
+        return g_variant_new_boolean(FALSE);
+    }
+    if (std::strcmp(property_name, "Fullscreen") == 0) {
+        return g_variant_new_boolean(state.fullscreen ? TRUE : FALSE);
+    }
+    if (std::strcmp(property_name, "HasTrackList") == 0) {
+        return g_variant_new_boolean(FALSE);
+    }
+    if (std::strcmp(property_name, "Identity") == 0) {
+        return g_variant_new_string(kIdentity);
+    }
+    if (std::strcmp(property_name, "DesktopEntry") == 0) {
+        return g_variant_new_string(kDesktopEntry);
+    }
+    if (std::strcmp(property_name, "SupportedUriSchemes") == 0) {
+        const char* schemes[] = {"file"};
+        return g_variant_new_strv(schemes, 1);
+    }
+    if (std::strcmp(property_name, "SupportedMimeTypes") == 0) {
+        const char* mime_types[] = {
+            "audio/flac",
+            "audio/mpeg",
+            "audio/x-flac",
+            "audio/wav",
+            "audio/x-wav",
+            "application/x-cue",
+            "audio/x-mpegurl",
+        };
+        return g_variant_new_strv(mime_types, G_N_ELEMENTS(mime_types));
+    }
+    return nullptr;
+}
 
+GVariant* MprisService::player_property_from_state(const char* property_name, const MprisPlayerState& state) const {
     if (std::strcmp(property_name, "PlaybackStatus") == 0) {
         return g_variant_new_string(state.playback_status.c_str());
     }
     if (std::strcmp(property_name, "LoopStatus") == 0) {
-        return g_variant_new_string(loop_status_for(state.repeat_playlist));
+        return g_variant_new_string(state.loop_status.c_str());
     }
     if (std::strcmp(property_name, "Rate") == 0) {
         return g_variant_new_double(1.0);
@@ -276,9 +288,6 @@ GVariant* MprisService::player_property(const char* property_name) const {
     }
     if (std::strcmp(property_name, "CanControl") == 0) {
         return g_variant_new_boolean(state.can_control);
-    }
-    if (std::strcmp(property_name, "CanShuffle") == 0) {
-        return g_variant_new_boolean(state.can_shuffle);
     }
     if (std::strcmp(property_name, "Shuffle") == 0) {
         return g_variant_new_boolean(state.shuffle);
@@ -331,11 +340,12 @@ void MprisService::handle_method_call(GDBusConnection*,
             const char* property_name = nullptr;
             g_variant_get(parameters, "(&s&s)", &property_interface, &property_name);
 
+            const MprisPlayerState state = service->current_state();
             GVariant* value = nullptr;
             if (std::strcmp(property_interface, "org.mpris.MediaPlayer2") == 0) {
-                value = root_property(property_name);
+                value = service->root_property_from_state(property_name, state);
             } else if (std::strcmp(property_interface, "org.mpris.MediaPlayer2.Player") == 0) {
-                value = service->player_property(property_name);
+                value = service->player_property_from_state(property_name, state);
             }
 
             if (value == nullptr) {
@@ -355,6 +365,7 @@ void MprisService::handle_method_call(GDBusConnection*,
             const char* property_interface = nullptr;
             g_variant_get(parameters, "(&s)", &property_interface);
 
+            const MprisPlayerState state = service->current_state();
             GVariantBuilder builder;
             g_variant_builder_init(&builder, G_VARIANT_TYPE("a{sv}"));
 
@@ -364,7 +375,7 @@ void MprisService::handle_method_call(GDBusConnection*,
                     "DesktopEntry", "SupportedUriSchemes", "SupportedMimeTypes",
                 };
                 for (const char* name : names) {
-                    GVariant* prop_value = root_property(name);
+                    GVariant* prop_value = service->root_property_from_state(name, state);
                     if (prop_value != nullptr) {
                         g_variant_builder_add(&builder, "{sv}", name, prop_value);
                     }
@@ -373,10 +384,10 @@ void MprisService::handle_method_call(GDBusConnection*,
                 const char* names[] = {
                     "PlaybackStatus", "LoopStatus", "Rate", "Metadata", "Volume", "Position",
                     "MinimumRate", "MaximumRate", "CanGoNext", "CanGoPrevious", "CanPlay",
-                    "CanPause", "CanSeek", "CanControl", "CanShuffle", "Shuffle",
+                    "CanPause", "CanSeek", "CanControl", "Shuffle",
                 };
                 for (const char* name : names) {
-                    GVariant* prop_value = service->player_property(name);
+                    GVariant* prop_value = service->player_property_from_state(name, state);
                     if (prop_value != nullptr) {
                         g_variant_builder_add(&builder, "{sv}", name, prop_value);
                     }
@@ -393,8 +404,34 @@ void MprisService::handle_method_call(GDBusConnection*,
             const char* property_name = nullptr;
             GVariant* value = nullptr;
             g_variant_get(parameters, "(&s&sv)", &property_interface, &property_name, &value);
+            VariantRef value_ref(value);
+
+            if (value_ref.get() == nullptr) {
+                g_dbus_method_invocation_return_error(invocation,
+                                                      G_DBUS_ERROR,
+                                                      G_DBUS_ERROR_INVALID_ARGS,
+                                                      "Missing property value");
+                return;
+            }
 
             if (std::strcmp(property_interface, "org.mpris.MediaPlayer2") == 0) {
+                if (std::strcmp(property_name, "Fullscreen") == 0) {
+                    if (!g_variant_is_of_type(value_ref.get(), G_VARIANT_TYPE_BOOLEAN)) {
+                        g_dbus_method_invocation_return_error(invocation,
+                                                              G_DBUS_ERROR,
+                                                              G_DBUS_ERROR_INVALID_ARGS,
+                                                              "Invalid Fullscreen value type");
+                        return;
+                    }
+                    const bool fullscreen = g_variant_get_boolean(value_ref.get()) != FALSE;
+                    if (service->actions_.set_fullscreen) {
+                        service->actions_.set_fullscreen(fullscreen);
+                    }
+                    g_dbus_method_invocation_return_value(invocation, nullptr);
+                    service->notify_state_changed();
+                    return;
+                }
+
                 g_dbus_method_invocation_return_error(invocation,
                                                       G_DBUS_ERROR,
                                                       G_DBUS_ERROR_PROPERTY_READ_ONLY,
@@ -403,10 +440,17 @@ void MprisService::handle_method_call(GDBusConnection*,
                 return;
             }
 
-            if (std::strcmp(property_interface, "org.mpris.MediaPlayer2.Player") == 0 && value != nullptr) {
+            if (std::strcmp(property_interface, "org.mpris.MediaPlayer2.Player") == 0) {
                 if (std::strcmp(property_name, "Volume") == 0) {
+                    if (!g_variant_is_of_type(value_ref.get(), G_VARIANT_TYPE("d"))) {
+                        g_dbus_method_invocation_return_error(invocation,
+                                                              G_DBUS_ERROR,
+                                                              G_DBUS_ERROR_INVALID_ARGS,
+                                                              "Invalid Volume value type");
+                        return;
+                    }
                     gdouble volume = 0.0;
-                    g_variant_get(value, "d", &volume);
+                    g_variant_get(value_ref.get(), "d", &volume);
                     volume = std::max(0.0, std::min(1.0, volume));
                     if (service->actions_.set_volume) {
                         service->actions_.set_volume(volume);
@@ -416,23 +460,57 @@ void MprisService::handle_method_call(GDBusConnection*,
                     return;
                 }
                 if (std::strcmp(property_name, "LoopStatus") == 0) {
-                    const char* loop_status = g_variant_get_string(value, nullptr);
-                    bool repeat = false;
-                    if (loop_status != nullptr) {
-                        if (std::strcmp(loop_status, "Playlist") == 0) {
-                            repeat = true;
-                        } else if (std::strcmp(loop_status, "None") == 0 || std::strcmp(loop_status, "Track") == 0) {
-                            repeat = false;
-                        } else {
-                            g_dbus_method_invocation_return_error(invocation,
-                                                                  G_DBUS_ERROR,
-                                                                  G_DBUS_ERROR_INVALID_ARGS,
-                                                                  "Invalid LoopStatus value");
-                            return;
-                        }
+                    if (!g_variant_is_of_type(value_ref.get(), G_VARIANT_TYPE_STRING)) {
+                        g_dbus_method_invocation_return_error(invocation,
+                                                              G_DBUS_ERROR,
+                                                              G_DBUS_ERROR_INVALID_ARGS,
+                                                              "Invalid LoopStatus value type");
+                        return;
                     }
-                    if (service->actions_.set_repeat_playlist) {
-                        service->actions_.set_repeat_playlist(repeat);
+                    const char* loop_status = g_variant_get_string(value_ref.get(), nullptr);
+                    if (loop_status == nullptr ||
+                        (std::strcmp(loop_status, "None") != 0 && std::strcmp(loop_status, "Track") != 0 &&
+                         std::strcmp(loop_status, "Playlist") != 0)) {
+                        g_dbus_method_invocation_return_error(invocation,
+                                                              G_DBUS_ERROR,
+                                                              G_DBUS_ERROR_INVALID_ARGS,
+                                                              "Invalid LoopStatus value");
+                        return;
+                    }
+                    if (service->actions_.set_loop_status) {
+                        service->actions_.set_loop_status(loop_status);
+                    }
+                    g_dbus_method_invocation_return_value(invocation, nullptr);
+                    service->notify_state_changed();
+                    return;
+                }
+                if (std::strcmp(property_name, "Rate") == 0) {
+                    if (!g_variant_is_of_type(value_ref.get(), G_VARIANT_TYPE("d"))) {
+                        g_dbus_method_invocation_return_error(invocation,
+                                                              G_DBUS_ERROR,
+                                                              G_DBUS_ERROR_INVALID_ARGS,
+                                                              "Invalid Rate value type");
+                        return;
+                    }
+                    gdouble rate = 0.0;
+                    g_variant_get(value_ref.get(), "d", &rate);
+                    if (service->actions_.set_rate) {
+                        service->actions_.set_rate(rate);
+                    }
+                    g_dbus_method_invocation_return_value(invocation, nullptr);
+                    return;
+                }
+                if (std::strcmp(property_name, "Shuffle") == 0) {
+                    if (!g_variant_is_of_type(value_ref.get(), G_VARIANT_TYPE_BOOLEAN)) {
+                        g_dbus_method_invocation_return_error(invocation,
+                                                              G_DBUS_ERROR,
+                                                              G_DBUS_ERROR_INVALID_ARGS,
+                                                              "Invalid Shuffle value type");
+                        return;
+                    }
+                    const bool shuffle = g_variant_get_boolean(value_ref.get()) != FALSE;
+                    if (service->actions_.set_shuffle) {
+                        service->actions_.set_shuffle(shuffle);
                     }
                     g_dbus_method_invocation_return_value(invocation, nullptr);
                     service->notify_state_changed();
@@ -519,7 +597,10 @@ void MprisService::handle_method_call(GDBusConnection*,
             gint64 offset = 0;
             g_variant_get(parameters, "(x)", &offset);
             if (service->actions_.seek) {
-                service->actions_.seek(static_cast<std::int64_t>(offset));
+                const std::int64_t position_usec = service->actions_.seek(static_cast<std::int64_t>(offset));
+                if (position_usec >= 0) {
+                    service->notify_seeked(position_usec);
+                }
             }
             g_dbus_method_invocation_return_value(invocation, nullptr);
             return;
@@ -530,7 +611,11 @@ void MprisService::handle_method_call(GDBusConnection*,
             g_variant_get(parameters, "(&ox)", &track_id, &position);
             if (service->actions_.set_position) {
                 const std::string track_id_value = track_id != nullptr ? track_id : std::string{};
-                service->actions_.set_position(static_cast<std::int64_t>(position), track_id_value);
+                const std::int64_t position_usec =
+                    service->actions_.set_position(static_cast<std::int64_t>(position), track_id_value);
+                if (position_usec >= 0) {
+                    service->notify_seeked(position_usec);
+                }
             }
             g_dbus_method_invocation_return_value(invocation, nullptr);
             return;
@@ -577,11 +662,12 @@ GVariant* MprisService::handle_get_property(GDBusConnection*,
         return nullptr;
     }
 
+    const MprisPlayerState state = service->current_state();
     if (std::strcmp(interface_name, "org.mpris.MediaPlayer2") == 0) {
-        return root_property(property_name);
+        return service->root_property_from_state(property_name, state);
     }
     if (std::strcmp(interface_name, "org.mpris.MediaPlayer2.Player") == 0) {
-        return service->player_property(property_name);
+        return service->player_property_from_state(property_name, state);
     }
     return nullptr;
 }
@@ -720,11 +806,14 @@ void MprisService::notify_state_changed() {
     const bool playback_changed = state.playback_status != last_playback_status_;
     const bool initial = last_metadata_signature_.empty();
     const bool volume_changed = initial || std::abs(state.volume - last_volume_) > 1e-9;
-    const bool loop_changed = initial || state.repeat_playlist != last_repeat_playlist_;
+    const bool loop_changed = initial || state.loop_status != last_loop_status_;
+    const bool shuffle_changed = initial || state.shuffle != last_shuffle_;
+    const bool fullscreen_changed = initial || state.fullscreen != last_fullscreen_;
     const bool capabilities_changed = last_capabilities_signature_.empty() ||
                                       capabilities_signature_value != last_capabilities_signature_;
 
-    if (!metadata_changed && !playback_changed && !volume_changed && !loop_changed && !capabilities_changed) {
+    if (!metadata_changed && !playback_changed && !volume_changed && !loop_changed && !shuffle_changed &&
+        !fullscreen_changed && !capabilities_changed) {
         return;
     }
 
@@ -745,7 +834,6 @@ void MprisService::notify_state_changed() {
                               "{sv}",
                               "PlaybackStatus",
                               g_variant_new_string(state.playback_status.c_str()));
-        g_variant_builder_add(&changed_builder, "{sv}", "Position", g_variant_new_int64(state.position_usec));
     }
 
     if (volume_changed) {
@@ -754,11 +842,24 @@ void MprisService::notify_state_changed() {
     }
 
     if (loop_changed) {
-        last_repeat_playlist_ = state.repeat_playlist;
+        last_loop_status_ = state.loop_status;
         g_variant_builder_add(&changed_builder,
                               "{sv}",
                               "LoopStatus",
-                              g_variant_new_string(loop_status_for(state.repeat_playlist)));
+                              g_variant_new_string(state.loop_status.c_str()));
+    }
+
+    if (shuffle_changed) {
+        last_shuffle_ = state.shuffle;
+        g_variant_builder_add(&changed_builder, "{sv}", "Shuffle", g_variant_new_boolean(state.shuffle));
+    }
+
+    if (fullscreen_changed) {
+        last_fullscreen_ = state.fullscreen;
+        GVariantBuilder root_builder;
+        g_variant_builder_init(&root_builder, G_VARIANT_TYPE("a{sv}"));
+        g_variant_builder_add(&root_builder, "{sv}", "Fullscreen", g_variant_new_boolean(state.fullscreen));
+        emit_properties_changed(connection_, "org.mpris.MediaPlayer2", &root_builder);
     }
 
     if (capabilities_changed) {
@@ -766,7 +867,10 @@ void MprisService::notify_state_changed() {
         add_capability_properties(&changed_builder, state);
     }
 
-    emit_player_properties(&changed_builder);
+    if (metadata_changed || playback_changed || volume_changed || loop_changed || shuffle_changed ||
+        capabilities_changed) {
+        emit_player_properties(&changed_builder);
+    }
 }
 
 } // namespace pcmtp

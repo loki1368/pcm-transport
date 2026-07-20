@@ -165,10 +165,15 @@ private:
     void mpris_advance_track(int direction);
     bool mpris_open_uri(const std::string& uri);
     bool validate_mpris_file_uri(const std::string& uri, std::string* local_path) const;
-    void mpris_seek(std::int64_t offset_usec);
-    bool mpris_set_position(std::int64_t position_usec, const std::string& track_id);
+    std::int64_t mpris_seek(std::int64_t offset_usec);
+    std::int64_t mpris_set_position(std::int64_t position_usec, const std::string& track_id);
+    std::int64_t current_mpris_track_length_usec() const;
+    std::int64_t current_mpris_track_position_usec() const;
     void mpris_set_volume(double volume);
-    void mpris_set_repeat_playlist(bool enabled);
+    void mpris_set_loop_status(const std::string& loop_status);
+    void mpris_set_rate(double rate);
+    void mpris_set_fullscreen(bool enabled);
+    void mpris_set_shuffle(bool enabled);
     void mpris_raise();
 
     static std::string format_time(std::uint64_t samples_per_channel, std::uint32_t sample_rate = 44100);
@@ -239,6 +244,9 @@ private:
     std::vector<BitDepthRule> bitdepth_rules_;
     bool normalization_in_progress_ = false;
     bool repeat_enabled_ = false;
+    std::string mpris_loop_status_ = "None";
+    bool mpris_shuffle_ = false;
+    bool mpris_fullscreen_ = false;
     bool finish_handled_ = false;
     bool track_switch_in_progress_ = false;
     bool gapless_chain_active_ = false;
@@ -262,7 +270,6 @@ private:
     std::uint64_t pending_seek_offset_ = 0;
     bool ui_closing_ = false;
     std::uint64_t mpris_track_epoch_ = 0;
-    mutable std::string mpris_cover_cache_audio_path_;
     mutable std::string mpris_cover_cache_directory_;
     mutable std::string mpris_cover_cache_art_path_;
     mutable bool mpris_cover_cache_valid_ = false;
