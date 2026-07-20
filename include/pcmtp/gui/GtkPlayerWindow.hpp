@@ -108,6 +108,10 @@ private:
                                           GtkTreePath* path,
                                           GtkTreeViewColumn* column,
                                           gpointer user_data);
+    static void on_playlist_search_changed(GtkEditable* editable, gpointer user_data);
+    static gboolean on_playlist_filter_visible(GtkTreeModel* model, GtkTreeIter* iter, gpointer user_data);
+    static gboolean on_playlist_view_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data);
+    static gboolean on_playlist_typeahead_clear_timeout(gpointer user_data);
     static void on_media_play(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_pause(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_stop(GSimpleAction* action, GVariant* parameter, gpointer user_data);
@@ -128,6 +132,11 @@ private:
     void playlist_metadata_probe_worker();
     static gboolean apply_playlist_metadata_probe(gpointer user_data);
     void update_playlist_view_row(std::size_t index);
+    bool find_playlist_view_path_for_index(std::size_t index, GtkTreePath** out_path) const;
+    void clear_playlist_search();
+    void reset_playlist_typeahead();
+    void apply_playlist_typeahead_selection();
+    void update_playlist_typeahead_popup();
     void start_current_track(bool restart_if_paused = true);
     void stop_playback();
     void play_track_index(std::size_t index);
@@ -242,7 +251,15 @@ private:
     GtkWidget* soft_volume_scale_ = nullptr;
     bool softvol_dragging_ = false;
     GtkListStore* playlist_store_ = nullptr;
+    GtkTreeModelFilter* playlist_filter_ = nullptr;
+    GtkWidget* playlist_search_entry_ = nullptr;
+    GtkWidget* playlist_typeahead_popup_ = nullptr;
+    GtkWidget* playlist_typeahead_entry_ = nullptr;
+    GtkWidget* playlist_scrolled_ = nullptr;
     GtkWidget* playlist_view_ = nullptr;
+    std::string playlist_filter_text_;
+    std::string playlist_typeahead_text_;
+    guint playlist_typeahead_timeout_id_ = 0;
 
     PlaybackEngine engine_;
     std::vector<PlaylistEntry> playlist_;
