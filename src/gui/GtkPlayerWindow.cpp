@@ -3444,23 +3444,18 @@ void GtkPlayerWindow::ensure_gapless_neighbors_probed(std::size_t index) {
         return;
     }
     ensure_playlist_entry_probed(index);
-    if (playlist_[index].cue_track) {
-        const std::size_t end = cue_chain_end_index(index);
-        for (std::size_t i = index + 1; i < end; ++i) {
-            ensure_playlist_entry_probed(i);
-        }
+    if (!playlist_[index].metadata_probed) {
         return;
     }
 
     std::size_t chain_end = index + 1;
-    while (chain_end < playlist_.size()) {
-        ensure_playlist_entry_probed(chain_end - 1);
-        ensure_playlist_entry_probed(chain_end);
-        const std::size_t new_end = file_chain_end_index(index);
-        if (new_end <= chain_end) {
-            break;
-        }
-        chain_end = new_end;
+    if (playlist_[index].cue_track) {
+        chain_end = cue_chain_end_index(index);
+    } else {
+        chain_end = file_chain_end_index(index);
+    }
+    for (std::size_t i = index + 1; i < chain_end; ++i) {
+        ensure_playlist_entry_probed(i);
     }
 }
 
@@ -3471,11 +3466,58 @@ void GtkPlayerWindow::cancel_playlist_metadata_probe() {
     }
     playlist_metadata_probe_cancel_.store(false, std::memory_order_release);
     playlist_metadata_probe_index_ = 0;
+    if (playlist_metadata_probe_ui_idle_id_ != 0) {
+        g_source_remove(playlist_metadata_probe_ui_idle_id_);
+        playlist_metadata_probe_ui_idle_id_ = 0;
+    }
+    playlist_metadata_probe_pending_ui_.clear();
+}
+
+gboolean GtkPlayerWindow::on_playlist_metadata_probe_ui_idle(gpointer user_data) {
+    auto* self = static_cast<GtkPlayerWindow*>(user_data);
+    if (self == nullptr) {
+        return G_SOURCE_REMOVE;
+    }
+    self->flush_playlist_metadata_probe_ui_updates();
+    return G_SOURCE_REMOVE;
+}
+
+void GtkPlayerWindow::flush_playlist_metadata_probe_ui_updates() {
+    playlist_metadata_probe_ui_idle_id_ = 0;
+    if (playlist_metadata_probe_pending_ui_.empty()) {
+        return;
+    }
+    for (std::size_t index : playlist_metadata_probe_pending_ui_) {
+        update_playlist_view_row(index);
+    }
+    playlist_metadata_probe_pending_ui_.clear();
+}
+
+void GtkPlayerWindow::schedule_playlist_metadata_probe_if_needed() {
+    if (playlist_.empty() || ui_closing_) {
+        return;
+    }
+    if (playlist_metadata_probe_thread_.joinable()) {
+        return;
+    }
+    for (const PlaylistEntry& entry : playlist_) {
+        if (!entry.metadata_probed) {
+            schedule_playlist_metadata_probe();
+            return;
+        }
+    }
 }
 
 void GtkPlayerWindow::schedule_playlist_metadata_probe() {
     cancel_playlist_metadata_probe();
     if (playlist_.empty()) {
+        return;
+    }
+    playlist_metadata_probe_index_ = 0;
+    while (playlist_metadata_probe_index_ < playlist_.size() && playlist_[playlist_metadata_probe_index_].metadata_probed) {
+        ++playlist_metadata_probe_index_;
+    }
+    if (playlist_metadata_probe_index_ >= playlist_.size()) {
         return;
     }
     playlist_metadata_probe_thread_ = std::thread(&GtkPlayerWindow::playlist_metadata_probe_worker, this);
@@ -3489,46 +3531,51 @@ gboolean GtkPlayerWindow::apply_playlist_metadata_probe(gpointer user_data) {
     }
     if (payload->apply.index < self->playlist_.size()) {
         self->playlist_[payload->apply.index] = std::move(payload->apply.entry);
-        self->update_playlist_view_row(payload->apply.index);
+        self->playlist_metadata_probe_pending_ui_.push_back(payload->apply.index);
+        if (self->playlist_metadata_probe_ui_idle_id_ == 0) {
+            self->playlist_metadata_probe_ui_idle_id_ =
+                g_idle_add(GtkPlayerWindow::on_playlist_metadata_probe_ui_idle, self);
+        }
     }
     return G_SOURCE_REMOVE;
 }
 
 void GtkPlayerWindow::playlist_metadata_probe_worker() {
-    for (;;) {
-        if (playlist_metadata_probe_cancel_.load(std::memory_order_acquire)) {
-            break;
-        }
-
-        const std::size_t index = playlist_metadata_probe_index_++;
+    while (!playlist_metadata_probe_cancel_.load(std::memory_order_acquire)) {
         PlaylistEntry entry;
+        std::size_t index = 0;
         {
             std::lock_guard<std::mutex> lock(playlist_metadata_probe_mutex_);
+            index = playlist_metadata_probe_index_;
             if (index >= playlist_.size()) {
                 break;
+            }
+            playlist_metadata_probe_index_ = index + 1;
+            if (playlist_[index].metadata_probed) {
+                continue;
             }
             entry = playlist_[index];
         }
 
-        if (!entry.metadata_probed) {
-            probe_playlist_entry(entry, true);
-            if (playlist_metadata_probe_cancel_.load(std::memory_order_acquire)) {
-                break;
-            }
-            auto* payload = new PlaylistMetadataProbeInvoke{this, PlaylistMetadataProbeApply{index, std::move(entry)}};
-            g_main_context_invoke_full(g_main_context_default(),
-                                       G_PRIORITY_LOW,
-                                       apply_playlist_metadata_probe,
-                                       payload,
-                                       nullptr);
+        probe_playlist_entry(entry, true);
+        if (playlist_metadata_probe_cancel_.load(std::memory_order_acquire)) {
+            break;
         }
+        auto* payload = new PlaylistMetadataProbeInvoke{this, PlaylistMetadataProbeApply{index, std::move(entry)}};
+        g_main_context_invoke_full(g_main_context_default(),
+                                   G_PRIORITY_LOW,
+                                   apply_playlist_metadata_probe,
+                                   payload,
+                                   nullptr);
     }
 
     if (!playlist_metadata_probe_cancel_.load(std::memory_order_acquire)) {
         g_main_context_invoke_full(g_main_context_default(),
                                    G_PRIORITY_LOW,
                                    +[](gpointer user_data) -> gboolean {
-                                       static_cast<GtkPlayerWindow*>(user_data)->refresh_display();
+                                       auto* self = static_cast<GtkPlayerWindow*>(user_data);
+                                       self->flush_playlist_metadata_probe_ui_updates();
+                                       self->refresh_display();
                                        return G_SOURCE_REMOVE;
                                    },
                                    this,
@@ -3735,6 +3782,7 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
         return;
     }
 
+    cancel_playlist_metadata_probe();
     ensure_gapless_neighbors_probed(index);
 
     track_switch_in_progress_ = true;
@@ -3757,6 +3805,7 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
         } else {
             notify_mpris_state_changed();
         }
+        schedule_playlist_metadata_probe_if_needed();
         return;
     }
 
@@ -3825,6 +3874,7 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
         } else {
             notify_mpris_state_changed();
         }
+        schedule_playlist_metadata_probe_if_needed();
     } catch (const std::exception& ex) {
         clear_gapless_chain();
         track_switch_in_progress_ = false;
@@ -3839,6 +3889,7 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
         gtk_dialog_run(GTK_DIALOG(msg));
         gtk_widget_destroy(msg);
         notify_mpris_state_changed();
+        schedule_playlist_metadata_probe_if_needed();
     }
 }
 
@@ -3922,7 +3973,7 @@ void GtkPlayerWindow::open_file_dialog() {
                 }
             }
             if (needs_metadata_probe) {
-                schedule_playlist_metadata_probe();
+                schedule_playlist_metadata_probe_if_needed();
             }
             if (!playlist_.empty()) {
                 select_playlist_row(current_track_index_);

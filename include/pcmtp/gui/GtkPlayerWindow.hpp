@@ -121,7 +121,10 @@ private:
     void ensure_gapless_neighbors_probed(std::size_t index);
     ExternalAudioInfo probe_external_cached(const std::string& audio_path, bool background_priority = false);
     void schedule_playlist_metadata_probe();
+    void schedule_playlist_metadata_probe_if_needed();
     void cancel_playlist_metadata_probe();
+    void flush_playlist_metadata_probe_ui_updates();
+    static gboolean on_playlist_metadata_probe_ui_idle(gpointer user_data);
     void playlist_metadata_probe_worker();
     static gboolean apply_playlist_metadata_probe(gpointer user_data);
     void update_playlist_view_row(std::size_t index);
@@ -284,6 +287,8 @@ private:
     std::thread playlist_metadata_probe_thread_;
     std::atomic<bool> playlist_metadata_probe_cancel_{false};
     std::mutex playlist_metadata_probe_mutex_;
+    std::vector<std::size_t> playlist_metadata_probe_pending_ui_;
+    guint playlist_metadata_probe_ui_idle_id_ = 0;
     std::chrono::steady_clock::time_point clip_hold_until_{};
     std::uint32_t clip_hold_samples_ = 0;
     guint ui_timer_id_ = 0;
