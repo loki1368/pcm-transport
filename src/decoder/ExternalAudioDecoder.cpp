@@ -74,10 +74,23 @@ struct CommandCaptureResult {
     int status = 0;
 };
 
-CommandCaptureResult run_command_capture(const std::string& command) {
+std::string low_priority_command_prefix() {
+    static const std::string prefix = []() {
+        if (access("/usr/bin/ionice", X_OK) == 0 || access("/bin/ionice", X_OK) == 0) {
+            return "nice -n 19 ionice -c3 ";
+        }
+        return "nice -n 19 ";
+    }();
+    return prefix;
+}
+
+CommandCaptureResult run_command_capture(const std::string& command, bool background_priority = false) {
     CommandCaptureResult result;
     const std::string stderr_path = make_temp_stderr_path("pcm_transport_probe");
     std::string full_command = command;
+    if (background_priority) {
+        full_command = low_priority_command_prefix() + full_command;
+    }
     if (!stderr_path.empty()) {
         full_command += " 2>" + shell_escape_for_command(stderr_path);
     } else {
@@ -275,12 +288,12 @@ bool probe_adts_aac_fast(const std::string& path, ExternalAudioInfo& info) {
     return true;
 }
 
-bool probe_aac_frame_count_ffprobe(const std::string& path, ExternalAudioInfo& info) {
+bool probe_aac_frame_count_ffprobe(const std::string& path, ExternalAudioInfo& info, bool background_priority) {
     const std::string cmd =
         "ffprobe -v error -count_frames -select_streams a:0 "
         "-show_entries stream=nb_read_frames,sample_rate,channels "
         "-of default=nokey=0:noprint_wrappers=1 " + shell_escape_for_command(path);
-    const CommandCaptureResult result = run_command_capture(cmd);
+    const CommandCaptureResult result = run_command_capture(cmd, background_priority);
     if (result.status != 0 || result.stdout_text.empty()) {
         return false;
     }
@@ -321,7 +334,7 @@ bool probe_aac_frame_count_ffprobe(const std::string& path, ExternalAudioInfo& i
 }
 
 
-bool probe_m4a_packet_duration_ffprobe(const std::string& path, ExternalAudioInfo& info) {
+bool probe_m4a_packet_duration_ffprobe(const std::string& path, ExternalAudioInfo& info, bool background_priority) {
     if (info.format.sample_rate == 0) {
         return false;
     }
@@ -329,7 +342,7 @@ bool probe_m4a_packet_duration_ffprobe(const std::string& path, ExternalAudioInf
         "ffprobe -v error -select_streams a:0 "
         "-show_packets -show_entries packet=duration_time,duration "
         "-of default=nokey=0:noprint_wrappers=1 " + shell_escape_for_command(path);
-    const CommandCaptureResult result = run_command_capture(cmd);
+    const CommandCaptureResult result = run_command_capture(cmd, background_priority);
     if (result.status != 0 || result.stdout_text.empty()) {
         return false;
     }
@@ -529,7 +542,10 @@ std::size_t ExternalAudioDecoder::bytes_per_sample() const {
     return 4;
 }
 
-ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path, std::uint32_t forced_output_sample_rate, std::uint16_t forced_output_bits_per_sample) {
+ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path,
+                                                     std::uint32_t forced_output_sample_rate,
+                                                     std::uint16_t forced_output_bits_per_sample,
+                                                     bool background_priority) {
     if (!looks_supported(path)) {
         throw std::runtime_error("ExternalAudioDecoder does not support this file type");
     }
@@ -553,7 +569,7 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path, 
             "-of default=nokey=0:noprint_wrappers=1 " +
             shell_escape_for_command(path);
         Logger::instance().debug("ExternalAudioDecoder unified probe: " + path);
-        const CommandCaptureResult probe = run_command_capture(probe_cmd);
+        const CommandCaptureResult probe = run_command_capture(probe_cmd, background_priority);
         if (probe.status != 0) {
             Logger::instance().error("ffprobe failed for: " + path + (probe.stderr_text.empty() ? std::string() : ("\nffprobe stderr:\n" + probe.stderr_text)));
         } else if (!probe.stderr_text.empty()) {
@@ -621,7 +637,7 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path, 
 
     if (ext == ".m4a" && info.codec_name == "alac" && info.total_samples_per_channel == 0) {
         ExternalAudioInfo m4a_info = info;
-        if (probe_m4a_packet_duration_ffprobe(path, m4a_info)) {
+        if (probe_m4a_packet_duration_ffprobe(path, m4a_info, background_priority)) {
             m4a_info.tags = info.tags;
             info = m4a_info;
         } else {
@@ -632,7 +648,7 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path, 
 
     if (ext == ".aac") {
         ExternalAudioInfo aac_info = info;
-        if (probe_adts_aac_fast(path, aac_info) || probe_aac_frame_count_ffprobe(path, aac_info)) {
+        if (probe_adts_aac_fast(path, aac_info) || probe_aac_frame_count_ffprobe(path, aac_info, background_priority)) {
             aac_info.tags = info.tags;
             info = aac_info;
         } else {

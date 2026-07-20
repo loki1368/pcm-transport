@@ -143,28 +143,36 @@ bool FlacStreamDecoder::seek_to_sample(std::uint64_t sample_index) {
     return FLAC__stream_decoder_seek_absolute(decoder_, sample_index) != 0;
 }
 
-FlacTags FlacStreamDecoder::read_tags(const std::string& path) {
-    FlacTags tags;
+FlacFileProbe FlacStreamDecoder::probe_file(const std::string& path) {
+    FlacFileProbe result;
     FLAC__Metadata_Chain* chain = FLAC__metadata_chain_new();
     if (chain == nullptr) {
-        return tags;
+        return result;
     }
 
     if (!FLAC__metadata_chain_read(chain, path.c_str())) {
         FLAC__metadata_chain_delete(chain);
-        return tags;
+        return result;
     }
 
     FLAC__Metadata_Iterator* iterator = FLAC__metadata_iterator_new();
     if (iterator == nullptr) {
         FLAC__metadata_chain_delete(chain);
-        return tags;
+        return result;
     }
 
     FLAC__metadata_iterator_init(iterator, chain);
     do {
         FLAC__StreamMetadata* block = FLAC__metadata_iterator_get_block(iterator);
-        if (block != nullptr && block->type == FLAC__METADATA_TYPE_VORBIS_COMMENT) {
+        if (block == nullptr) {
+            continue;
+        }
+        if (block->type == FLAC__METADATA_TYPE_STREAMINFO) {
+            result.format.sample_rate = block->data.stream_info.sample_rate;
+            result.format.channels = block->data.stream_info.channels;
+            result.format.bits_per_sample = static_cast<std::uint16_t>(block->data.stream_info.bits_per_sample);
+            result.total_samples_per_channel = block->data.stream_info.total_samples;
+        } else if (block->type == FLAC__METADATA_TYPE_VORBIS_COMMENT) {
             const FLAC__StreamMetadata_VorbisComment& vc = block->data.vorbis_comment;
             for (unsigned i = 0; i < vc.num_comments; ++i) {
                 const FLAC__StreamMetadata_VorbisComment_Entry& entry = vc.comments[i];
@@ -176,12 +184,12 @@ FlacTags FlacStreamDecoder::read_tags(const std::string& path) {
                 const std::string key = to_upper_ascii(text.substr(0, eq));
                 const std::string value = text.substr(eq + 1);
                 if (key == "TITLE") {
-                    tags.title = value;
+                    result.tags.title = value;
                 } else if (key == "ARTIST") {
-                    tags.artist = value;
+                    result.tags.artist = value;
                 } else if (key == "TRACKNUMBER") {
                     try {
-                        tags.track_number = std::stoi(value);
+                        result.tags.track_number = std::stoi(value);
                     } catch (...) {
                     }
                 }
@@ -191,7 +199,12 @@ FlacTags FlacStreamDecoder::read_tags(const std::string& path) {
 
     FLAC__metadata_iterator_delete(iterator);
     FLAC__metadata_chain_delete(chain);
-    return tags;
+    result.valid = result.format.sample_rate > 0 && result.format.channels > 0;
+    return result;
+}
+
+FlacTags FlacStreamDecoder::read_tags(const std::string& path) {
+    return probe_file(path).tags;
 }
 
 ::FLAC__StreamDecoderWriteStatus FlacStreamDecoder::write_callback(const ::FLAC__StreamDecoder*,

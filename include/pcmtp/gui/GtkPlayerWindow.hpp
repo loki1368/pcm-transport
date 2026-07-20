@@ -2,9 +2,12 @@
 
 #include <gtk/gtk.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -63,6 +66,17 @@ private:
         std::shared_ptr<PcmBuffer> normalized_pcm;
         AudioFormat normalized_format{};
         bool normalization_matches_current = false;
+        bool metadata_probed = true;
+    };
+
+    struct PlaylistMetadataProbeApply {
+        std::size_t index = 0;
+        PlaylistEntry entry;
+    };
+
+    struct PlaylistMetadataProbeInvoke {
+        GtkPlayerWindow* window = nullptr;
+        PlaylistMetadataProbeApply apply;
     };
 
     static void on_activate(GtkApplication* app, gpointer user_data);
@@ -101,7 +115,16 @@ private:
     static void on_media_previous(GSimpleAction* action, GVariant* parameter, gpointer user_data);
 
     void build_ui(GtkApplication* app);
-    void append_path_to_playlist(const std::string& path);
+    void append_path_to_playlist(const std::string& path, bool defer_metadata_probe = false);
+    void probe_playlist_entry(PlaylistEntry& entry, bool background_priority = false);
+    void ensure_playlist_entry_probed(std::size_t index);
+    void ensure_gapless_neighbors_probed(std::size_t index);
+    ExternalAudioInfo probe_external_cached(const std::string& audio_path, bool background_priority = false);
+    void schedule_playlist_metadata_probe();
+    void cancel_playlist_metadata_probe();
+    void playlist_metadata_probe_worker();
+    static gboolean apply_playlist_metadata_probe(gpointer user_data);
+    void update_playlist_view_row(std::size_t index);
     void start_current_track(bool restart_if_paused = true);
     void stop_playback();
     void play_track_index(std::size_t index);
@@ -257,9 +280,14 @@ private:
     std::string last_open_directory_;
     std::unordered_map<std::string, CueSheet> cue_cache_;
     std::unordered_map<std::string, ExternalAudioInfo> external_probe_cache_;
+    mutable std::mutex external_probe_cache_mutex_;
+    std::thread playlist_metadata_probe_thread_;
+    std::atomic<bool> playlist_metadata_probe_cancel_{false};
+    std::mutex playlist_metadata_probe_mutex_;
     std::chrono::steady_clock::time_point clip_hold_until_{};
     std::uint32_t clip_hold_samples_ = 0;
     guint ui_timer_id_ = 0;
+    std::size_t playlist_metadata_probe_index_ = 0;
     unsigned int ui_refresh_tick_ = 0;
     bool progress_blink_enabled_ = true;
     std::string alsa_24bit_container_preference_ = "auto";

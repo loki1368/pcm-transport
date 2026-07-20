@@ -20,6 +20,13 @@ struct FlacTags {
     int track_number = 0;
 };
 
+struct FlacFileProbe {
+    AudioFormat format{};
+    std::uint64_t total_samples_per_channel = 0;
+    FlacTags tags;
+    bool valid = false;
+};
+
 class FlacStreamDecoder final : public IAudioDecoder {
 public:
     FlacStreamDecoder() = default;
@@ -34,6 +41,7 @@ public:
     bool seek_to_sample(std::uint64_t sample_index) override;
 
     static FlacTags read_tags(const std::string& path);
+    static FlacFileProbe probe_file(const std::string& path);
 
 
 private:

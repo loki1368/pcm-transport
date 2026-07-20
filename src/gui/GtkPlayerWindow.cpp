@@ -544,6 +544,8 @@ enum PlaylistColumns {
     COL_COUNT
 };
 
+constexpr std::size_t kBulkPlaylistImportThreshold = 8;
+
 std::string base_name(const std::string& path) {
     const std::size_t pos = path.find_last_of("/\\");
     if (pos == std::string::npos) {
@@ -2509,6 +2511,7 @@ void GtkPlayerWindow::stop_ui_updates() {
         g_source_remove(ui_timer_id_);
         ui_timer_id_ = 0;
     }
+    cancel_playlist_metadata_probe();
 }
 
 void GtkPlayerWindow::cancel_pending_seek() {
@@ -3324,9 +3327,238 @@ void GtkPlayerWindow::update_clip_indicator(bool clip_detected, std::uint32_t cl
     }
 }
 
-void GtkPlayerWindow::append_path_to_playlist(const std::string& path) {
+ExternalAudioInfo GtkPlayerWindow::probe_external_cached(const std::string& audio_path, bool background_priority) {
+    {
+        std::lock_guard<std::mutex> lock(external_probe_cache_mutex_);
+        std::unordered_map<std::string, ExternalAudioInfo>::const_iterator cached = external_probe_cache_.find(audio_path);
+        if (cached != external_probe_cache_.end()) {
+            return cached->second;
+        }
+    }
+    ExternalAudioInfo info = ExternalAudioDecoder::probe_metadata(audio_path, 0, 0, background_priority);
+    std::lock_guard<std::mutex> lock(external_probe_cache_mutex_);
+    external_probe_cache_[audio_path] = info;
+    return info;
+}
+
+void GtkPlayerWindow::probe_playlist_entry(PlaylistEntry& entry, bool background_priority) {
+    if (entry.metadata_probed || entry.cue_track) {
+        return;
+    }
+
+    const std::string& path = entry.audio_file_path;
+    const std::string ext = lower_extension(path);
+    AudioFormat probed_format{};
+    std::uint64_t probed_total_samples = 0;
+    bool native_decode = false;
+    ExternalAudioInfo external_info{};
+    bool have_external_info = false;
+    FlacTags flac_tags;
+    GenericTags generic_tags;
+
+    if (ext == ".flac") {
+        const FlacFileProbe flac_probe = FlacStreamDecoder::probe_file(path);
+        if (flac_probe.valid) {
+            probed_format = flac_probe.format;
+            probed_total_samples = flac_probe.total_samples_per_channel;
+            native_decode = true;
+            flac_tags = flac_probe.tags;
+        } else {
+            external_info = probe_external_cached(path, background_priority);
+            have_external_info = true;
+            probed_format = external_info.format;
+            probed_total_samples = external_info.total_samples_per_channel;
+            generic_tags = external_info.tags;
+        }
+    } else {
+        external_info = probe_external_cached(path, background_priority);
+        have_external_info = true;
+        probed_format = external_info.format;
+        probed_total_samples = external_info.total_samples_per_channel;
+        generic_tags = external_info.tags;
+    }
+
+    if (ext == ".flac" && native_decode) {
+        entry.track_number = flac_tags.track_number > 0 ? flac_tags.track_number : entry.track_number;
+        if (entry.title.empty() || entry.title == base_name(path)) {
+            entry.title = flac_tags.title.empty() ? base_name(path) : flac_tags.title;
+        }
+        if (entry.performer.empty()) {
+            entry.performer = flac_tags.artist;
+        }
+    } else {
+        entry.track_number = generic_tags.track_number > 0 ? generic_tags.track_number : entry.track_number;
+        if (entry.title.empty() || entry.title == base_name(path)) {
+            entry.title = generic_tags.title.empty() ? base_name(path) : generic_tags.title;
+        }
+        if (entry.performer.empty()) {
+            entry.performer = generic_tags.artist;
+        }
+    }
+    entry.start_sample = 0;
+    entry.end_sample = probed_total_samples;
+    if (entry.source_label.empty()) {
+        entry.source_label = base_name(path);
+    }
+    entry.decoded_format = probed_format;
+    entry.source_sample_rate = entry.decoded_format.sample_rate;
+    entry.source_bits_per_sample = entry.decoded_format.bits_per_sample;
+    const std::uint32_t target_rate = target_sample_rate_for(entry.source_sample_rate);
+    const std::uint16_t target_bits = target_bits_for(entry.source_bits_per_sample);
+    entry.resampled = (target_rate > 0 && target_rate != entry.source_sample_rate);
+    entry.resampled_from_rate = entry.resampled ? entry.source_sample_rate : 0;
+    entry.bitdepth_converted = (target_bits > 0 && target_bits != entry.source_bits_per_sample);
+    entry.native_decode = native_decode && !entry.resampled && !entry.bitdepth_converted;
+    entry.processed_by_ffmpeg = (!entry.native_decode);
+    if (entry.resampled) {
+        entry.end_sample = static_cast<std::uint64_t>(std::llround(static_cast<double>(entry.end_sample) * static_cast<double>(target_rate) / static_cast<double>(entry.source_sample_rate)));
+        entry.decoded_format.sample_rate = target_rate;
+    }
+    if (entry.bitdepth_converted) {
+        entry.decoded_format.bits_per_sample = target_bits;
+    }
+    entry.codec_name = native_decode ? std::string("flac") : external_info.codec_name;
+    entry.lossless_source = native_decode || (have_external_info && external_info.lossless) ||
+                            (ext == ".flac" || ext == ".wav" || ext == ".wave" || ext == ".bwf" || ext == ".aiff" || ext == ".aif" || ext == ".au" || ext == ".snd" || ext == ".caf" || ext == ".ape" || ext == ".wv" || ext == ".tak" || ext == ".tta" || ext == ".dsf");
+    entry.lossy_source = (!entry.lossless_source && (ext == ".mp3" || ext == ".m4a" || ext == ".aac" || ext == ".ogg" || ext == ".oga" || ext == ".opus" || ext == ".wma" || ext == ".asf" || ext == ".xwma" || ext == ".oma" || ext == ".aa3" || ext == ".at3" || ext == ".mpc" || ext == ".mp+" || ext == ".mpp"));
+    entry.title = safe_utf8_for_display(entry.title);
+    entry.performer = safe_utf8_for_display(entry.performer);
+    entry.source_label = safe_utf8_for_display(entry.source_label);
+    entry.metadata_probed = true;
+}
+
+void GtkPlayerWindow::ensure_playlist_entry_probed(std::size_t index) {
+    if (index >= playlist_.size()) {
+        return;
+    }
+    PlaylistEntry& entry = playlist_[index];
+    if (entry.metadata_probed) {
+        return;
+    }
+    probe_playlist_entry(entry);
+    update_playlist_view_row(index);
+}
+
+void GtkPlayerWindow::ensure_gapless_neighbors_probed(std::size_t index) {
+    if (index >= playlist_.size()) {
+        return;
+    }
+    ensure_playlist_entry_probed(index);
+    if (playlist_[index].cue_track) {
+        const std::size_t end = cue_chain_end_index(index);
+        for (std::size_t i = index + 1; i < end; ++i) {
+            ensure_playlist_entry_probed(i);
+        }
+        return;
+    }
+
+    std::size_t chain_end = index + 1;
+    while (chain_end < playlist_.size()) {
+        ensure_playlist_entry_probed(chain_end - 1);
+        ensure_playlist_entry_probed(chain_end);
+        const std::size_t new_end = file_chain_end_index(index);
+        if (new_end <= chain_end) {
+            break;
+        }
+        chain_end = new_end;
+    }
+}
+
+void GtkPlayerWindow::cancel_playlist_metadata_probe() {
+    playlist_metadata_probe_cancel_.store(true, std::memory_order_release);
+    if (playlist_metadata_probe_thread_.joinable()) {
+        playlist_metadata_probe_thread_.join();
+    }
+    playlist_metadata_probe_cancel_.store(false, std::memory_order_release);
+    playlist_metadata_probe_index_ = 0;
+}
+
+void GtkPlayerWindow::schedule_playlist_metadata_probe() {
+    cancel_playlist_metadata_probe();
+    if (playlist_.empty()) {
+        return;
+    }
+    playlist_metadata_probe_thread_ = std::thread(&GtkPlayerWindow::playlist_metadata_probe_worker, this);
+}
+
+gboolean GtkPlayerWindow::apply_playlist_metadata_probe(gpointer user_data) {
+    std::unique_ptr<PlaylistMetadataProbeInvoke> payload(static_cast<PlaylistMetadataProbeInvoke*>(user_data));
+    GtkPlayerWindow* self = payload->window;
+    if (self == nullptr || self->playlist_metadata_probe_cancel_.load(std::memory_order_acquire)) {
+        return G_SOURCE_REMOVE;
+    }
+    if (payload->apply.index < self->playlist_.size()) {
+        self->playlist_[payload->apply.index] = std::move(payload->apply.entry);
+        self->update_playlist_view_row(payload->apply.index);
+    }
+    return G_SOURCE_REMOVE;
+}
+
+void GtkPlayerWindow::playlist_metadata_probe_worker() {
+    for (;;) {
+        if (playlist_metadata_probe_cancel_.load(std::memory_order_acquire)) {
+            break;
+        }
+
+        const std::size_t index = playlist_metadata_probe_index_++;
+        PlaylistEntry entry;
+        {
+            std::lock_guard<std::mutex> lock(playlist_metadata_probe_mutex_);
+            if (index >= playlist_.size()) {
+                break;
+            }
+            entry = playlist_[index];
+        }
+
+        if (!entry.metadata_probed) {
+            probe_playlist_entry(entry, true);
+            if (playlist_metadata_probe_cancel_.load(std::memory_order_acquire)) {
+                break;
+            }
+            auto* payload = new PlaylistMetadataProbeInvoke{this, PlaylistMetadataProbeApply{index, std::move(entry)}};
+            g_main_context_invoke_full(g_main_context_default(),
+                                       G_PRIORITY_LOW,
+                                       apply_playlist_metadata_probe,
+                                       payload,
+                                       nullptr);
+        }
+    }
+
+    if (!playlist_metadata_probe_cancel_.load(std::memory_order_acquire)) {
+        g_main_context_invoke_full(g_main_context_default(),
+                                   G_PRIORITY_LOW,
+                                   +[](gpointer user_data) -> gboolean {
+                                       static_cast<GtkPlayerWindow*>(user_data)->refresh_display();
+                                       return G_SOURCE_REMOVE;
+                                   },
+                                   this,
+                                   nullptr);
+    }
+}
+
+void GtkPlayerWindow::update_playlist_view_row(std::size_t index) {
+    if (index >= playlist_.size() || playlist_store_ == nullptr) {
+        return;
+    }
+    GtkTreePath* path = gtk_tree_path_new_from_indices(static_cast<int>(index), -1);
+    GtkTreeIter iter;
+    if (gtk_tree_model_get_iter(GTK_TREE_MODEL(playlist_store_), &iter, path)) {
+        const PlaylistEntry& entry = playlist_[index];
+        const std::string trackno = std::to_string(entry.track_number);
+        gtk_list_store_set(playlist_store_, &iter,
+                           COL_TRACKNO, trackno.c_str(),
+                           COL_ARTIST, safe_utf8_for_display(entry.performer).c_str(),
+                           COL_TITLE, safe_utf8_for_display(entry.title).c_str(),
+                           COL_SOURCE, safe_utf8_for_display(entry.source_label).c_str(),
+                           -1);
+    }
+    gtk_tree_path_free(path);
+}
+
+void GtkPlayerWindow::append_path_to_playlist(const std::string& path, bool defer_metadata_probe) {
     if (M3uPlaylistReader::looks_like_playlist_path(path)) {
         const std::vector<std::string> entries = M3uPlaylistReader::read_local_paths(path);
+        const bool defer_children = defer_metadata_probe || entries.size() >= kBulkPlaylistImportThreshold;
         Logger::instance().info("Importing playlist: " + path + " entries=" + std::to_string(entries.size()));
         for (std::size_t i = 0; i < entries.size(); ++i) {
             const std::string& item = entries[i];
@@ -3335,23 +3567,13 @@ void GtkPlayerWindow::append_path_to_playlist(const std::string& path) {
                 continue;
             }
             try {
-                append_path_to_playlist(item);
+                append_path_to_playlist(item, defer_children);
             } catch (const std::exception& ex) {
                 Logger::instance().debug(std::string("Skipping playlist entry: ") + item + " (" + ex.what() + ")");
             }
         }
         return;
     }
-
-    auto probe_external = [this](const std::string& audio_path) -> ExternalAudioInfo {
-        std::unordered_map<std::string, ExternalAudioInfo>::const_iterator cached = external_probe_cache_.find(audio_path);
-        if (cached != external_probe_cache_.end()) {
-            return cached->second;
-        }
-        ExternalAudioInfo info = ExternalAudioDecoder::probe_metadata(audio_path);
-        external_probe_cache_[audio_path] = info;
-        return info;
-    };
 
     if (CueParser::looks_like_cue_path(path)) {
         CueSheet sheet;
@@ -3368,22 +3590,21 @@ void GtkPlayerWindow::append_path_to_playlist(const std::string& path) {
             const std::string audio_ext = lower_extension(audio_path);
             std::uint64_t total_samples = 0;
             if (audio_ext == ".flac") {
-                try {
-                    std::unique_ptr<IAudioDecoder> audio_probe(new FlacStreamDecoder());
-                    audio_probe->open(audio_path);
-                    total_samples = audio_probe->total_samples_per_channel();
-                    cue_format = audio_probe->format();
+                const FlacFileProbe flac_probe = FlacStreamDecoder::probe_file(audio_path);
+                if (flac_probe.valid) {
+                    total_samples = flac_probe.total_samples_per_channel;
+                    cue_format = flac_probe.format;
                     cue_native = true;
                     cue_format_ready = true;
-                } catch (...) {
-                    cue_external_info = probe_external(audio_path);
+                } else {
+                    cue_external_info = probe_external_cached(audio_path);
                     cue_external_info_ready = true;
                     total_samples = cue_external_info.total_samples_per_channel;
                     cue_format = cue_external_info.format;
                     cue_format_ready = true;
                 }
             } else {
-                cue_external_info = probe_external(audio_path);
+                cue_external_info = probe_external_cached(audio_path);
                 cue_external_info_ready = true;
                 total_samples = cue_external_info.total_samples_per_channel;
                 cue_format = cue_external_info.format;
@@ -3396,18 +3617,17 @@ void GtkPlayerWindow::append_path_to_playlist(const std::string& path) {
         const std::string cue_audio_ext = lower_extension(sheet.audio_file_path);
         if (!cue_format_ready) {
             if (cue_audio_ext == ".flac") {
-                try {
-                    std::unique_ptr<IAudioDecoder> cue_probe(new FlacStreamDecoder());
-                    cue_probe->open(sheet.audio_file_path);
-                    cue_format = cue_probe->format();
+                const FlacFileProbe flac_probe = FlacStreamDecoder::probe_file(sheet.audio_file_path);
+                if (flac_probe.valid) {
+                    cue_format = flac_probe.format;
                     cue_native = true;
-                } catch (...) {
-                    cue_external_info = probe_external(sheet.audio_file_path);
+                } else {
+                    cue_external_info = probe_external_cached(sheet.audio_file_path);
                     cue_external_info_ready = true;
                     cue_format = cue_external_info.format;
                 }
             } else {
-                cue_external_info = probe_external(sheet.audio_file_path);
+                cue_external_info = probe_external_cached(sheet.audio_file_path);
                 cue_external_info_ready = true;
                 cue_format = cue_external_info.format;
             }
@@ -3449,81 +3669,29 @@ void GtkPlayerWindow::append_path_to_playlist(const std::string& path) {
             entry.title = safe_utf8_for_display(entry.title);
             entry.performer = safe_utf8_for_display(entry.performer);
             entry.source_label = safe_utf8_for_display(entry.source_label);
+            entry.metadata_probed = true;
             playlist_.push_back(entry);
         }
         return;
     }
 
-    const std::string ext = lower_extension(path);
-    AudioFormat probed_format{};
-    std::uint64_t probed_total_samples = 0;
-    bool native_decode = false;
-    ExternalAudioInfo external_info{};
-    bool have_external_info = false;
-    FlacTags flac_tags;
-    GenericTags generic_tags;
-
-    if (ext == ".flac") {
-        try {
-            std::unique_ptr<IAudioDecoder> probe_decoder(new FlacStreamDecoder());
-            probe_decoder->open(path);
-            probed_format = probe_decoder->format();
-            probed_total_samples = probe_decoder->total_samples_per_channel();
-            native_decode = true;
-            flac_tags = FlacStreamDecoder::read_tags(path);
-        } catch (...) {
-            external_info = probe_external(path);
-            have_external_info = true;
-            probed_format = external_info.format;
-            probed_total_samples = external_info.total_samples_per_channel;
-            generic_tags = external_info.tags;
-        }
-    } else {
-        external_info = probe_external(path);
-        have_external_info = true;
-        probed_format = external_info.format;
-        probed_total_samples = external_info.total_samples_per_channel;
-        generic_tags = external_info.tags;
+    if (defer_metadata_probe) {
+        PlaylistEntry entry;
+        entry.audio_file_path = path;
+        entry.track_number = static_cast<int>(playlist_.size() + 1);
+        entry.title = safe_utf8_for_display(base_name(path));
+        entry.source_label = entry.title;
+        entry.metadata_probed = false;
+        playlist_.push_back(entry);
+        return;
     }
 
     PlaylistEntry entry;
     entry.audio_file_path = path;
-    if (ext == ".flac" && native_decode) {
-        entry.track_number = flac_tags.track_number > 0 ? flac_tags.track_number : static_cast<int>(playlist_.size() + 1);
-        entry.title = flac_tags.title.empty() ? base_name(path) : flac_tags.title;
-        entry.performer = flac_tags.artist;
-    } else {
-        entry.track_number = generic_tags.track_number > 0 ? generic_tags.track_number : static_cast<int>(playlist_.size() + 1);
-        entry.title = generic_tags.title.empty() ? base_name(path) : generic_tags.title;
-        entry.performer = generic_tags.artist;
-    }
-    entry.start_sample = 0;
-    entry.end_sample = probed_total_samples;
-    entry.source_label = base_name(path);
-    entry.decoded_format = probed_format;
-    entry.source_sample_rate = entry.decoded_format.sample_rate;
-    entry.source_bits_per_sample = entry.decoded_format.bits_per_sample;
-    const std::uint32_t target_rate = target_sample_rate_for(entry.source_sample_rate);
-    const std::uint16_t target_bits = target_bits_for(entry.source_bits_per_sample);
-    entry.resampled = (target_rate > 0 && target_rate != entry.source_sample_rate);
-    entry.resampled_from_rate = entry.resampled ? entry.source_sample_rate : 0;
-    entry.bitdepth_converted = (target_bits > 0 && target_bits != entry.source_bits_per_sample);
-    entry.native_decode = native_decode && !entry.resampled && !entry.bitdepth_converted;
-    entry.processed_by_ffmpeg = (!entry.native_decode);
-    if (entry.resampled) {
-        entry.end_sample = static_cast<std::uint64_t>(std::llround(static_cast<double>(entry.end_sample) * static_cast<double>(target_rate) / static_cast<double>(entry.source_sample_rate)));
-        entry.decoded_format.sample_rate = target_rate;
-    }
-    if (entry.bitdepth_converted) {
-        entry.decoded_format.bits_per_sample = target_bits;
-    }
-    entry.codec_name = native_decode ? std::string("flac") : external_info.codec_name;
-    entry.lossless_source = native_decode || (have_external_info && external_info.lossless) ||
-                            (ext == ".flac" || ext == ".wav" || ext == ".wave" || ext == ".bwf" || ext == ".aiff" || ext == ".aif" || ext == ".au" || ext == ".snd" || ext == ".caf" || ext == ".ape" || ext == ".wv" || ext == ".tak" || ext == ".tta" || ext == ".dsf");
-    entry.lossy_source = (!entry.lossless_source && (ext == ".mp3" || ext == ".m4a" || ext == ".aac" || ext == ".ogg" || ext == ".oga" || ext == ".opus" || ext == ".wma" || ext == ".asf" || ext == ".xwma" || ext == ".oma" || ext == ".aa3" || ext == ".at3" || ext == ".mpc" || ext == ".mp+" || ext == ".mpp"));
-    entry.title = safe_utf8_for_display(entry.title);
-    entry.performer = safe_utf8_for_display(entry.performer);
-    entry.source_label = safe_utf8_for_display(entry.source_label);
+    entry.track_number = static_cast<int>(playlist_.size() + 1);
+    entry.title = base_name(path);
+    entry.source_label = entry.title;
+    probe_playlist_entry(entry);
     playlist_.push_back(entry);
 }
 
@@ -3566,6 +3734,8 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
     if (index >= playlist_.size()) {
         return;
     }
+
+    ensure_gapless_neighbors_probed(index);
 
     track_switch_in_progress_ = true;
     finish_handled_ = true;
@@ -3708,20 +3878,35 @@ void GtkPlayerWindow::open_file_dialog() {
         if (!selected_paths.empty()) {
             last_open_directory_ = directory_name(selected_paths.front());
             stop_playback();
+            cancel_playlist_metadata_probe();
             playlist_.clear();
             cue_cache_.clear();
-            external_probe_cache_.clear();
+            {
+                std::lock_guard<std::mutex> lock(external_probe_cache_mutex_);
+                external_probe_cache_.clear();
+            }
+
+            std::vector<std::string> paths_to_add;
+            paths_to_add.reserve(selected_paths.size());
             for (const std::string& path : selected_paths) {
+                if (g_file_test(path.c_str(), G_FILE_TEST_IS_DIR)) {
+                    collect_audio_files_recursive(path, &paths_to_add);
+                } else {
+                    paths_to_add.push_back(path);
+                }
+            }
+
+            std::size_t plain_audio_count = 0;
+            for (const std::string& path : paths_to_add) {
+                if (!M3uPlaylistReader::looks_like_playlist_path(path) && !CueParser::looks_like_cue_path(path)) {
+                    ++plain_audio_count;
+                }
+            }
+            const bool defer_metadata_probe = plain_audio_count >= kBulkPlaylistImportThreshold;
+
+            for (const std::string& path : paths_to_add) {
                 try {
-                    if (g_file_test(path.c_str(), G_FILE_TEST_IS_DIR)) {
-                        std::vector<std::string> audio_files;
-                        collect_audio_files_recursive(path, &audio_files);
-                        for (const std::string& audio_path : audio_files) {
-                            append_path_to_playlist(audio_path);
-                        }
-                    } else {
-                        append_path_to_playlist(path);
-                    }
+                    append_path_to_playlist(path, defer_metadata_probe);
                 } catch (const std::exception& ex) {
                     Logger::instance().error(ex.what());
                 }
@@ -3729,6 +3914,16 @@ void GtkPlayerWindow::open_file_dialog() {
             save_preferences();
             current_track_index_ = 0;
             rebuild_playlist_view();
+            bool needs_metadata_probe = false;
+            for (const PlaylistEntry& entry : playlist_) {
+                if (!entry.metadata_probed) {
+                    needs_metadata_probe = true;
+                    break;
+                }
+            }
+            if (needs_metadata_probe) {
+                schedule_playlist_metadata_probe();
+            }
             if (!playlist_.empty()) {
                 select_playlist_row(current_track_index_);
             }

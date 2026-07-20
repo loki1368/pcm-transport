@@ -44,7 +44,10 @@ public:
     bool seek_to_sample(std::uint64_t sample_index) override;
 
     static bool looks_supported(const std::string& path);
-    static ExternalAudioInfo probe_metadata(const std::string& path, std::uint32_t forced_output_sample_rate = 0, std::uint16_t forced_output_bits_per_sample = 0);
+    static ExternalAudioInfo probe_metadata(const std::string& path,
+                                          std::uint32_t forced_output_sample_rate = 0,
+                                          std::uint16_t forced_output_bits_per_sample = 0,
+                                          bool background_priority = false);
     static ExternalAudioInfo probe_info(const std::string& path, std::uint32_t forced_output_sample_rate = 0, std::uint16_t forced_output_bits_per_sample = 0);
     static GenericTags read_tags(const std::string& path);
 
