@@ -767,7 +767,8 @@ void on_playlist_row_cell_data(GtkTreeViewColumn* column,
         }
     } else if (selected) {
         g_object_set(G_OBJECT(cell),
-                       "markup", cell_text.c_str(),
+                       "markup", nullptr,
+                       "text", cell_text.c_str(),
                        "foreground-rgba", &normal_selected_fg,
                        "foreground-set", TRUE,
                        "cell-background-rgba", &normal_selected_bg,
@@ -776,7 +777,8 @@ void on_playlist_row_cell_data(GtkTreeViewColumn* column,
                        nullptr);
     } else {
         g_object_set(G_OBJECT(cell),
-                       "markup", cell_text.c_str(),
+                       "markup", nullptr,
+                       "text", cell_text.c_str(),
                        "foreground-set", FALSE,
                        "cell-background-set", FALSE,
                        "weight-set", FALSE,
