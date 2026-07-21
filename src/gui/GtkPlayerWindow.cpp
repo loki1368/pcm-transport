@@ -675,7 +675,13 @@ void show_alsa_probe_table_dialog(GtkWindow* parent, const AlsaProbeMatrix& matr
     gtk_box_pack_start(GTK_BOX(area), box, FALSE, FALSE, 0);
 
     GtkWidget* title = gtk_label_new(nullptr);
-    const std::string title_text = "<b>ALSA device probe</b>\nDevice: " + matrix.device_name + "\nMode: playback, RW_INTERLEAVED, stereo";
+    gchar* escaped_device = g_markup_escape_text(matrix.device_name.c_str(), -1);
+    const std::string safe_device = escaped_device != nullptr ? std::string(escaped_device) : matrix.device_name;
+    if (escaped_device != nullptr) {
+        g_free(escaped_device);
+    }
+    const std::string title_text = std::string("<b>ALSA device probe</b>\nDevice: ") + safe_device +
+                                   "\nMode: playback, RW_INTERLEAVED, stereo";
     gtk_label_set_markup(GTK_LABEL(title), title_text.c_str());
     gtk_label_set_xalign(GTK_LABEL(title), 0.0f);
     gtk_box_pack_start(GTK_BOX(box), title, FALSE, FALSE, 0);
