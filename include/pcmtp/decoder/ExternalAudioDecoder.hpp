@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <string>
+#include <sys/types.h>
 #include <vector>
 
 #include "pcmtp/decoder/IAudioDecoder.hpp"
@@ -26,6 +27,7 @@ struct ExternalAudioInfo {
     bool lossless = false;
     bool raw_aac = false;
     bool duration_reliable = true;
+    bool live_format_probed = false;
 };
 
 class ExternalAudioDecoder final : public IAudioDecoder {
@@ -42,13 +44,19 @@ public:
     std::uint64_t total_samples_per_channel() const override;
     std::string source_path() const override;
     bool seek_to_sample(std::uint64_t sample_index) override;
+    void interrupt() override;
 
     static bool looks_supported(const std::string& path);
+    static bool is_stream_uri(const std::string& path);
     static ExternalAudioInfo probe_metadata(const std::string& path,
                                           std::uint32_t forced_output_sample_rate = 0,
                                           std::uint16_t forced_output_bits_per_sample = 0,
                                           bool background_priority = false);
     static ExternalAudioInfo probe_info(const std::string& path, std::uint32_t forced_output_sample_rate = 0, std::uint16_t forced_output_bits_per_sample = 0);
+    static bool verify_stream_playback(const std::string& path,
+                                       const ExternalAudioInfo& probed_info,
+                                       std::uint32_t forced_output_sample_rate = 0,
+                                       std::uint16_t forced_output_bits_per_sample = 0);
     static GenericTags read_tags(const std::string& path);
 
 private:
@@ -77,6 +85,8 @@ private:
     bool opened_ = false;
     bool reached_eof_ = false;
     bool zero_read_logged_ = false;
+    bool interrupt_requested_ = false;
+    pid_t child_pid_ = 0;
     std::uint64_t current_samples_per_channel_ = 0;
     std::vector<unsigned char> raw_buffer_;
 };

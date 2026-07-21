@@ -228,8 +228,8 @@ GVariant* MprisService::root_property_from_state(const char* property_name, cons
         return g_variant_new_string(kDesktopEntry);
     }
     if (std::strcmp(property_name, "SupportedUriSchemes") == 0) {
-        const char* schemes[] = {"file"};
-        return g_variant_new_strv(schemes, 1);
+        const char* schemes[] = {"file", "http", "https"};
+        return g_variant_new_strv(schemes, 3);
     }
     if (std::strcmp(property_name, "SupportedMimeTypes") == 0) {
         const char* mime_types[] = {

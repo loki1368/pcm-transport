@@ -4,17 +4,23 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <memory>
+#include <poll.h>
 #include <sstream>
 #include <stdexcept>
+#include <sys/wait.h>
+#include <signal.h>
 #include <unistd.h>
 #include <vector>
 
 #include "pcmtp/util/Logger.hpp"
+#include "pcmtp/util/MediaUri.hpp"
 
 namespace pcmtp {
 namespace {
@@ -82,6 +88,76 @@ std::string low_priority_command_prefix() {
         return "nice -n 19 ";
     }();
     return prefix;
+}
+
+struct ManagedSubprocess {
+    FILE* pipe = nullptr;
+    pid_t pid = 0;
+};
+
+void kill_subprocess_tree(pid_t pid) {
+    if (pid <= 0) {
+        return;
+    }
+    const pid_t pgid = getpgid(pid);
+    if (pgid > 0) {
+        kill(-pgid, SIGKILL);
+    } else {
+        kill(pid, SIGKILL);
+    }
+}
+
+ManagedSubprocess start_shell_pipeline(const std::string& shell_command) {
+    ManagedSubprocess result;
+    int stdout_pipe[2];
+    if (pipe(stdout_pipe) != 0) {
+        return result;
+    }
+
+    const pid_t pid = fork();
+    if (pid < 0) {
+        close(stdout_pipe[0]);
+        close(stdout_pipe[1]);
+        return result;
+    }
+    if (pid == 0) {
+        close(stdout_pipe[0]);
+        setpgid(0, 0);
+        if (dup2(stdout_pipe[1], STDOUT_FILENO) < 0) {
+            _exit(127);
+        }
+        close(stdout_pipe[1]);
+        execl("/bin/sh", "sh", "-c", shell_command.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
+
+    close(stdout_pipe[1]);
+    result.pipe = fdopen(stdout_pipe[0], "r");
+    result.pid = pid;
+    if (result.pipe == nullptr) {
+        kill(pid, SIGKILL);
+        waitpid(pid, nullptr, 0);
+        result.pid = 0;
+    }
+    return result;
+}
+
+void terminate_managed_subprocess(ManagedSubprocess& proc, bool wait_for_exit) {
+    if (proc.pid > 0) {
+        kill_subprocess_tree(proc.pid);
+    }
+    if (proc.pipe != nullptr) {
+        fclose(proc.pipe);
+        proc.pipe = nullptr;
+    }
+    if (proc.pid > 0 && wait_for_exit) {
+        int status = 0;
+        const pid_t reaped = waitpid(proc.pid, &status, 0);
+        if (reaped < 0 && errno != ECHILD) {
+            Logger::instance().debug(std::string("waitpid failed: ") + std::strerror(errno));
+        }
+        proc.pid = 0;
+    }
 }
 
 CommandCaptureResult run_command_capture(const std::string& command, bool background_priority = false) {
@@ -509,7 +585,14 @@ std::string ExternalAudioDecoder::to_lower_extension(const std::string& path) {
     return ext;
 }
 
+bool ExternalAudioDecoder::is_stream_uri(const std::string& path) {
+    return is_remote_media_uri(path);
+}
+
 bool ExternalAudioDecoder::looks_supported(const std::string& path) {
+    if (is_stream_uri(path)) {
+        return true;
+    }
     static const std::array<const char*, 29> exts = {{".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".wave", ".bwf", ".au", ".snd", ".caf", ".ape", ".wv", ".flac", ".aiff", ".aif", ".tak", ".tta", ".wma", ".asf", ".xwma", ".oma", ".aa3", ".at3", ".mpc", ".mp+", ".mpp", ".dsf", ".oga"}};
     const std::string ext = to_lower_extension(path);
     for (const char* item : exts) {
@@ -554,6 +637,83 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path,
     info.format.sample_rate = 44100;
     info.format.channels = 2;
     info.format.bits_per_sample = 16;
+
+    if (is_stream_uri(path)) {
+        const std::string probe_cmd =
+            "ffprobe -v error -select_streams a:0 "
+            "-timeout 8000000 -rw_timeout 8000000 -analyzeduration 2000000 -probesize 200000 "
+            "-user_agent " + shell_escape_for_command("pcm-transport/0.9") + " "
+            "-show_entries stream=codec_name,sample_fmt,sample_rate,channels,bits_per_sample,bits_per_raw_sample:format=duration:format_tags=title,artist "
+            "-of default=nokey=0:noprint_wrappers=1 " +
+            shell_escape_for_command(path);
+        Logger::instance().debug("ExternalAudioDecoder stream probe: " + path);
+        const CommandCaptureResult probe = run_command_capture(probe_cmd);
+        if (probe.status != 0) {
+            Logger::instance().error("ffprobe failed for stream: " + path +
+                                     (probe.stderr_text.empty() ? std::string() : ("\nffprobe stderr:\n" + probe.stderr_text)));
+        }
+
+        std::istringstream ps(probe.stdout_text);
+        std::string line;
+        std::string sample_fmt;
+        bool saw_sample_rate = false;
+        while (std::getline(ps, line)) {
+            line = trim_copy(line);
+            const std::size_t pos = line.find('=');
+            if (pos == std::string::npos) {
+                continue;
+            }
+            const std::string key = line.substr(0, pos);
+            const std::string value = line.substr(pos + 1);
+            try {
+                if (key == "codec_name") {
+                    info.codec_name = lower_copy(value);
+                } else if (key == "sample_fmt") {
+                    sample_fmt = lower_copy(value);
+                } else if (key == "sample_rate") {
+                    info.format.sample_rate = static_cast<std::uint32_t>(std::stoul(value));
+                    saw_sample_rate = true;
+                } else if (key == "channels") {
+                    info.format.channels = static_cast<std::uint16_t>(std::stoul(value));
+                } else if ((key == "bits_per_sample" || key == "bits_per_raw_sample") && !value.empty() && value != "N/A") {
+                    const std::uint16_t bits = static_cast<std::uint16_t>(std::stoul(value));
+                    if (bits == 16 || bits == 24 || bits == 32) {
+                        info.format.bits_per_sample = bits;
+                    }
+                } else if (key == "TAG:title" || key == "title") {
+                    info.tags.title = value;
+                } else if (key == "TAG:artist" || key == "artist") {
+                    info.tags.artist = value;
+                }
+            } catch (...) {
+            }
+        }
+
+        const std::uint16_t fmt_bits = bits_from_sample_fmt(sample_fmt);
+        if ((info.format.bits_per_sample == 0 || info.format.bits_per_sample == 16) && fmt_bits > 0) {
+            info.format.bits_per_sample = fmt_bits;
+        }
+        if (info.format.channels == 0) {
+            info.format.channels = 2;
+        }
+        if (info.format.bits_per_sample != 16 && info.format.bits_per_sample != 24 && info.format.bits_per_sample != 32) {
+            info.format.bits_per_sample = 16;
+        }
+        info.total_samples_per_channel = 0;
+        info.source_total_samples_per_channel = 0;
+        info.duration_reliable = false;
+        info.lossless = codec_is_lossless(info.codec_name, std::string());
+        info.source_format = info.format;
+        info.live_format_probed = probe.status == 0 && saw_sample_rate && info.format.sample_rate > 0;
+        if (forced_output_sample_rate > 0) {
+            info.format.sample_rate = forced_output_sample_rate;
+        }
+        if (forced_output_bits_per_sample == 16 || forced_output_bits_per_sample == 24 ||
+            forced_output_bits_per_sample == 32) {
+            info.format.bits_per_sample = forced_output_bits_per_sample;
+        }
+        return info;
+    }
 
     const std::string ext = to_lower_extension(path);
     const bool can_use_fast_wav = (ext == ".wav") || (ext == ".wave") || (ext == ".bwf");
@@ -685,6 +845,33 @@ ExternalAudioInfo ExternalAudioDecoder::probe_info(const std::string& path, std:
     return info;
 }
 
+bool ExternalAudioDecoder::verify_stream_playback(const std::string& path,
+                                                const ExternalAudioInfo& probed_info,
+                                                std::uint32_t forced_output_sample_rate,
+                                                std::uint16_t forced_output_bits_per_sample) {
+    if (!is_stream_uri(path)) {
+        return true;
+    }
+    try {
+        std::unique_ptr<ExternalAudioDecoder> decoder(new ExternalAudioDecoder(forced_output_sample_rate,
+                                                                               forced_output_bits_per_sample));
+        ExternalAudioInfo known = probed_info;
+        known.live_format_probed = true;
+        decoder->set_known_info(known);
+        decoder->open(path);
+        PcmSample buffer[2048];
+        const std::size_t got = decoder->read_samples(buffer, 2048);
+        decoder->interrupt();
+        return got > 0;
+    } catch (const std::exception& ex) {
+        Logger::instance().debug(std::string("Stream verify failed: ") + path + " -> " + ex.what());
+        return false;
+    } catch (...) {
+        Logger::instance().debug(std::string("Stream verify failed: ") + path);
+        return false;
+    }
+}
+
 GenericTags ExternalAudioDecoder::read_tags(const std::string& path) {
     return probe_metadata(path).tags;
 }
@@ -732,6 +919,14 @@ std::string ExternalAudioDecoder::decode_command(double seconds) const {
     }
 
     std::string cmd = "ffmpeg -v error -nostdin ";
+    if (is_stream_uri(path_)) {
+        cmd += "-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 30 "
+               "-timeout 8000000 -rw_timeout 8000000 -multiple_requests 1 ";
+        cmd += "-user_agent " + shell_escape("pcm-transport/0.9") + " ";
+        if (is_hls_media_uri(path_)) {
+            cmd += "-live_start_index -3 -hls_allow_cache 1 ";
+        }
+    }
     if (is_raw_aac) {
         cmd += "-fflags +genpts ";
     }
@@ -767,17 +962,18 @@ std::string ExternalAudioDecoder::decode_command(double seconds) const {
 }
 
 void ExternalAudioDecoder::close_pipe(bool log_stderr, const std::string& context) {
-    if (pipe_ != nullptr) {
-        const int status = pclose(pipe_);
+    interrupt_requested_ = true;
+    if (pipe_ != nullptr || child_pid_ > 0) {
+        ManagedSubprocess proc{pipe_, child_pid_};
         pipe_ = nullptr;
-        if (log_stderr && status != 0) {
+        child_pid_ = 0;
+        if (log_stderr) {
             const std::string stderr_text = read_text_file_limited(stderr_path_);
             if (!stderr_text.empty()) {
-                Logger::instance().error("ffmpeg exited with non-zero status" + (context.empty() ? std::string() : (" during " + context)) + ":\n" + stderr_text);
-            } else {
-                Logger::instance().error("ffmpeg exited with non-zero status" + (context.empty() ? std::string() : (" during " + context)));
+                Logger::instance().error("ffmpeg stderr" + (context.empty() ? std::string() : (" during " + context)) + ":\n" + stderr_text);
             }
         }
+        terminate_managed_subprocess(proc, true);
     }
     remove_file_quiet(stderr_path_);
     stderr_path_.clear();
@@ -785,6 +981,7 @@ void ExternalAudioDecoder::close_pipe(bool log_stderr, const std::string& contex
 
 bool ExternalAudioDecoder::start_decode_pipe(double seconds, const std::string& context) {
     close_pipe(false, std::string());
+    interrupt_requested_ = false;
     stderr_path_ = make_temp_stderr_path("pcm_transport_ffmpeg");
     std::string command = decode_command(seconds);
     if (!stderr_path_.empty()) {
@@ -793,14 +990,23 @@ bool ExternalAudioDecoder::start_decode_pipe(double seconds, const std::string& 
         command += " 2>/dev/null";
     }
     Logger::instance().debug("ExternalAudioDecoder starting ffmpeg decode" + (context.empty() ? std::string() : (" (" + context + ")")) + " for: " + path_);
-    pipe_ = popen(command.c_str(), "r");
-    if (pipe_ == nullptr) {
+    const ManagedSubprocess proc = start_shell_pipeline(command);
+    if (proc.pipe == nullptr || proc.pid <= 0) {
         Logger::instance().error("Cannot start ffmpeg decoder for: " + path_);
         remove_file_quiet(stderr_path_);
         stderr_path_.clear();
         return false;
     }
+    pipe_ = proc.pipe;
+    child_pid_ = proc.pid;
     return true;
+}
+
+void ExternalAudioDecoder::interrupt() {
+    interrupt_requested_ = true;
+    if (child_pid_ > 0) {
+        kill_subprocess_tree(child_pid_);
+    }
 }
 
 void ExternalAudioDecoder::set_known_info(const ExternalAudioInfo& info) {
@@ -809,6 +1015,43 @@ void ExternalAudioDecoder::set_known_info(const ExternalAudioInfo& info) {
 }
 
 ExternalAudioInfo ExternalAudioDecoder::effective_probe_info(const std::string& path) const {
+    if (is_stream_uri(path)) {
+        if (have_known_info_ && known_info_.live_format_probed) {
+            ExternalAudioInfo cached = known_info_;
+            if (forced_output_sample_rate_ > 0) {
+                cached.format.sample_rate = forced_output_sample_rate_;
+            }
+            if (forced_output_bits_per_sample_ == 16 || forced_output_bits_per_sample_ == 24 ||
+                forced_output_bits_per_sample_ == 32) {
+                cached.format.bits_per_sample = forced_output_bits_per_sample_;
+            }
+            Logger::instance().debug("Using cached stream format for: " + path + " -> " +
+                                     std::to_string(cached.source_format.sample_rate) + " Hz");
+            return cached;
+        }
+
+        ExternalAudioInfo probed = probe_info(path, forced_output_sample_rate_, forced_output_bits_per_sample_);
+        if (probed.live_format_probed) {
+            Logger::instance().info("Stream format probed: " + path + " -> " +
+                                    std::to_string(probed.source_format.sample_rate) + " Hz / " +
+                                    std::to_string(probed.source_format.bits_per_sample) + "-bit / " +
+                                    std::to_string(probed.source_format.channels) + " ch");
+            return probed;
+        }
+        if (have_known_info_) {
+            Logger::instance().debug("Stream probe unavailable, using playlist hints for: " + path);
+            ExternalAudioInfo fallback = known_info_;
+            if (forced_output_sample_rate_ > 0) {
+                fallback.format.sample_rate = forced_output_sample_rate_;
+            }
+            if (forced_output_bits_per_sample_ == 16 || forced_output_bits_per_sample_ == 24 ||
+                forced_output_bits_per_sample_ == 32) {
+                fallback.format.bits_per_sample = forced_output_bits_per_sample_;
+            }
+            return fallback;
+        }
+        return probed;
+    }
     if (have_known_info_) {
         return known_info_;
     }
@@ -853,12 +1096,73 @@ const AudioFormat& ExternalAudioDecoder::format() const {
 }
 
 std::size_t ExternalAudioDecoder::read_samples(PcmSample* destination, std::size_t max_samples) {
-    if (!opened_ || pipe_ == nullptr) {
-        throw std::runtime_error("Decoder not opened");
+    if (!opened_ || pipe_ == nullptr || interrupt_requested_) {
+        reached_eof_ = true;
+        return 0;
     }
 
     const std::size_t bps = bytes_per_sample();
     raw_buffer_.resize(max_samples * bps);
+
+    if (is_stream_uri(path_)) {
+        const int fd = fileno(pipe_);
+        if (fd < 0) {
+            reached_eof_ = true;
+            return 0;
+        }
+        constexpr int kPollMs = 200;
+        constexpr int kConnectWaitMs = 8000;
+        constexpr int kReadWaitMs = 15000;
+        const int max_wait_ms = current_samples_per_channel_ == 0 ? kConnectWaitMs : kReadWaitMs;
+        int waited_ms = 0;
+        for (;;) {
+            if (interrupt_requested_) {
+                reached_eof_ = true;
+                return 0;
+            }
+            struct pollfd pfd = {fd, POLLIN, 0};
+            const int ready = poll(&pfd, 1, kPollMs);
+            if (ready > 0) {
+                break;
+            }
+            if (ready < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                reached_eof_ = true;
+                return 0;
+            }
+            if (child_pid_ > 0) {
+                int status = 0;
+                if (waitpid(child_pid_, &status, WNOHANG) > 0) {
+                    child_pid_ = 0;
+                    reached_eof_ = true;
+                    return 0;
+                }
+            } else {
+                reached_eof_ = true;
+                return 0;
+            }
+            waited_ms += kPollMs;
+            if (waited_ms >= max_wait_ms) {
+                Logger::instance().error("Stream read timed out: " + path_);
+                if (child_pid_ > 0) {
+                    kill_subprocess_tree(child_pid_);
+                    int status = 0;
+                    waitpid(child_pid_, &status, 0);
+                    child_pid_ = 0;
+                }
+                reached_eof_ = true;
+                return 0;
+            }
+        }
+    }
+
+    if (pipe_ == nullptr || interrupt_requested_) {
+        reached_eof_ = true;
+        return 0;
+    }
+
     const std::size_t got_bytes = fread(raw_buffer_.data(), 1, raw_buffer_.size(), pipe_);
     const std::size_t got = got_bytes / bps;
     if (got == 0 && !zero_read_logged_) {

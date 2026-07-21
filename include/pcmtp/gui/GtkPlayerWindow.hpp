@@ -4,12 +4,13 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include <cstdint>
-#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -22,6 +23,8 @@
 #include "pcmtp/dsp/AlsaControlBridge.hpp"
 #include "pcmtp/hardware/CardProfileRegistry.hpp"
 #include "pcmtp/mpris/MprisService.hpp"
+#include "pcmtp/stream/StreamHealthRegistry.hpp"
+#include "pcmtp/stream/StreamSidecar.hpp"
 
 namespace pcmtp {
 
@@ -63,6 +66,8 @@ private:
         bool processed_by_ffmpeg = false;
         std::string codec_name;
         bool cue_track = false;
+        bool is_stream = false;
+        bool stream_format_probed = false;
         std::uint64_t cue_album_end_sample = 0;
         std::shared_ptr<PcmBuffer> normalized_pcm;
         AudioFormat normalized_format{};
@@ -139,6 +144,22 @@ private:
     void reset_playlist_typeahead();
     void apply_playlist_typeahead_selection();
     void update_playlist_typeahead_popup();
+    void append_media_to_playlist(const std::string& path,
+                                  const std::string& hint_title = std::string(),
+                                  const std::string& hint_artist = std::string(),
+                                  bool defer_metadata_probe = false);
+    void append_stream_entry(const std::string& path,
+                             const std::string& hint_title = std::string(),
+                             const std::string& hint_artist = std::string());
+    void start_stream_sidecar(const std::string& stream_url);
+    void stop_stream_sidecar(bool wait_for_exit = true);
+    void apply_stream_metadata(const std::string& title);
+    void schedule_stream_reconnect(std::size_t index);
+    void cancel_stream_reconnect();
+    void note_stream_broken(const std::string& url, const std::string& error);
+    void reset_stream_health_tracking();
+    void update_stream_health_from_playback(const PlaybackStatusSnapshot& status);
+    static gboolean on_stream_metadata_idle(gpointer user_data);
     void start_current_track(bool restart_if_paused = true);
     void stop_playback();
     void play_track_index(std::size_t index);
@@ -146,7 +167,51 @@ private:
                                     std::uint64_t offset_samples,
                                     bool start_playback = true,
                                     bool preserve_paused = false,
-                                    bool update_mpris_track = true);
+                                    bool update_mpris_track = true,
+                                    bool skip_engine_stop = false);
+    void begin_async_stream_probe_and_play(std::size_t index,
+                                           std::uint64_t offset_samples,
+                                           bool preserve_paused,
+                                           bool update_mpris_track,
+                                           bool skip_engine_stop,
+                                           std::uint64_t probe_generation);
+    void apply_stream_probe_to_entry(PlaylistEntry& entry, const ExternalAudioInfo& info);
+    void ensure_stream_probe_worker();
+    void enqueue_stream_probe(std::size_t index,
+                              std::uint64_t offset_samples,
+                              bool preserve_paused,
+                              bool update_mpris_track,
+                              bool skip_engine_stop,
+                              std::uint64_t probe_generation,
+                              const std::string& url,
+                              std::uint32_t forced_output_sample_rate,
+                              std::uint16_t forced_output_bits_per_sample);
+    void stream_probe_worker_loop();
+    void shutdown_stream_probe_worker();
+    bool stream_probe_is_current(std::uint64_t generation) const;
+    std::size_t find_playlist_index_by_url(const std::string& url) const;
+    void mark_stream_broken_from_probe(const std::string& url, const std::string& error);
+    static gboolean on_stream_probe_idle(gpointer user_data);
+
+    struct StreamProbeTask {
+        GtkPlayerWindow* self = nullptr;
+        std::uint64_t generation = 0;
+        std::size_t index = 0;
+        std::uint64_t offset_samples = 0;
+        bool preserve_paused = false;
+        bool update_mpris_track = true;
+        bool skip_engine_stop = false;
+        std::string url;
+        std::uint32_t forced_output_sample_rate = 0;
+        std::uint16_t forced_output_bits_per_sample = 0;
+    };
+
+    struct StreamProbeResult : StreamProbeTask {
+        ExternalAudioInfo info;
+        bool probe_ok = false;
+        std::string error;
+    };
+
     void open_file_dialog();
     void open_settings_dialog();
     void open_about_dialog();
@@ -167,6 +232,7 @@ private:
     void stop_ui_updates();
     void cancel_pending_seek();
     void rebuild_playlist_view();
+    void refresh_stream_health_rows_for_url(const std::string& url);
     void select_playlist_row(std::size_t index);
     void sync_playlist_cursor_to_selection();
     void update_playlist_selection_from_ui();
@@ -209,7 +275,7 @@ private:
     void mpris_play();
     void mpris_advance_track(int direction);
     bool mpris_open_uri(const std::string& uri);
-    bool validate_mpris_file_uri(const std::string& uri, std::string* local_path) const;
+    bool validate_mpris_open_uri(const std::string& uri, std::string* resolved_location) const;
     std::int64_t mpris_seek(std::int64_t offset_usec);
     std::int64_t mpris_set_position(std::int64_t position_usec, const std::string& track_id);
     std::int64_t current_mpris_track_length_usec() const;
@@ -222,7 +288,7 @@ private:
     void mpris_raise();
 
     static std::string format_time(std::uint64_t samples_per_channel, std::uint32_t sample_rate = 44100);
-    static std::string display_title_for(const PlaylistEntry& entry);
+    std::string display_title_for(const PlaylistEntry& entry) const;
 
     const std::size_t transport_buffer_ms_;
     GtkApplication* app_ = nullptr;
@@ -334,6 +400,24 @@ private:
     mutable std::string mpris_cover_cache_art_path_;
     mutable bool mpris_cover_cache_valid_ = false;
     std::unique_ptr<MprisService> mpris_service_;
+    std::unique_ptr<StreamSidecar> stream_sidecar_;
+    StreamHealthRegistry stream_health_;
+    std::string stream_now_playing_;
+    std::string stream_sidecar_url_;
+    std::string stream_status_override_;
+    std::string stream_health_track_url_;
+    bool stream_health_playing_ = false;
+    std::chrono::steady_clock::time_point stream_health_playing_since_{};
+    std::size_t stream_reconnect_target_index_ = static_cast<std::size_t>(-1);
+    int stream_reconnect_attempts_ = 0;
+    bool stream_reconnect_pending_ = false;
+    std::chrono::steady_clock::time_point stream_reconnect_due_{};
+    std::uint64_t stream_probe_generation_ = 0;
+    mutable std::mutex stream_probe_mutex_;
+    std::condition_variable stream_probe_cv_;
+    std::deque<StreamProbeTask> stream_probe_queue_;
+    std::thread stream_probe_thread_;
+    bool stream_probe_shutdown_ = false;
 };
 
 } // namespace pcmtp

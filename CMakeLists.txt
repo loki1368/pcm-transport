@@ -16,6 +16,10 @@ add_executable(pcm_transport
     src/backend/AlsaPcmBackend.cpp
     src/core/PlaybackEngine.cpp
     src/cue/CueParser.cpp
+    src/util/MediaUri.cpp
+    src/stream/IcyMetadataClient.cpp
+    src/stream/StreamSidecar.cpp
+    src/stream/StreamHealthRegistry.cpp
     src/playlist/M3uPlaylistReader.cpp
     src/decoder/FlacStreamDecoder.cpp
     src/decoder/ExternalAudioDecoder.cpp
