@@ -6859,7 +6859,7 @@ PlaylistSessionTrack GtkPlayerWindow::session_track_from_entry(const PlaylistEnt
     track.codec_name = entry.codec_name;
     track.cue_track = entry.cue_track;
     track.cue_album_end_sample = entry.cue_album_end_sample;
-    track.is_stream = session_path_is_remote_uri(entry.audio_file_path);
+    track.is_stream = entry.is_stream || session_path_is_remote_uri(entry.audio_file_path);
     return track;
 }
 
@@ -6887,6 +6887,9 @@ GtkPlayerWindow::PlaylistEntry GtkPlayerWindow::entry_from_session_track(const P
     entry.codec_name = track.codec_name;
     entry.cue_track = track.cue_track;
     entry.cue_album_end_sample = track.cue_album_end_sample;
+    entry.is_stream = track.is_stream ||
+                      ExternalAudioDecoder::is_stream_uri(track.audio_file_path) ||
+                      is_remote_media_uri(track.audio_file_path);
     return entry;
 }
 
@@ -6894,7 +6897,10 @@ bool GtkPlayerWindow::session_track_restorable(const PlaylistSessionTrack& track
     if (track.audio_file_path.empty()) {
         return false;
     }
-    if (track.is_stream || session_path_is_remote_uri(track.audio_file_path)) {
+    if (track.is_stream ||
+        session_path_is_remote_uri(track.audio_file_path) ||
+        ExternalAudioDecoder::is_stream_uri(track.audio_file_path) ||
+        is_remote_media_uri(track.audio_file_path)) {
         return true;
     }
     return access(track.audio_file_path.c_str(), F_OK) == 0;
