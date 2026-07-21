@@ -482,13 +482,30 @@ enum PlaylistColumns {
 
 constexpr int kStreamHealthOkSeconds = 10;
 
+std::string escape_pango_markup_text(const std::string& text) {
+    std::string out;
+    out.reserve(text.size() + 8);
+    for (const char ch : text) {
+        switch (ch) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '"': out += "&quot;"; break;
+            case '\'': out += "&apos;"; break;
+            default: out.push_back(ch); break;
+        }
+    }
+    return out;
+}
+
 void on_playlist_row_cell_data(GtkTreeViewColumn* column,
                                GtkCellRenderer* cell,
                                GtkTreeModel* model,
                                GtkTreeIter* iter,
-                               gpointer /*user_data*/) {
+                               gpointer user_data) {
     GtkTreeView* view = GTK_TREE_VIEW(gtk_tree_view_column_get_tree_view(column));
     GtkTreePath* path = gtk_tree_model_get_path(model, iter);
+    const int model_column = GPOINTER_TO_INT(user_data);
 
     gboolean broken = FALSE;
     gtk_tree_model_get(model, iter, COL_STREAM_BROKEN, &broken, -1);
@@ -500,32 +517,30 @@ void on_playlist_row_cell_data(GtkTreeViewColumn* column,
     }
 
     const GdkRGBA normal_selected_bg = {0.435f, 0.467f, 0.502f, 1.0f};
-    const GdkRGBA broken_selected_bg = {0.55f, 0.28f, 0.28f, 1.0f};
     const GdkRGBA normal_selected_fg = {1.0f, 1.0f, 1.0f, 1.0f};
-    const GdkRGBA broken_selected_fg = {1.0f, 0.75f, 0.75f, 1.0f};
-    const GdkRGBA broken_fg = {0.88f, 0.48f, 0.48f, 1.0f};
+    const char* broken_color = selected ? "#ff9a9a" : "#c44";
+
+    gchar* text = nullptr;
+    if (model_column >= 0) {
+        gtk_tree_model_get(model, iter, model_column, &text, -1);
+    }
+    const std::string cell_text = text != nullptr ? text : std::string();
 
     if (broken) {
+        const std::string markup = std::string("<span foreground='") + broken_color + "'>" +
+                                   escape_pango_markup_text(cell_text) + "</span>";
+        g_object_set(G_OBJECT(cell),
+                       "markup", markup.c_str(),
+                       "foreground-set", FALSE,
+                       "weight-set", FALSE,
+                       "cell-background-set", selected ? TRUE : FALSE,
+                       nullptr);
         if (selected) {
-            g_object_set(G_OBJECT(cell),
-                           "foreground-rgba", &broken_selected_fg,
-                           "foreground-set", TRUE,
-                           "cell-background-rgba", &broken_selected_bg,
-                           "cell-background-set", TRUE,
-                           "weight", PANGO_WEIGHT_BOLD,
-                           "weight-set", TRUE,
-                           nullptr);
-        } else {
-            g_object_set(G_OBJECT(cell),
-                           "foreground-rgba", &broken_fg,
-                           "foreground-set", TRUE,
-                           "cell-background-set", FALSE,
-                           "weight", PANGO_WEIGHT_BOLD,
-                           "weight-set", TRUE,
-                           nullptr);
+            g_object_set(G_OBJECT(cell), "cell-background-rgba", &normal_selected_bg, nullptr);
         }
     } else if (selected) {
         g_object_set(G_OBJECT(cell),
+                       "markup", cell_text.c_str(),
                        "foreground-rgba", &normal_selected_fg,
                        "foreground-set", TRUE,
                        "cell-background-rgba", &normal_selected_bg,
@@ -534,12 +549,14 @@ void on_playlist_row_cell_data(GtkTreeViewColumn* column,
                        nullptr);
     } else {
         g_object_set(G_OBJECT(cell),
+                       "markup", cell_text.c_str(),
                        "foreground-set", FALSE,
                        "cell-background-set", FALSE,
                        "weight-set", FALSE,
                        nullptr);
     }
 
+    g_free(text);
     if (path != nullptr) {
         gtk_tree_path_free(path);
     }
@@ -552,13 +569,13 @@ void on_playlist_selection_changed(GtkTreeSelection* selection, gpointer /*user_
     }
 }
 
-void set_playlist_column_cell_styler(GtkTreeViewColumn* column) {
+void set_playlist_column_cell_styler(GtkTreeViewColumn* column, int model_column) {
     GList* renderers = gtk_cell_layout_get_cells(GTK_CELL_LAYOUT(column));
     for (GList* node = renderers; node != nullptr; node = node->next) {
         gtk_tree_view_column_set_cell_data_func(column,
                                                 GTK_CELL_RENDERER(node->data),
                                                 on_playlist_row_cell_data,
-                                                nullptr,
+                                                GINT_TO_POINTER(model_column),
                                                 nullptr);
     }
     g_list_free(renderers);
@@ -2397,10 +2414,10 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     gtk_tree_view_column_set_resizable(col_source, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(playlist_view_), col_source);
 
-    set_playlist_column_cell_styler(col_track);
-    set_playlist_column_cell_styler(col_artist);
-    set_playlist_column_cell_styler(col_title);
-    set_playlist_column_cell_styler(col_source);
+    set_playlist_column_cell_styler(col_track, COL_TRACKNO);
+    set_playlist_column_cell_styler(col_artist, COL_ARTIST);
+    set_playlist_column_cell_styler(col_title, COL_TITLE);
+    set_playlist_column_cell_styler(col_source, COL_SOURCE);
 
     GtkTreeSelection* playlist_selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(playlist_view_));
     g_signal_connect(playlist_selection, "changed", G_CALLBACK(on_playlist_selection_changed), nullptr);
