@@ -127,6 +127,7 @@ private:
     static gboolean on_restore_playlist_focus_idle(gpointer user_data);
     static PlaylistSessionTrack session_track_from_entry(const PlaylistEntry& entry);
     static PlaylistEntry entry_from_session_track(const PlaylistSessionTrack& track);
+    static bool session_track_restorable(const PlaylistSessionTrack& track);
     void refresh_dsp_info_for_current_device();
     void refresh_display(bool update_text = true, bool update_progress = true, bool update_meter = true);
     void stop_ui_updates();
