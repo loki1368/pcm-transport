@@ -18,6 +18,7 @@
 #include "pcmtp/dsp/AlsaControlBridge.hpp"
 #include "pcmtp/hardware/CardProfileRegistry.hpp"
 #include "pcmtp/mpris/MprisService.hpp"
+#include "pcmtp/stream/StreamHealthRegistry.hpp"
 #include "pcmtp/stream/StreamSidecar.hpp"
 
 namespace pcmtp {
@@ -115,6 +116,9 @@ private:
     void apply_stream_metadata(const std::string& title);
     void schedule_stream_reconnect(std::size_t index);
     void cancel_stream_reconnect();
+    void note_stream_broken(const std::string& url, const std::string& error);
+    void reset_stream_health_tracking();
+    void update_stream_health_from_playback(const PlaybackStatusSnapshot& status);
     static gboolean on_stream_metadata_idle(gpointer user_data);
     void start_current_track(bool restart_if_paused = true);
     void stop_playback();
@@ -289,8 +293,12 @@ private:
     mutable bool mpris_cover_cache_valid_ = false;
     std::unique_ptr<MprisService> mpris_service_;
     std::unique_ptr<StreamSidecar> stream_sidecar_;
+    StreamHealthRegistry stream_health_;
     std::string stream_now_playing_;
     std::string stream_status_override_;
+    std::string stream_health_track_url_;
+    bool stream_health_playing_ = false;
+    std::chrono::steady_clock::time_point stream_health_playing_since_{};
     std::size_t stream_reconnect_target_index_ = static_cast<std::size_t>(-1);
     int stream_reconnect_attempts_ = 0;
     bool stream_reconnect_pending_ = false;

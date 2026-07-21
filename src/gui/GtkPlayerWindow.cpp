@@ -476,8 +476,38 @@ enum PlaylistColumns {
     COL_ARTIST,
     COL_TITLE,
     COL_SOURCE,
+    COL_STREAM_BROKEN,
     COL_COUNT
 };
+
+constexpr int kStreamHealthOkSeconds = 30;
+
+void on_playlist_row_cell_data(GtkTreeViewColumn* /*column*/,
+                               GtkCellRenderer* cell,
+                               GtkTreeModel* model,
+                               GtkTreeIter* iter,
+                               gpointer /*user_data*/) {
+    gboolean broken = FALSE;
+    gtk_tree_model_get(model, iter, COL_STREAM_BROKEN, &broken, -1);
+    if (broken) {
+        GdkRGBA color = {0.88, 0.48, 0.48, 1.0};
+        g_object_set(G_OBJECT(cell), "foreground-rgba", &color, "foreground-set", TRUE, nullptr);
+    } else {
+        g_object_set(G_OBJECT(cell), "foreground-set", FALSE, nullptr);
+    }
+}
+
+void set_playlist_column_cell_styler(GtkTreeViewColumn* column) {
+    GList* renderers = gtk_cell_layout_get_cells(GTK_CELL_LAYOUT(column));
+    for (GList* node = renderers; node != nullptr; node = node->next) {
+        gtk_tree_view_column_set_cell_data_func(column,
+                                                GTK_CELL_RENDERER(node->data),
+                                                on_playlist_row_cell_data,
+                                                nullptr,
+                                                nullptr);
+    }
+    g_list_free(renderers);
+}
 
 std::string base_name(const std::string& path) {
     const std::size_t pos = path.find_last_of("/\\");
@@ -2015,6 +2045,7 @@ GtkPlayerWindow::GtkPlayerWindow(std::size_t transport_buffer_ms)
       engine_(transport_buffer_ms),
       log_path_("pcm_transport.log") {
     load_preferences();
+    stream_health_.load();
     repeat_enabled_ = false;
     Logger::instance().configure(logging_enabled_, log_path_, log_errors_only_);
     engine_.set_soft_volume_percent(soft_volume_percent_);
@@ -2276,7 +2307,7 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     gtk_widget_set_halign(softvol_hint, GTK_ALIGN_CENTER);
     gtk_box_pack_start(GTK_BOX(softvol_box), softvol_hint, FALSE, FALSE, 0);
 
-    playlist_store_ = gtk_list_store_new(COL_COUNT, G_TYPE_INT, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
+    playlist_store_ = gtk_list_store_new(COL_COUNT, G_TYPE_INT, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN);
     playlist_view_ = gtk_tree_view_new_with_model(GTK_TREE_MODEL(playlist_store_));
     gtk_container_add(GTK_CONTAINER(scrolled), playlist_view_);
     gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(playlist_view_), TRUE);
@@ -2305,6 +2336,11 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     GtkTreeViewColumn* col_source = gtk_tree_view_column_new_with_attributes("Source", renderer, "text", COL_SOURCE, nullptr);
     gtk_tree_view_column_set_resizable(col_source, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(playlist_view_), col_source);
+
+    set_playlist_column_cell_styler(col_track);
+    set_playlist_column_cell_styler(col_artist);
+    set_playlist_column_cell_styler(col_title);
+    set_playlist_column_cell_styler(col_source);
 
     g_signal_connect(btn_open_, "clicked", G_CALLBACK(GtkPlayerWindow::on_open_clicked), this);
     g_signal_connect(btn_play_, "clicked", G_CALLBACK(GtkPlayerWindow::on_play_clicked), this);
@@ -2343,6 +2379,7 @@ gboolean GtkPlayerWindow::on_timer_tick(gpointer user_data) {
 
     const PlaybackStatusSnapshot status = self->engine_.snapshot();
     self->update_gapless_chain_track_from_status(status);
+    self->update_stream_health_from_playback(status);
 
     if (self->stream_reconnect_pending_ &&
         std::chrono::steady_clock::now() >= self->stream_reconnect_due_) {
@@ -2386,6 +2423,7 @@ gboolean GtkPlayerWindow::on_timer_tick(gpointer user_data) {
                     self->stream_status_override_ = "Stream unavailable";
                     self->stream_reconnect_attempts_ = 0;
                     self->stream_reconnect_target_index_ = static_cast<std::size_t>(-1);
+                    self->note_stream_broken(self->playlist_[finished_index].audio_file_path, "Stream unavailable");
                 }
             }
 
@@ -3352,12 +3390,64 @@ void GtkPlayerWindow::cancel_stream_reconnect() {
     stream_status_override_.clear();
 }
 
+void GtkPlayerWindow::note_stream_broken(const std::string& url, const std::string& error) {
+    stream_health_.mark_broken(url, error);
+    rebuild_playlist_view();
+    if (!playlist_.empty() && current_track_index_ < playlist_.size()) {
+        select_playlist_row(current_track_index_);
+    }
+}
+
+void GtkPlayerWindow::reset_stream_health_tracking() {
+    stream_health_track_url_.clear();
+    stream_health_playing_ = false;
+}
+
+void GtkPlayerWindow::update_stream_health_from_playback(const PlaybackStatusSnapshot& status) {
+    if (playlist_.empty() || current_track_index_ >= playlist_.size()) {
+        reset_stream_health_tracking();
+        return;
+    }
+
+    const PlaylistEntry& track = playlist_[current_track_index_];
+    if (!track.is_stream) {
+        reset_stream_health_tracking();
+        return;
+    }
+
+    const std::string& url = track.audio_file_path;
+    if (url != stream_health_track_url_) {
+        stream_health_track_url_ = url;
+        stream_health_playing_ = false;
+    }
+
+    if (status.playing && !status.paused) {
+        if (!stream_health_playing_) {
+            stream_health_playing_ = true;
+            stream_health_playing_since_ = std::chrono::steady_clock::now();
+            return;
+        }
+
+        const auto elapsed = std::chrono::steady_clock::now() - stream_health_playing_since_;
+        if (elapsed >= std::chrono::seconds(kStreamHealthOkSeconds)) {
+            if (stream_health_.mark_ok(url)) {
+                rebuild_playlist_view();
+                select_playlist_row(current_track_index_);
+            }
+            stream_health_playing_ = false;
+        }
+    } else {
+        stream_health_playing_ = false;
+    }
+}
+
 void GtkPlayerWindow::schedule_stream_reconnect(std::size_t index) {
     if (index >= playlist_.size() || !playlist_[index].is_stream) {
         return;
     }
     if (stream_reconnect_attempts_ >= kMaxStreamReconnectAttempts) {
         stream_status_override_ = "Stream unavailable";
+        note_stream_broken(playlist_[index].audio_file_path, "Stream unavailable");
         return;
     }
 
@@ -3659,6 +3749,7 @@ void GtkPlayerWindow::stop_playback() {
     cancel_pending_seek();
     stop_stream_sidecar();
     cancel_stream_reconnect();
+    reset_stream_health_tracking();
     track_switch_in_progress_ = false;
     finish_handled_ = false;
     softvol_dragging_ = false;
@@ -3790,6 +3881,9 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
         track_switch_in_progress_ = false;
         finish_handled_ = false;
         Logger::instance().error(std::string("Failed to play track: ") + ex.what());
+        if (track.is_stream) {
+            note_stream_broken(track.audio_file_path, ex.what());
+        }
         GtkWidget* msg = gtk_message_dialog_new(GTK_WINDOW(window_),
                                                 GTK_DIALOG_MODAL,
                                                 GTK_MESSAGE_ERROR,
@@ -5403,12 +5497,14 @@ void GtkPlayerWindow::rebuild_playlist_view() {
         const std::string artist = safe_utf8_for_display(entry.performer);
         const std::string title = safe_utf8_for_display(entry.title);
         const std::string source = safe_utf8_for_display(entry.source_label);
+        const bool stream_broken = entry.is_stream && stream_health_.is_broken(entry.audio_file_path);
         gtk_list_store_set(playlist_store_, &iter,
                            COL_INDEX, static_cast<int>(i),
                            COL_TRACKNO, trackno.c_str(),
                            COL_ARTIST, artist.c_str(),
                            COL_TITLE, title.c_str(),
                            COL_SOURCE, source.c_str(),
+                           COL_STREAM_BROKEN, stream_broken ? TRUE : FALSE,
                            -1);
     }
 }
