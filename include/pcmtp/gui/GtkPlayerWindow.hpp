@@ -16,6 +16,7 @@
 #include "pcmtp/core/PcmTypes.hpp"
 #include "pcmtp/core/PlaybackEngine.hpp"
 #include "pcmtp/cue/CueParser.hpp"
+#include "pcmtp/session/PlaylistSession.hpp"
 #include "pcmtp/decoder/ExternalAudioDecoder.hpp"
 #include "pcmtp/decoder/GaplessChainDecoder.hpp"
 #include "pcmtp/dsp/AlsaControlBridge.hpp"
@@ -112,6 +113,7 @@ private:
     static gboolean on_playlist_filter_visible(GtkTreeModel* model, GtkTreeIter* iter, gpointer user_data);
     static gboolean on_playlist_view_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data);
     static gboolean on_playlist_typeahead_clear_timeout(gpointer user_data);
+    static gboolean on_playlist_focus_in(GtkWidget* widget, GdkEventFocus* event, gpointer user_data);
     static void on_media_play(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_pause(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_stop(GSimpleAction* action, GVariant* parameter, gpointer user_data);
@@ -154,13 +156,21 @@ private:
     void refresh_device_list();
     void load_preferences();
     void save_preferences() const;
+    void save_playlist_session() const;
+    bool restore_playlist_session();
+    void finalize_restored_playlist_selection(std::size_t index);
+    static gboolean on_restore_playlist_focus_idle(gpointer user_data);
+    static PlaylistSessionTrack session_track_from_entry(const PlaylistEntry& entry);
+    static PlaylistEntry entry_from_session_track(const PlaylistSessionTrack& track);
     void refresh_dsp_info_for_current_device();
     void refresh_display(bool update_text = true, bool update_progress = true, bool update_meter = true);
     void stop_ui_updates();
     void cancel_pending_seek();
     void rebuild_playlist_view();
     void select_playlist_row(std::size_t index);
+    void sync_playlist_cursor_to_selection();
     void update_playlist_selection_from_ui();
+    std::size_t highlighted_playlist_index() const;
 
     std::unique_ptr<IAudioDecoder> create_decoder_for_entry(const PlaylistEntry& entry, bool for_normalization) const;
     GaplessTrackSpec gapless_spec_for_entry(const PlaylistEntry& entry) const;
