@@ -1,13 +1,16 @@
 #include "pcmtp/stream/IcyMetadataClient.hpp"
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <cctype>
 #include <chrono>
+#include <cerrno>
 #include <cstring>
 #include <algorithm>
 #include <sstream>
@@ -78,6 +81,12 @@ bool recv_some(int fd, std::string& buffer, std::size_t max_bytes, const std::at
         }
         const ssize_t got = ::recv(fd, chunk.data(), chunk.size(), 0);
         if (got < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
+            }
             return false;
         }
         if (got == 0) {
@@ -93,7 +102,13 @@ bool read_headers(int fd, std::string& headers, const std::atomic<bool>& stop_re
     char byte = '\0';
     while (!stop_requested.load(std::memory_order_relaxed)) {
         const ssize_t got = ::recv(fd, &byte, 1, 0);
-        if (got <= 0) {
+        if (got < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
+            }
+            return false;
+        }
+        if (got == 0) {
             return false;
         }
         headers.push_back(byte);
@@ -178,7 +193,13 @@ bool discard_bytes(int fd, std::size_t bytes, const std::atomic<bool>& stop_requ
         }
         const std::size_t chunk = std::min(remaining, buffer.size());
         const ssize_t got = ::recv(fd, buffer.data(), chunk, 0);
-        if (got <= 0) {
+        if (got < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
+            }
+            return false;
+        }
+        if (got == 0) {
             return false;
         }
         remaining -= static_cast<std::size_t>(got);
@@ -186,7 +207,11 @@ bool discard_bytes(int fd, std::size_t bytes, const std::atomic<bool>& stop_requ
     return true;
 }
 
-int connect_endpoint(const HttpEndpoint& endpoint) {
+int connect_endpoint(const HttpEndpoint& endpoint, const std::atomic<bool>& stop_requested) {
+    if (stop_requested.load(std::memory_order_relaxed)) {
+        return -1;
+    }
+
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -198,18 +223,91 @@ int connect_endpoint(const HttpEndpoint& endpoint) {
 
     int fd = -1;
     for (addrinfo* cursor = result; cursor != nullptr; cursor = cursor->ai_next) {
+        if (stop_requested.load(std::memory_order_relaxed)) {
+            break;
+        }
         fd = ::socket(cursor->ai_family, cursor->ai_socktype, cursor->ai_protocol);
         if (fd < 0) {
             continue;
         }
-        if (::connect(fd, cursor->ai_addr, cursor->ai_addrlen) == 0) {
+
+        const int flags = fcntl(fd, F_GETFL, 0);
+        if (flags >= 0) {
+            fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        }
+
+        const int connect_result = ::connect(fd, cursor->ai_addr, cursor->ai_addrlen);
+        if (connect_result == 0) {
+            if (flags >= 0) {
+                fcntl(fd, F_SETFL, flags);
+            }
             break;
         }
-        ::close(fd);
-        fd = -1;
+        if (connect_result < 0 && errno != EINPROGRESS) {
+            ::close(fd);
+            fd = -1;
+            continue;
+        }
+
+        bool connected = false;
+        for (int waited_ms = 0; waited_ms < 5000 && !stop_requested.load(std::memory_order_relaxed); waited_ms += 200) {
+            pollfd pfd = {fd, POLLOUT, 0};
+            const int ready = ::poll(&pfd, 1, 200);
+            if (ready < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                break;
+            }
+            if (ready == 0) {
+                continue;
+            }
+
+            int socket_error = 0;
+            socklen_t error_length = sizeof(socket_error);
+            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &error_length) != 0 || socket_error != 0) {
+                break;
+            }
+            connected = true;
+            break;
+        }
+
+        if (!connected || stop_requested.load(std::memory_order_relaxed)) {
+            ::close(fd);
+            fd = -1;
+            continue;
+        }
+
+        if (flags >= 0) {
+            fcntl(fd, F_SETFL, flags);
+        }
+        break;
     }
     freeaddrinfo(result);
+    if (fd < 0) {
+        return -1;
+    }
+
+    timeval timeout{};
+    timeout.tv_sec = 2;
+    timeout.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
     return fd;
+}
+
+void set_active_socket(std::atomic<int>* active_socket, int fd) {
+    if (active_socket != nullptr) {
+        active_socket->store(fd, std::memory_order_relaxed);
+    }
+}
+
+void clear_active_socket(std::atomic<int>* active_socket, int fd) {
+    if (active_socket == nullptr) {
+        return;
+    }
+    int expected = fd;
+    active_socket->compare_exchange_strong(expected, -1, std::memory_order_relaxed);
 }
 
 } // namespace
@@ -221,17 +319,24 @@ bool IcyMetadataClient::supports_url(const std::string& url) {
 
 void IcyMetadataClient::stream_until_stopped(const std::string& url,
                                              MetadataHandler handler,
-                                             const std::atomic<bool>& stop_requested) {
+                                             const std::atomic<bool>& stop_requested,
+                                             std::atomic<int>* active_socket) {
     HttpEndpoint endpoint;
     if (!parse_http_endpoint(url, endpoint)) {
         return;
     }
 
-    const int fd = connect_endpoint(endpoint);
+    const int fd = connect_endpoint(endpoint, stop_requested);
     if (fd < 0) {
         Logger::instance().debug("ICY metadata: connect failed for " + url);
         return;
     }
+    set_active_socket(active_socket, fd);
+
+    const auto cleanup = [&]() {
+        clear_active_socket(active_socket, fd);
+        ::close(fd);
+    };
 
     std::ostringstream request;
     request << "GET " << endpoint.path << " HTTP/1.0\r\n"
@@ -242,20 +347,20 @@ void IcyMetadataClient::stream_until_stopped(const std::string& url,
             << "\r\n";
     const std::string request_text = request.str();
     if (!send_all(fd, request_text.c_str(), request_text.size())) {
-        ::close(fd);
+        cleanup();
         return;
     }
 
     std::string headers;
     if (!read_headers(fd, headers, stop_requested)) {
-        ::close(fd);
+        cleanup();
         return;
     }
 
     const std::string metaint_text = header_value(headers, "icy-metaint");
     if (metaint_text.empty()) {
         Logger::instance().debug("ICY metadata: stream has no icy-metaint: " + url);
-        ::close(fd);
+        cleanup();
         return;
     }
 
@@ -263,11 +368,11 @@ void IcyMetadataClient::stream_until_stopped(const std::string& url,
     try {
         metaint = std::stoi(metaint_text);
     } catch (...) {
-        ::close(fd);
+        cleanup();
         return;
     }
     if (metaint <= 0) {
-        ::close(fd);
+        cleanup();
         return;
     }
 
@@ -302,7 +407,7 @@ void IcyMetadataClient::stream_until_stopped(const std::string& url,
         }
     }
 
-    ::close(fd);
+    cleanup();
 }
 
 } // namespace pcmtp

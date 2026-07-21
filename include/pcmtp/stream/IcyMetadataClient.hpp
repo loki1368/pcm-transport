@@ -13,7 +13,8 @@ public:
     static bool supports_url(const std::string& url);
     static void stream_until_stopped(const std::string& url,
                                      MetadataHandler handler,
-                                     const std::atomic<bool>& stop_requested);
+                                     const std::atomic<bool>& stop_requested,
+                                     std::atomic<int>* active_socket = nullptr);
 };
 
 } // namespace pcmtp

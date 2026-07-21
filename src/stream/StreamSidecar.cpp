@@ -2,6 +2,8 @@
 
 #include <chrono>
 #include <utility>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include "pcmtp/stream/IcyMetadataClient.hpp"
 
@@ -9,6 +11,21 @@ namespace pcmtp {
 
 StreamSidecar::~StreamSidecar() {
     stop();
+}
+
+void StreamSidecar::interrupt_active_socket() {
+    const int fd = active_socket_.exchange(-1);
+    if (fd >= 0) {
+        ::shutdown(fd, SHUT_RDWR);
+        ::close(fd);
+    }
+}
+
+void StreamSidecar::interruptible_sleep(std::chrono::milliseconds duration) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    wake_cv_.wait_for(lock, duration, [this]() {
+        return stop_requested_.load(std::memory_order_relaxed);
+    });
 }
 
 void StreamSidecar::start(const std::string& stream_url, MetadataHandler handler) {
@@ -29,6 +46,8 @@ void StreamSidecar::start(const std::string& stream_url, MetadataHandler handler
 
 void StreamSidecar::stop() {
     stop_requested_.store(true, std::memory_order_relaxed);
+    wake_cv_.notify_all();
+    interrupt_active_socket();
     if (thread_.joinable()) {
         thread_.join();
     }
@@ -49,18 +68,18 @@ void StreamSidecar::worker() {
 
     while (!stop_requested_.load(std::memory_order_relaxed)) {
         if (!IcyMetadataClient::supports_url(url)) {
-            std::this_thread::sleep_for(std::chrono::seconds(5));
+            interruptible_sleep(std::chrono::seconds(5));
             if (stop_requested_.load(std::memory_order_relaxed)) {
                 return;
             }
             continue;
         }
 
-        IcyMetadataClient::stream_until_stopped(url, handler, stop_requested_);
+        IcyMetadataClient::stream_until_stopped(url, handler, stop_requested_, &active_socket_);
         if (stop_requested_.load(std::memory_order_relaxed)) {
             return;
         }
-        std::this_thread::sleep_for(std::chrono::seconds(3));
+        interruptible_sleep(std::chrono::seconds(3));
     }
 }
 

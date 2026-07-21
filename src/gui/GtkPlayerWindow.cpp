@@ -480,20 +480,66 @@ enum PlaylistColumns {
     COL_COUNT
 };
 
-constexpr int kStreamHealthOkSeconds = 30;
+constexpr int kStreamHealthOkSeconds = 10;
 
-void on_playlist_row_cell_data(GtkTreeViewColumn* /*column*/,
+void on_playlist_row_cell_data(GtkTreeViewColumn* column,
                                GtkCellRenderer* cell,
                                GtkTreeModel* model,
                                GtkTreeIter* iter,
                                gpointer /*user_data*/) {
+    GtkTreeView* view = GTK_TREE_VIEW(gtk_tree_view_column_get_tree_view(column));
+    GtkTreePath* path = gtk_tree_model_get_path(model, iter);
+
     gboolean broken = FALSE;
     gtk_tree_model_get(model, iter, COL_STREAM_BROKEN, &broken, -1);
+
+    gboolean selected = FALSE;
+    if (view != nullptr && path != nullptr) {
+        GtkTreeSelection* selection = gtk_tree_view_get_selection(view);
+        selected = gtk_tree_selection_path_is_selected(selection, path);
+    }
+
     if (broken) {
-        GdkRGBA color = {0.88, 0.48, 0.48, 1.0};
-        g_object_set(G_OBJECT(cell), "foreground-rgba", &color, "foreground-set", TRUE, nullptr);
+        if (selected) {
+            GdkRGBA foreground = {1.0, 0.78, 0.78, 1.0};
+            GdkRGBA background = {0.58, 0.30, 0.30, 1.0};
+            g_object_set(G_OBJECT(cell),
+                           "foreground-rgba", &foreground,
+                           "foreground-set", TRUE,
+                           "cell-background-rgba", &background,
+                           "cell-background-set", TRUE,
+                           nullptr);
+        } else {
+            GdkRGBA foreground = {0.88, 0.48, 0.48, 1.0};
+            g_object_set(G_OBJECT(cell),
+                           "foreground-rgba", &foreground,
+                           "foreground-set", TRUE,
+                           "cell-background-set", FALSE,
+                           nullptr);
+        }
+    } else if (selected) {
+        GdkRGBA foreground = {1.0, 1.0, 1.0, 1.0};
+        g_object_set(G_OBJECT(cell),
+                       "foreground-rgba", &foreground,
+                       "foreground-set", TRUE,
+                       "cell-background-set", FALSE,
+                       nullptr);
     } else {
-        g_object_set(G_OBJECT(cell), "foreground-set", FALSE, nullptr);
+        g_object_set(G_OBJECT(cell),
+                       "foreground-set", FALSE,
+                       "cell-background-set", FALSE,
+                       nullptr);
+    }
+
+    if (path != nullptr) {
+        gtk_tree_path_free(path);
+    }
+}
+
+void on_playlist_selection_changed(GtkTreeSelection* selection, gpointer /*user_data*/) {
+    GtkTreeView* view = gtk_tree_selection_get_tree_view(selection);
+    if (view != nullptr) {
+        gtk_widget_queue_draw(GTK_WIDGET(view));
     }
 }
 
@@ -2092,8 +2138,8 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
         ".transport-button { min-height: 42px; min-width: 46px; font-weight: bold; padding: 2px 8px; }"
         ".transport-button-thin { min-height: 19px; min-width: 86px; font-weight: bold; padding: 1px 8px; }"
         ".transport-icon { font-size: 18px; color: #25313a; }"
-        "treeview.view:selected, treeview.view:selected:focus { background-color: #6f7780; color: #ffffff; }"
-        "treeview.view:selected:hover { background-color: #78818a; color: #ffffff; }"
+        "treeview.view:selected, treeview.view:selected:focus { background-color: #6f7780; }"
+        "treeview.view:selected:hover { background-color: #78818a; }"
         "notebook > header > tabs > tab:checked { box-shadow: inset 0 -3px #6f7780; }"
         "scale trough highlight { background-color: #6f7780; background-image: none; border-color: #6f7780; }"
         "scale slider { background-color: #eeeeee; background-image: none; border-color: #9a9a9a; }"
@@ -2342,6 +2388,9 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     set_playlist_column_cell_styler(col_title);
     set_playlist_column_cell_styler(col_source);
 
+    GtkTreeSelection* playlist_selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(playlist_view_));
+    g_signal_connect(playlist_selection, "changed", G_CALLBACK(on_playlist_selection_changed), nullptr);
+
     g_signal_connect(btn_open_, "clicked", G_CALLBACK(GtkPlayerWindow::on_open_clicked), this);
     g_signal_connect(btn_play_, "clicked", G_CALLBACK(GtkPlayerWindow::on_play_clicked), this);
     g_signal_connect(btn_pause_, "clicked", G_CALLBACK(GtkPlayerWindow::on_pause_clicked), this);
@@ -2386,7 +2435,18 @@ gboolean GtkPlayerWindow::on_timer_tick(gpointer user_data) {
         self->stream_reconnect_pending_ = false;
         const std::size_t index = self->stream_reconnect_target_index_;
         if (index < self->playlist_.size() && self->playlist_[index].is_stream) {
-            self->play_track_index(index);
+            struct StreamReconnectRequest {
+                GtkPlayerWindow* self = nullptr;
+                std::size_t index = 0;
+            };
+            auto* request = new StreamReconnectRequest{self, index};
+            g_idle_add(+[](gpointer user_data) -> gboolean {
+                std::unique_ptr<StreamReconnectRequest> request(static_cast<StreamReconnectRequest*>(user_data));
+                if (request->self != nullptr && !request->self->ui_closing_) {
+                    request->self->play_track_index(request->index);
+                }
+                return G_SOURCE_REMOVE;
+            }, request);
         }
     }
 
@@ -3362,8 +3422,13 @@ void GtkPlayerWindow::apply_stream_metadata(const std::string& title) {
 }
 
 void GtkPlayerWindow::start_stream_sidecar(const std::string& stream_url) {
-    stop_stream_sidecar();
+    if (stream_sidecar_ != nullptr && stream_sidecar_url_ == stream_url) {
+        return;
+    }
+
+    stop_stream_sidecar(false);
     stream_now_playing_.clear();
+    stream_sidecar_url_ = stream_url;
     stream_sidecar_ = std::make_unique<StreamSidecar>();
     GtkPlayerWindow* self = this;
     stream_sidecar_->start(stream_url, [self](const std::string& title) {
@@ -3375,12 +3440,24 @@ void GtkPlayerWindow::start_stream_sidecar(const std::string& stream_url) {
     });
 }
 
-void GtkPlayerWindow::stop_stream_sidecar() {
-    if (stream_sidecar_ != nullptr) {
-        stream_sidecar_->stop();
-        stream_sidecar_.reset();
+void GtkPlayerWindow::stop_stream_sidecar(bool wait_for_exit) {
+    if (stream_sidecar_ == nullptr) {
+        stream_now_playing_.clear();
+        stream_sidecar_url_.clear();
+        return;
     }
+
+    std::unique_ptr<StreamSidecar> sidecar = std::move(stream_sidecar_);
+    stream_sidecar_url_.clear();
     stream_now_playing_.clear();
+    if (wait_for_exit) {
+        sidecar->stop();
+        return;
+    }
+
+    std::thread([sidecar = std::move(sidecar)]() mutable {
+        sidecar->stop();
+    }).detach();
 }
 
 void GtkPlayerWindow::cancel_stream_reconnect() {
@@ -3445,9 +3522,13 @@ void GtkPlayerWindow::schedule_stream_reconnect(std::size_t index) {
     if (index >= playlist_.size() || !playlist_[index].is_stream) {
         return;
     }
+
+    const std::string& url = playlist_[index].audio_file_path;
+    const std::string error = stream_status_override_.empty() ? "Stream unavailable" : stream_status_override_;
+    note_stream_broken(url, error);
+
     if (stream_reconnect_attempts_ >= kMaxStreamReconnectAttempts) {
         stream_status_override_ = "Stream unavailable";
-        note_stream_broken(playlist_[index].audio_file_path, "Stream unavailable");
         return;
     }
 
@@ -3774,7 +3855,12 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
         return;
     }
 
-    stop_stream_sidecar();
+    const bool reconnecting_same_stream = stream_reconnect_target_index_ == index &&
+                                          index < playlist_.size() &&
+                                          playlist_[index].is_stream;
+    if (!reconnecting_same_stream) {
+        stop_stream_sidecar();
+    }
     if (stream_reconnect_target_index_ != index) {
         cancel_stream_reconnect();
     }

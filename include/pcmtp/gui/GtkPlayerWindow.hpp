@@ -112,7 +112,7 @@ private:
                              const std::string& hint_title = std::string(),
                              const std::string& hint_artist = std::string());
     void start_stream_sidecar(const std::string& stream_url);
-    void stop_stream_sidecar();
+    void stop_stream_sidecar(bool wait_for_exit = true);
     void apply_stream_metadata(const std::string& title);
     void schedule_stream_reconnect(std::size_t index);
     void cancel_stream_reconnect();
@@ -295,6 +295,7 @@ private:
     std::unique_ptr<StreamSidecar> stream_sidecar_;
     StreamHealthRegistry stream_health_;
     std::string stream_now_playing_;
+    std::string stream_sidecar_url_;
     std::string stream_status_override_;
     std::string stream_health_track_url_;
     bool stream_health_playing_ = false;
