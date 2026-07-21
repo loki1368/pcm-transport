@@ -13,6 +13,7 @@
 #include "pcmtp/core/PcmTypes.hpp"
 #include "pcmtp/core/PlaybackEngine.hpp"
 #include "pcmtp/cue/CueParser.hpp"
+#include "pcmtp/session/PlaylistSession.hpp"
 #include "pcmtp/decoder/ExternalAudioDecoder.hpp"
 #include "pcmtp/decoder/GaplessChainDecoder.hpp"
 #include "pcmtp/dsp/AlsaControlBridge.hpp"
@@ -119,6 +120,10 @@ private:
     void refresh_device_list();
     void load_preferences();
     void save_preferences() const;
+    void save_playlist_session() const;
+    bool restore_playlist_session();
+    static PlaylistSessionTrack session_track_from_entry(const PlaylistEntry& entry);
+    static PlaylistEntry entry_from_session_track(const PlaylistSessionTrack& track);
     void refresh_dsp_info_for_current_device();
     void refresh_display(bool update_text = true, bool update_progress = true, bool update_meter = true);
     void stop_ui_updates();

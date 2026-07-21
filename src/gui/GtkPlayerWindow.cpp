@@ -38,6 +38,7 @@
 #include "pcmtp/dsp/ToneControlDesign.hpp"
 #include "pcmtp/playlist/M3uPlaylistReader.hpp"
 #include "pcmtp/mpris/MprisService.hpp"
+#include "pcmtp/session/PlaylistSession.hpp"
 #include "pcmtp/util/Logger.hpp"
 
 namespace pcmtp {
@@ -1947,6 +1948,7 @@ GtkPlayerWindow::GtkPlayerWindow(std::size_t transport_buffer_ms)
 
 GtkPlayerWindow::~GtkPlayerWindow() {
     ui_closing_ = true;
+    save_playlist_session();
     stop_ui_updates();
     cancel_pending_seek();
     mpris_service_.reset();
@@ -2246,6 +2248,7 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     ui_timer_id_ = g_timeout_add(kUiRefreshIntervalMs, GtkPlayerWindow::on_timer_tick, this);
     setup_media_keys(app);
     setup_mpris();
+    restore_playlist_session();
 
     gtk_widget_show_all(window_);
 }
@@ -2312,6 +2315,7 @@ gboolean GtkPlayerWindow::on_timer_tick(gpointer user_data) {
 gboolean GtkPlayerWindow::on_window_delete_event(GtkWidget*, GdkEvent*, gpointer user_data) {
     auto* self = static_cast<GtkPlayerWindow*>(user_data);
     if (self != nullptr) {
+        self->save_playlist_session();
         self->ui_closing_ = true;
         self->stop_ui_updates();
         self->cancel_pending_seek();
@@ -3647,6 +3651,7 @@ void GtkPlayerWindow::open_file_dialog() {
             finish_handled_ = true;
             refresh_display();
             mark_mpris_track_changed();
+            save_playlist_session();
         }
         if (current_folder != nullptr) {
             g_free(current_folder);
@@ -5175,6 +5180,101 @@ std::string GtkPlayerWindow::display_title_for(const PlaylistEntry& entry) {
     return entry.title;
 }
 
+PlaylistSessionTrack GtkPlayerWindow::session_track_from_entry(const PlaylistEntry& entry) {
+    PlaylistSessionTrack track;
+    track.audio_file_path = entry.audio_file_path;
+    track.track_number = entry.track_number;
+    track.title = entry.title;
+    track.performer = entry.performer;
+    track.start_sample = entry.start_sample;
+    track.end_sample = entry.end_sample;
+    track.source_label = entry.source_label;
+    track.decoded_sample_rate = entry.decoded_format.sample_rate;
+    track.decoded_channels = entry.decoded_format.channels;
+    track.decoded_bits_per_sample = entry.decoded_format.bits_per_sample;
+    track.source_sample_rate = entry.source_sample_rate;
+    track.source_bits_per_sample = entry.source_bits_per_sample;
+    track.native_decode = entry.native_decode;
+    track.lossless_source = entry.lossless_source;
+    track.lossy_source = entry.lossy_source;
+    track.resampled = entry.resampled;
+    track.resampled_from_rate = entry.resampled_from_rate;
+    track.bitdepth_converted = entry.bitdepth_converted;
+    track.processed_by_ffmpeg = entry.processed_by_ffmpeg;
+    track.codec_name = entry.codec_name;
+    track.cue_track = entry.cue_track;
+    track.cue_album_end_sample = entry.cue_album_end_sample;
+    return track;
+}
+
+GtkPlayerWindow::PlaylistEntry GtkPlayerWindow::entry_from_session_track(const PlaylistSessionTrack& track) {
+    PlaylistEntry entry;
+    entry.audio_file_path = track.audio_file_path;
+    entry.track_number = track.track_number;
+    entry.title = track.title;
+    entry.performer = track.performer;
+    entry.start_sample = track.start_sample;
+    entry.end_sample = track.end_sample;
+    entry.source_label = track.source_label;
+    entry.decoded_format.sample_rate = track.decoded_sample_rate;
+    entry.decoded_format.channels = track.decoded_channels;
+    entry.decoded_format.bits_per_sample = track.decoded_bits_per_sample;
+    entry.source_sample_rate = track.source_sample_rate;
+    entry.source_bits_per_sample = track.source_bits_per_sample;
+    entry.native_decode = track.native_decode;
+    entry.lossless_source = track.lossless_source;
+    entry.lossy_source = track.lossy_source;
+    entry.resampled = track.resampled;
+    entry.resampled_from_rate = track.resampled_from_rate;
+    entry.bitdepth_converted = track.bitdepth_converted;
+    entry.processed_by_ffmpeg = track.processed_by_ffmpeg;
+    entry.codec_name = track.codec_name;
+    entry.cue_track = track.cue_track;
+    entry.cue_album_end_sample = track.cue_album_end_sample;
+    return entry;
+}
+
+void GtkPlayerWindow::save_playlist_session() const {
+    PlaylistSessionSnapshot snapshot;
+    snapshot.tracks.reserve(playlist_.size());
+    for (const PlaylistEntry& entry : playlist_) {
+        snapshot.tracks.push_back(session_track_from_entry(entry));
+    }
+    if (!playlist_.empty()) {
+        snapshot.current_track_index = std::min(current_track_index_, playlist_.size() - 1);
+    }
+    PlaylistSession().save(snapshot);
+}
+
+bool GtkPlayerWindow::restore_playlist_session() {
+    PlaylistSessionSnapshot snapshot;
+    if (!PlaylistSession().load(snapshot)) {
+        return false;
+    }
+
+    std::vector<PlaylistEntry> restored;
+    restored.reserve(snapshot.tracks.size());
+    for (const PlaylistSessionTrack& track : snapshot.tracks) {
+        if (track.audio_file_path.empty() || access(track.audio_file_path.c_str(), F_OK) != 0) {
+            continue;
+        }
+        restored.push_back(entry_from_session_track(track));
+    }
+    if (restored.empty()) {
+        return false;
+    }
+
+    playlist_ = std::move(restored);
+    current_track_index_ = std::min(snapshot.current_track_index, playlist_.size() - 1);
+    rebuild_playlist_view();
+    select_playlist_row(current_track_index_);
+    track_switch_in_progress_ = false;
+    finish_handled_ = true;
+    refresh_display();
+    mark_mpris_track_changed();
+    return true;
+}
+
 void GtkPlayerWindow::load_preferences() {
     const char* home = std::getenv("HOME");
     if (home == nullptr || *home == '\0') {
@@ -5560,6 +5660,7 @@ bool GtkPlayerWindow::mpris_open_uri(const std::string& uri) {
         if (playlist_.size() > before) {
             play_track_index(before);
         }
+        save_playlist_session();
         return true;
     } catch (const std::exception& ex) {
         Logger::instance().error(std::string("MPRIS OpenUri failed: ") + ex.what());
