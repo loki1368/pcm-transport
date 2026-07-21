@@ -95,6 +95,7 @@ private:
                                           GtkTreePath* path,
                                           GtkTreeViewColumn* column,
                                           gpointer user_data);
+    static void on_playlist_selection_changed(GtkTreeSelection* selection, gpointer user_data);
     static void on_media_play(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_pause(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_stop(GSimpleAction* action, GVariant* parameter, gpointer user_data);

@@ -2240,6 +2240,8 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     g_signal_connect(btn_alsamixer_, "clicked", G_CALLBACK(GtkPlayerWindow::on_open_alsamixer_clicked), this);
     g_signal_connect(btn_about_, "clicked", G_CALLBACK(GtkPlayerWindow::on_about_clicked), this);
     g_signal_connect(playlist_view_, "row-activated", G_CALLBACK(GtkPlayerWindow::on_playlist_row_activated), this);
+    GtkTreeSelection* playlist_selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(playlist_view_));
+    g_signal_connect(playlist_selection, "changed", G_CALLBACK(GtkPlayerWindow::on_playlist_selection_changed), this);
     g_signal_connect(window_, "delete-event", G_CALLBACK(GtkPlayerWindow::on_window_delete_event), this);
     g_signal_connect(window_, "destroy", G_CALLBACK(GtkPlayerWindow::on_window_destroy), this);
     refresh_device_list();
@@ -2248,9 +2250,9 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     ui_timer_id_ = g_timeout_add(kUiRefreshIntervalMs, GtkPlayerWindow::on_timer_tick, this);
     setup_media_keys(app);
     setup_mpris();
-    restore_playlist_session();
 
     gtk_widget_show_all(window_);
+    restore_playlist_session();
 }
 
 
@@ -2760,17 +2762,22 @@ gboolean GtkPlayerWindow::on_pending_seek_timer(gpointer user_data) {
     return G_SOURCE_REMOVE;
 }
 
-void GtkPlayerWindow::on_playlist_row_activated(GtkTreeView*, GtkTreePath* path, GtkTreeViewColumn*, gpointer user_data) {
+void GtkPlayerWindow::on_playlist_row_activated(GtkTreeView*, GtkTreePath*, GtkTreeViewColumn*, gpointer user_data) {
     auto* self = static_cast<GtkPlayerWindow*>(user_data);
-    const int* indices = gtk_tree_path_get_indices(path);
-    if (indices == nullptr) {
+    self->update_playlist_selection_from_ui();
+    if (self->playlist_.empty()) {
         return;
     }
-    const int index = indices[0];
-    if (index < 0) {
+    self->play_track_index(self->current_track_index_);
+}
+
+void GtkPlayerWindow::on_playlist_selection_changed(GtkTreeSelection*, gpointer user_data) {
+    auto* self = static_cast<GtkPlayerWindow*>(user_data);
+    if (self == nullptr || self->ui_closing_) {
         return;
     }
-    self->play_track_index(static_cast<std::size_t>(index));
+    self->update_playlist_selection_from_ui();
+    self->refresh_display();
 }
 
 std::uint32_t GtkPlayerWindow::target_sample_rate_for(std::uint32_t source_rate) const {
@@ -5139,6 +5146,10 @@ void GtkPlayerWindow::rebuild_playlist_view() {
 }
 
 void GtkPlayerWindow::select_playlist_row(std::size_t index) {
+    if (playlist_.empty() || index >= playlist_.size()) {
+        return;
+    }
+    current_track_index_ = index;
     GtkTreePath* path = gtk_tree_path_new_from_indices(static_cast<int>(index), -1);
     GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(playlist_view_));
     gtk_tree_selection_unselect_all(selection);
@@ -5264,8 +5275,29 @@ bool GtkPlayerWindow::restore_playlist_session() {
         return false;
     }
 
+    std::size_t restored_index = 0;
+    if (!snapshot.tracks.empty()) {
+        const std::size_t saved_index = std::min(snapshot.current_track_index, snapshot.tracks.size() - 1);
+        const PlaylistSessionTrack& target = snapshot.tracks[saved_index];
+        bool found = false;
+        for (std::size_t i = 0; i < restored.size(); ++i) {
+            const PlaylistEntry& entry = restored[i];
+            if (entry.audio_file_path == target.audio_file_path &&
+                entry.start_sample == target.start_sample &&
+                entry.cue_track == target.cue_track &&
+                entry.track_number == target.track_number) {
+                restored_index = i;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            restored_index = std::min(snapshot.current_track_index, restored.size() - 1);
+        }
+    }
+
     playlist_ = std::move(restored);
-    current_track_index_ = std::min(snapshot.current_track_index, playlist_.size() - 1);
+    current_track_index_ = restored_index;
     rebuild_playlist_view();
     select_playlist_row(current_track_index_);
     track_switch_in_progress_ = false;
