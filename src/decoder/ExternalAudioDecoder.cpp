@@ -876,6 +876,9 @@ std::string ExternalAudioDecoder::decode_command(double seconds) const {
         cmd += "-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 30 "
                "-timeout 8000000 -rw_timeout 8000000 -multiple_requests 1 ";
         cmd += "-user_agent " + shell_escape("pcm-transport/0.9") + " ";
+        if (is_hls_media_uri(path_)) {
+            cmd += "-live_start_index -3 -hls_allow_cache 1 ";
+        }
     }
     if (is_raw_aac) {
         cmd += "-fflags +genpts ";

@@ -270,6 +270,9 @@ std::vector<M3uPlaylistEntry> parse_playlist_text(const std::string& playlist_pa
 } // namespace
 
 bool M3uPlaylistReader::looks_like_playlist_path(const std::string& path) {
+    if (is_hls_media_uri(path) || file_looks_like_hls_playlist(path)) {
+        return false;
+    }
     if (is_remote_media_uri(path)) {
         const std::string ext = lower_extension(path);
         return ext == ".m3u" || ext == ".m3u8";

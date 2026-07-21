@@ -18,6 +18,7 @@
 #include "pcmtp/dsp/AlsaControlBridge.hpp"
 #include "pcmtp/hardware/CardProfileRegistry.hpp"
 #include "pcmtp/mpris/MprisService.hpp"
+#include "pcmtp/stream/StreamSidecar.hpp"
 
 namespace pcmtp {
 
@@ -106,6 +107,15 @@ private:
     void append_media_to_playlist(const std::string& path,
                                   const std::string& hint_title = std::string(),
                                   const std::string& hint_artist = std::string());
+    void append_stream_entry(const std::string& path,
+                             const std::string& hint_title = std::string(),
+                             const std::string& hint_artist = std::string());
+    void start_stream_sidecar(const std::string& stream_url);
+    void stop_stream_sidecar();
+    void apply_stream_metadata(const std::string& title);
+    void schedule_stream_reconnect(std::size_t index);
+    void cancel_stream_reconnect();
+    static gboolean on_stream_metadata_idle(gpointer user_data);
     void start_current_track(bool restart_if_paused = true);
     void stop_playback();
     void play_track_index(std::size_t index);
@@ -181,7 +191,7 @@ private:
     void mpris_raise();
 
     static std::string format_time(std::uint64_t samples_per_channel, std::uint32_t sample_rate = 44100);
-    static std::string display_title_for(const PlaylistEntry& entry);
+    std::string display_title_for(const PlaylistEntry& entry) const;
 
     const std::size_t transport_buffer_ms_;
     GtkApplication* app_ = nullptr;
@@ -278,6 +288,13 @@ private:
     mutable std::string mpris_cover_cache_art_path_;
     mutable bool mpris_cover_cache_valid_ = false;
     std::unique_ptr<MprisService> mpris_service_;
+    std::unique_ptr<StreamSidecar> stream_sidecar_;
+    std::string stream_now_playing_;
+    std::string stream_status_override_;
+    std::size_t stream_reconnect_target_index_ = static_cast<std::size_t>(-1);
+    int stream_reconnect_attempts_ = 0;
+    bool stream_reconnect_pending_ = false;
+    std::chrono::steady_clock::time_point stream_reconnect_due_{};
 };
 
 } // namespace pcmtp
