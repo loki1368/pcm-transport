@@ -3215,6 +3215,7 @@ std::unique_ptr<IAudioDecoder> GtkPlayerWindow::create_decoder_for_entry(const P
         known.duration_reliable = false;
         known.codec_name = entry.codec_name;
         known.lossless = entry.lossless_source;
+        known.live_format_probed = entry.stream_format_probed;
         decoder->set_known_info(known);
         return std::unique_ptr<IAudioDecoder>(decoder.release());
     }
@@ -3483,6 +3484,9 @@ void GtkPlayerWindow::cancel_stream_reconnect() {
 
 void GtkPlayerWindow::note_stream_broken(const std::string& url, const std::string& error) {
     stream_health_.mark_broken(url, error);
+    if (ui_closing_) {
+        return;
+    }
     rebuild_playlist_view();
     if (!playlist_.empty() && current_track_index_ < playlist_.size()) {
         select_playlist_row(current_track_index_);
@@ -3864,7 +3868,8 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
                                                  std::uint64_t offset_samples,
                                                  bool start_playback,
                                                  bool preserve_paused,
-                                                 bool update_mpris_track) {
+                                                 bool update_mpris_track,
+                                                 bool skip_engine_stop) {
     if (index >= playlist_.size()) {
         return;
     }
@@ -3879,9 +3884,43 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
         cancel_stream_reconnect();
     }
 
+    if (reconnecting_same_stream && start_playback && !skip_engine_stop) {
+        track_switch_in_progress_ = true;
+        finish_handled_ = true;
+        engine_.stop();
+        clear_gapless_chain();
+        current_track_index_ = index;
+        select_playlist_row(current_track_index_);
+        refresh_display();
+
+        struct StreamPlaybackResume {
+            GtkPlayerWindow* self = nullptr;
+            std::size_t index = 0;
+            std::uint64_t offset_samples = 0;
+            bool preserve_paused = false;
+            bool update_mpris_track = true;
+        };
+        auto* resume = new StreamPlaybackResume{this, index, offset_samples, preserve_paused, update_mpris_track};
+        g_idle_add(+[](gpointer user_data) -> gboolean {
+            std::unique_ptr<StreamPlaybackResume> resume(static_cast<StreamPlaybackResume*>(user_data));
+            if (resume->self != nullptr && !resume->self->ui_closing_) {
+                resume->self->play_track_index_at_offset(resume->index,
+                                                         resume->offset_samples,
+                                                         true,
+                                                         resume->preserve_paused,
+                                                         resume->update_mpris_track,
+                                                         true);
+            }
+            return G_SOURCE_REMOVE;
+        }, resume);
+        return;
+    }
+
     track_switch_in_progress_ = true;
     finish_handled_ = true;
-    engine_.stop();
+    if (!skip_engine_stop) {
+        engine_.stop();
+    }
     clear_gapless_chain();
 
     current_track_index_ = index;
@@ -3925,6 +3964,7 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
             playlist_[current_track_index_].decoded_format = stream_format;
             playlist_[current_track_index_].source_sample_rate = stream_format.sample_rate;
             playlist_[current_track_index_].source_bits_per_sample = stream_format.bits_per_sample;
+            playlist_[current_track_index_].stream_format_probed = true;
             Logger::instance().info("Streaming playback: " + track.audio_file_path + " (" +
                                     std::to_string(stream_format.sample_rate) + " Hz)");
             start_stream_sidecar(track.audio_file_path);

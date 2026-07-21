@@ -62,6 +62,7 @@ private:
         std::string codec_name;
         bool cue_track = false;
         bool is_stream = false;
+        bool stream_format_probed = false;
         std::uint64_t cue_album_end_sample = 0;
         std::shared_ptr<PcmBuffer> normalized_pcm;
         AudioFormat normalized_format{};
@@ -127,7 +128,8 @@ private:
                                     std::uint64_t offset_samples,
                                     bool start_playback = true,
                                     bool preserve_paused = false,
-                                    bool update_mpris_track = true);
+                                    bool update_mpris_track = true,
+                                    bool skip_engine_stop = false);
     void open_file_dialog();
     void open_settings_dialog();
     void open_about_dialog();

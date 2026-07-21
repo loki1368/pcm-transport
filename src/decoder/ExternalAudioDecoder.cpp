@@ -972,6 +972,20 @@ void ExternalAudioDecoder::set_known_info(const ExternalAudioInfo& info) {
 
 ExternalAudioInfo ExternalAudioDecoder::effective_probe_info(const std::string& path) const {
     if (is_stream_uri(path)) {
+        if (have_known_info_ && known_info_.live_format_probed) {
+            ExternalAudioInfo cached = known_info_;
+            if (forced_output_sample_rate_ > 0) {
+                cached.format.sample_rate = forced_output_sample_rate_;
+            }
+            if (forced_output_bits_per_sample_ == 16 || forced_output_bits_per_sample_ == 24 ||
+                forced_output_bits_per_sample_ == 32) {
+                cached.format.bits_per_sample = forced_output_bits_per_sample_;
+            }
+            Logger::instance().debug("Using cached stream format for: " + path + " -> " +
+                                     std::to_string(cached.source_format.sample_rate) + " Hz");
+            return cached;
+        }
+
         ExternalAudioInfo probed = probe_info(path, forced_output_sample_rate_, forced_output_bits_per_sample_);
         if (probed.live_format_probed) {
             Logger::instance().info("Stream format probed: " + path + " -> " +
