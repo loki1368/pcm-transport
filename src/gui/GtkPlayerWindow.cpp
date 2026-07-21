@@ -2200,6 +2200,7 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
 
     playlist_store_ = gtk_list_store_new(COL_COUNT, G_TYPE_INT, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
     playlist_view_ = gtk_tree_view_new_with_model(GTK_TREE_MODEL(playlist_store_));
+    gtk_tree_selection_set_mode(gtk_tree_view_get_selection(GTK_TREE_VIEW(playlist_view_)), GTK_SELECTION_BROWSE);
     gtk_container_add(GTK_CONTAINER(scrolled), playlist_view_);
     gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(playlist_view_), TRUE);
 
@@ -2240,8 +2241,7 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     g_signal_connect(btn_alsamixer_, "clicked", G_CALLBACK(GtkPlayerWindow::on_open_alsamixer_clicked), this);
     g_signal_connect(btn_about_, "clicked", G_CALLBACK(GtkPlayerWindow::on_about_clicked), this);
     g_signal_connect(playlist_view_, "row-activated", G_CALLBACK(GtkPlayerWindow::on_playlist_row_activated), this);
-    GtkTreeSelection* playlist_selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(playlist_view_));
-    g_signal_connect(playlist_selection, "changed", G_CALLBACK(GtkPlayerWindow::on_playlist_selection_changed), this);
+    g_signal_connect(playlist_view_, "focus-in-event", G_CALLBACK(GtkPlayerWindow::on_playlist_focus_in), this);
     g_signal_connect(window_, "delete-event", G_CALLBACK(GtkPlayerWindow::on_window_delete_event), this);
     g_signal_connect(window_, "destroy", G_CALLBACK(GtkPlayerWindow::on_window_destroy), this);
     refresh_device_list();
@@ -2764,20 +2764,22 @@ gboolean GtkPlayerWindow::on_pending_seek_timer(gpointer user_data) {
 
 void GtkPlayerWindow::on_playlist_row_activated(GtkTreeView*, GtkTreePath*, GtkTreeViewColumn*, gpointer user_data) {
     auto* self = static_cast<GtkPlayerWindow*>(user_data);
-    self->update_playlist_selection_from_ui();
-    if (self->playlist_.empty()) {
+    if (self == nullptr || self->playlist_.empty()) {
         return;
     }
+    // Enter activates the keyboard cursor, which can lag behind the highlighted row after session restore.
+    self->update_playlist_selection_from_ui();
+    self->sync_playlist_cursor_to_selection();
     self->play_track_index(self->current_track_index_);
 }
 
-void GtkPlayerWindow::on_playlist_selection_changed(GtkTreeSelection*, gpointer user_data) {
+gboolean GtkPlayerWindow::on_playlist_focus_in(GtkWidget*, GdkEventFocus*, gpointer user_data) {
     auto* self = static_cast<GtkPlayerWindow*>(user_data);
     if (self == nullptr || self->ui_closing_) {
-        return;
+        return FALSE;
     }
-    self->update_playlist_selection_from_ui();
-    self->refresh_display();
+    self->sync_playlist_cursor_to_selection();
+    return FALSE;
 }
 
 std::uint32_t GtkPlayerWindow::target_sample_rate_for(std::uint32_t source_rate) const {
@@ -5146,10 +5148,9 @@ void GtkPlayerWindow::rebuild_playlist_view() {
 }
 
 void GtkPlayerWindow::select_playlist_row(std::size_t index) {
-    if (playlist_.empty() || index >= playlist_.size()) {
+    if (playlist_.empty() || index >= playlist_.size() || playlist_view_ == nullptr) {
         return;
     }
-    current_track_index_ = index;
     GtkTreePath* path = gtk_tree_path_new_from_indices(static_cast<int>(index), -1);
     GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(playlist_view_));
     gtk_tree_selection_unselect_all(selection);
@@ -5159,17 +5160,95 @@ void GtkPlayerWindow::select_playlist_row(std::size_t index) {
     gtk_tree_path_free(path);
 }
 
+void GtkPlayerWindow::sync_playlist_cursor_to_selection() {
+    if (playlist_.empty() || playlist_view_ == nullptr) {
+        return;
+    }
+
+    GtkTreeView* view = GTK_TREE_VIEW(playlist_view_);
+    GtkTreeSelection* selection = gtk_tree_view_get_selection(view);
+    GtkTreeModel* model = nullptr;
+    GtkTreeIter iter;
+    if (!gtk_tree_selection_get_selected(selection, &model, &iter)) {
+        return;
+    }
+
+    GtkTreePath* path = gtk_tree_model_get_path(model, &iter);
+    if (path == nullptr) {
+        return;
+    }
+    gtk_tree_view_set_cursor(view, path, nullptr, FALSE);
+    gtk_tree_path_free(path);
+}
+
 void GtkPlayerWindow::update_playlist_selection_from_ui() {
-    GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(playlist_view_));
+    if (playlist_.empty()) {
+        return;
+    }
+
+    GtkTreeView* view = GTK_TREE_VIEW(playlist_view_);
+    GtkTreeSelection* selection = gtk_tree_view_get_selection(view);
     GtkTreeModel* model = nullptr;
     GtkTreeIter iter;
     if (gtk_tree_selection_get_selected(selection, &model, &iter)) {
-        int index = 0;
-        gtk_tree_model_get(model, &iter, COL_INDEX, &index, -1);
-        if (index >= 0 && static_cast<std::size_t>(index) < playlist_.size()) {
-            current_track_index_ = static_cast<std::size_t>(index);
+        GtkTreePath* path = gtk_tree_model_get_path(model, &iter);
+        if (path != nullptr) {
+            const int* indices = gtk_tree_path_get_indices(path);
+            if (indices != nullptr && indices[0] >= 0) {
+                const std::size_t index = static_cast<std::size_t>(indices[0]);
+                if (index < playlist_.size()) {
+                    current_track_index_ = index;
+                    gtk_tree_path_free(path);
+                    return;
+                }
+            }
+            gtk_tree_path_free(path);
         }
     }
+
+    GtkTreePath* cursor_path = nullptr;
+    GtkTreeViewColumn* cursor_column = nullptr;
+    gtk_tree_view_get_cursor(view, &cursor_path, &cursor_column);
+    if (cursor_path != nullptr) {
+        const int* indices = gtk_tree_path_get_indices(cursor_path);
+        if (indices != nullptr && indices[0] >= 0) {
+            const std::size_t index = static_cast<std::size_t>(indices[0]);
+            if (index < playlist_.size()) {
+                current_track_index_ = index;
+            }
+        }
+        gtk_tree_path_free(cursor_path);
+    }
+}
+
+std::size_t GtkPlayerWindow::highlighted_playlist_index() const {
+    if (playlist_.empty()) {
+        return 0;
+    }
+    if (playlist_view_ == nullptr) {
+        return std::min(current_track_index_, playlist_.size() - 1);
+    }
+
+    GtkTreeView* view = GTK_TREE_VIEW(playlist_view_);
+    GtkTreeSelection* selection = gtk_tree_view_get_selection(view);
+    GtkTreeModel* model = nullptr;
+    GtkTreeIter iter;
+    if (gtk_tree_selection_get_selected(selection, &model, &iter)) {
+        GtkTreePath* path = gtk_tree_model_get_path(model, &iter);
+        if (path != nullptr) {
+            const int* indices = gtk_tree_path_get_indices(path);
+            if (indices != nullptr && indices[0] >= 0) {
+                const std::size_t index = static_cast<std::size_t>(indices[0]);
+                gtk_tree_path_free(path);
+                if (index < playlist_.size()) {
+                    return index;
+                }
+            }
+            gtk_tree_path_free(path);
+        }
+    }
+
+    return std::min(current_track_index_, playlist_.size() - 1);
 }
 
 std::string GtkPlayerWindow::format_time(std::uint64_t samples_per_channel, std::uint32_t sample_rate) {
@@ -5252,10 +5331,15 @@ void GtkPlayerWindow::save_playlist_session() const {
         snapshot.tracks.push_back(session_track_from_entry(entry));
     }
     if (!playlist_.empty()) {
-        snapshot.current_track_index = std::min(current_track_index_, playlist_.size() - 1);
+        snapshot.current_track_index = highlighted_playlist_index();
     }
     PlaylistSession().save(snapshot);
 }
+
+struct RestorePlaylistFocusData {
+    GtkPlayerWindow* window = nullptr;
+    std::size_t index = 0;
+};
 
 bool GtkPlayerWindow::restore_playlist_session() {
     PlaylistSessionSnapshot snapshot;
@@ -5304,7 +5388,27 @@ bool GtkPlayerWindow::restore_playlist_session() {
     finish_handled_ = true;
     refresh_display();
     mark_mpris_track_changed();
+
+    auto* focus_data = new RestorePlaylistFocusData{this, current_track_index_};
+    g_idle_add(GtkPlayerWindow::on_restore_playlist_focus_idle, focus_data);
     return true;
+}
+
+gboolean GtkPlayerWindow::on_restore_playlist_focus_idle(gpointer user_data) {
+    auto* data = static_cast<RestorePlaylistFocusData*>(user_data);
+    if (data != nullptr && data->window != nullptr) {
+        data->window->finalize_restored_playlist_selection(data->index);
+    }
+    delete data;
+    return G_SOURCE_REMOVE;
+}
+
+void GtkPlayerWindow::finalize_restored_playlist_selection(std::size_t index) {
+    if (ui_closing_ || playlist_.empty()) {
+        return;
+    }
+    select_playlist_row(std::min(index, playlist_.size() - 1));
+    gtk_widget_grab_focus(playlist_view_);
 }
 
 void GtkPlayerWindow::load_preferences() {

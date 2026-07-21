@@ -95,7 +95,7 @@ private:
                                           GtkTreePath* path,
                                           GtkTreeViewColumn* column,
                                           gpointer user_data);
-    static void on_playlist_selection_changed(GtkTreeSelection* selection, gpointer user_data);
+    static gboolean on_playlist_focus_in(GtkWidget* widget, GdkEventFocus* event, gpointer user_data);
     static void on_media_play(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_pause(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_stop(GSimpleAction* action, GVariant* parameter, gpointer user_data);
@@ -123,6 +123,8 @@ private:
     void save_preferences() const;
     void save_playlist_session() const;
     bool restore_playlist_session();
+    void finalize_restored_playlist_selection(std::size_t index);
+    static gboolean on_restore_playlist_focus_idle(gpointer user_data);
     static PlaylistSessionTrack session_track_from_entry(const PlaylistEntry& entry);
     static PlaylistEntry entry_from_session_track(const PlaylistSessionTrack& track);
     void refresh_dsp_info_for_current_device();
@@ -131,7 +133,9 @@ private:
     void cancel_pending_seek();
     void rebuild_playlist_view();
     void select_playlist_row(std::size_t index);
+    void sync_playlist_cursor_to_selection();
     void update_playlist_selection_from_ui();
+    std::size_t highlighted_playlist_index() const;
 
     std::unique_ptr<IAudioDecoder> create_decoder_for_entry(const PlaylistEntry& entry, bool for_normalization) const;
     GaplessTrackSpec gapless_spec_for_entry(const PlaylistEntry& entry) const;
