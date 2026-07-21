@@ -27,6 +27,7 @@ struct ExternalAudioInfo {
     bool lossless = false;
     bool raw_aac = false;
     bool duration_reliable = true;
+    bool live_format_probed = false;
 };
 
 class ExternalAudioDecoder final : public IAudioDecoder {

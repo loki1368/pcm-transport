@@ -499,35 +499,44 @@ void on_playlist_row_cell_data(GtkTreeViewColumn* column,
         selected = gtk_tree_selection_path_is_selected(selection, path);
     }
 
+    const GdkRGBA normal_selected_bg = {0.435f, 0.467f, 0.502f, 1.0f};
+    const GdkRGBA broken_selected_bg = {0.55f, 0.28f, 0.28f, 1.0f};
+    const GdkRGBA normal_selected_fg = {1.0f, 1.0f, 1.0f, 1.0f};
+    const GdkRGBA broken_selected_fg = {1.0f, 0.75f, 0.75f, 1.0f};
+    const GdkRGBA broken_fg = {0.88f, 0.48f, 0.48f, 1.0f};
+
     if (broken) {
         if (selected) {
-            GdkRGBA foreground = {1.0, 0.78, 0.78, 1.0};
-            GdkRGBA background = {0.58, 0.30, 0.30, 1.0};
             g_object_set(G_OBJECT(cell),
-                           "foreground-rgba", &foreground,
+                           "foreground-rgba", &broken_selected_fg,
                            "foreground-set", TRUE,
-                           "cell-background-rgba", &background,
+                           "cell-background-rgba", &broken_selected_bg,
                            "cell-background-set", TRUE,
+                           "weight", PANGO_WEIGHT_BOLD,
+                           "weight-set", TRUE,
                            nullptr);
         } else {
-            GdkRGBA foreground = {0.88, 0.48, 0.48, 1.0};
             g_object_set(G_OBJECT(cell),
-                           "foreground-rgba", &foreground,
+                           "foreground-rgba", &broken_fg,
                            "foreground-set", TRUE,
                            "cell-background-set", FALSE,
+                           "weight", PANGO_WEIGHT_BOLD,
+                           "weight-set", TRUE,
                            nullptr);
         }
     } else if (selected) {
-        GdkRGBA foreground = {1.0, 1.0, 1.0, 1.0};
         g_object_set(G_OBJECT(cell),
-                       "foreground-rgba", &foreground,
+                       "foreground-rgba", &normal_selected_fg,
                        "foreground-set", TRUE,
-                       "cell-background-set", FALSE,
+                       "cell-background-rgba", &normal_selected_bg,
+                       "cell-background-set", TRUE,
+                       "weight-set", FALSE,
                        nullptr);
     } else {
         g_object_set(G_OBJECT(cell),
                        "foreground-set", FALSE,
                        "cell-background-set", FALSE,
+                       "weight-set", FALSE,
                        nullptr);
     }
 
@@ -2138,8 +2147,12 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
         ".transport-button { min-height: 42px; min-width: 46px; font-weight: bold; padding: 2px 8px; }"
         ".transport-button-thin { min-height: 19px; min-width: 86px; font-weight: bold; padding: 1px 8px; }"
         ".transport-icon { font-size: 18px; color: #25313a; }"
-        "treeview.view:selected, treeview.view:selected:focus { background-color: #6f7780; }"
-        "treeview.view:selected:hover { background-color: #78818a; }"
+        "treeview.view:selected, treeview.view:selected:focus { background-color: #6f7780; color: #ffffff; }"
+        "treeview.view:selected:hover { background-color: #78818a; color: #ffffff; }"
+        "#playlist-view.view:selected, #playlist-view.view:selected:focus { background-color: transparent; color: inherit; }"
+        "#playlist-view.view:selected:hover { background-color: transparent; color: inherit; }"
+        "#playlist-view row:selected { background-color: transparent; color: inherit; }"
+        "#playlist-view row:nth-child(even):selected { background-color: transparent; color: inherit; }"
         "notebook > header > tabs > tab:checked { box-shadow: inset 0 -3px #6f7780; }"
         "scale trough highlight { background-color: #6f7780; background-image: none; border-color: #6f7780; }"
         "scale slider { background-color: #eeeeee; background-image: none; border-color: #9a9a9a; }"
@@ -2355,6 +2368,7 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
 
     playlist_store_ = gtk_list_store_new(COL_COUNT, G_TYPE_INT, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN);
     playlist_view_ = gtk_tree_view_new_with_model(GTK_TREE_MODEL(playlist_store_));
+    gtk_widget_set_name(playlist_view_, "playlist-view");
     gtk_container_add(GTK_CONTAINER(scrolled), playlist_view_);
     gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(playlist_view_), TRUE);
 
@@ -3907,7 +3921,12 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
         } else if (track.is_stream) {
             decoder = create_decoder_for_entry(track, false);
             decoder->open(track.audio_file_path);
-            Logger::instance().info("Streaming playback: " + track.audio_file_path);
+            const AudioFormat stream_format = decoder->format();
+            playlist_[current_track_index_].decoded_format = stream_format;
+            playlist_[current_track_index_].source_sample_rate = stream_format.sample_rate;
+            playlist_[current_track_index_].source_bits_per_sample = stream_format.bits_per_sample;
+            Logger::instance().info("Streaming playback: " + track.audio_file_path + " (" +
+                                    std::to_string(stream_format.sample_rate) + " Hz)");
             start_stream_sidecar(track.audio_file_path);
         } else {
             chain_end = file_chain_end_index(index);
@@ -5579,11 +5598,13 @@ void GtkPlayerWindow::rebuild_playlist_view() {
         GtkTreeIter iter;
         gtk_list_store_append(playlist_store_, &iter);
         const PlaylistEntry& entry = playlist_[i];
-        const std::string trackno = std::to_string(entry.track_number);
+        const bool stream_broken = entry.is_stream && stream_health_.is_broken(entry.audio_file_path);
+        const std::string trackno = stream_broken
+            ? ("× " + std::to_string(entry.track_number))
+            : std::to_string(entry.track_number);
         const std::string artist = safe_utf8_for_display(entry.performer);
         const std::string title = safe_utf8_for_display(entry.title);
         const std::string source = safe_utf8_for_display(entry.source_label);
-        const bool stream_broken = entry.is_stream && stream_health_.is_broken(entry.audio_file_path);
         gtk_list_store_set(playlist_store_, &iter,
                            COL_INDEX, static_cast<int>(i),
                            COL_TRACKNO, trackno.c_str(),

@@ -639,6 +639,7 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path, 
         std::istringstream ps(probe.stdout_text);
         std::string line;
         std::string sample_fmt;
+        bool saw_sample_rate = false;
         while (std::getline(ps, line)) {
             line = trim_copy(line);
             const std::size_t pos = line.find('=');
@@ -654,6 +655,7 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path, 
                     sample_fmt = lower_copy(value);
                 } else if (key == "sample_rate") {
                     info.format.sample_rate = static_cast<std::uint32_t>(std::stoul(value));
+                    saw_sample_rate = true;
                 } else if (key == "channels") {
                     info.format.channels = static_cast<std::uint16_t>(std::stoul(value));
                 } else if ((key == "bits_per_sample" || key == "bits_per_raw_sample") && !value.empty() && value != "N/A") {
@@ -685,6 +687,7 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path, 
         info.duration_reliable = false;
         info.lossless = codec_is_lossless(info.codec_name, std::string());
         info.source_format = info.format;
+        info.live_format_probed = probe.status == 0 && saw_sample_rate && info.format.sample_rate > 0;
         if (forced_output_sample_rate > 0) {
             info.format.sample_rate = forced_output_sample_rate;
         }
@@ -968,6 +971,29 @@ void ExternalAudioDecoder::set_known_info(const ExternalAudioInfo& info) {
 }
 
 ExternalAudioInfo ExternalAudioDecoder::effective_probe_info(const std::string& path) const {
+    if (is_stream_uri(path)) {
+        ExternalAudioInfo probed = probe_info(path, forced_output_sample_rate_, forced_output_bits_per_sample_);
+        if (probed.live_format_probed) {
+            Logger::instance().info("Stream format probed: " + path + " -> " +
+                                    std::to_string(probed.source_format.sample_rate) + " Hz / " +
+                                    std::to_string(probed.source_format.bits_per_sample) + "-bit / " +
+                                    std::to_string(probed.source_format.channels) + " ch");
+            return probed;
+        }
+        if (have_known_info_) {
+            Logger::instance().debug("Stream probe unavailable, using playlist hints for: " + path);
+            ExternalAudioInfo fallback = known_info_;
+            if (forced_output_sample_rate_ > 0) {
+                fallback.format.sample_rate = forced_output_sample_rate_;
+            }
+            if (forced_output_bits_per_sample_ == 16 || forced_output_bits_per_sample_ == 24 ||
+                forced_output_bits_per_sample_ == 32) {
+                fallback.format.bits_per_sample = forced_output_bits_per_sample_;
+            }
+            return fallback;
+        }
+        return probed;
+    }
     if (have_known_info_) {
         return known_info_;
     }
