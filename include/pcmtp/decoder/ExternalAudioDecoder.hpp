@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <string>
+#include <sys/types.h>
 #include <vector>
 
 #include "pcmtp/decoder/IAudioDecoder.hpp"
@@ -42,6 +43,7 @@ public:
     std::uint64_t total_samples_per_channel() const override;
     std::string source_path() const override;
     bool seek_to_sample(std::uint64_t sample_index) override;
+    void interrupt() override;
 
     static bool looks_supported(const std::string& path);
     static bool is_stream_uri(const std::string& path);
@@ -75,6 +77,8 @@ private:
     bool opened_ = false;
     bool reached_eof_ = false;
     bool zero_read_logged_ = false;
+    bool interrupt_requested_ = false;
+    pid_t child_pid_ = 0;
     std::uint64_t current_samples_per_channel_ = 0;
     std::vector<unsigned char> raw_buffer_;
 };

@@ -4,13 +4,17 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <poll.h>
 #include <sstream>
 #include <stdexcept>
+#include <sys/wait.h>
+#include <signal.h>
 #include <unistd.h>
 #include <vector>
 
@@ -74,6 +78,76 @@ struct CommandCaptureResult {
     std::string stderr_text;
     int status = 0;
 };
+
+struct ManagedSubprocess {
+    FILE* pipe = nullptr;
+    pid_t pid = 0;
+};
+
+void kill_subprocess_tree(pid_t pid) {
+    if (pid <= 0) {
+        return;
+    }
+    const pid_t pgid = getpgid(pid);
+    if (pgid > 0) {
+        kill(-pgid, SIGKILL);
+    } else {
+        kill(pid, SIGKILL);
+    }
+}
+
+ManagedSubprocess start_shell_pipeline(const std::string& shell_command) {
+    ManagedSubprocess result;
+    int stdout_pipe[2];
+    if (pipe(stdout_pipe) != 0) {
+        return result;
+    }
+
+    const pid_t pid = fork();
+    if (pid < 0) {
+        close(stdout_pipe[0]);
+        close(stdout_pipe[1]);
+        return result;
+    }
+    if (pid == 0) {
+        close(stdout_pipe[0]);
+        setpgid(0, 0);
+        if (dup2(stdout_pipe[1], STDOUT_FILENO) < 0) {
+            _exit(127);
+        }
+        close(stdout_pipe[1]);
+        execl("/bin/sh", "sh", "-c", shell_command.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
+
+    close(stdout_pipe[1]);
+    result.pipe = fdopen(stdout_pipe[0], "r");
+    result.pid = pid;
+    if (result.pipe == nullptr) {
+        kill(pid, SIGKILL);
+        waitpid(pid, nullptr, 0);
+        result.pid = 0;
+    }
+    return result;
+}
+
+void terminate_managed_subprocess(ManagedSubprocess& proc, bool wait_for_exit) {
+    if (proc.pid > 0) {
+        kill_subprocess_tree(proc.pid);
+    }
+    if (proc.pipe != nullptr) {
+        fclose(proc.pipe);
+        proc.pipe = nullptr;
+    }
+    if (proc.pid > 0 && wait_for_exit) {
+        int status = 0;
+        const pid_t reaped = waitpid(proc.pid, &status, 0);
+        if (reaped < 0 && errno != ECHILD) {
+            Logger::instance().debug(std::string("waitpid failed: ") + std::strerror(errno));
+        }
+        proc.pid = 0;
+    }
+}
 
 CommandCaptureResult run_command_capture(const std::string& command) {
     CommandCaptureResult result;
@@ -799,7 +873,8 @@ std::string ExternalAudioDecoder::decode_command(double seconds) const {
 
     std::string cmd = "ffmpeg -v error -nostdin ";
     if (is_stream_uri(path_)) {
-        cmd += "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -rw_timeout 15000000 -multiple_requests 1 ";
+        cmd += "-reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 30 "
+               "-timeout 8000000 -rw_timeout 8000000 -multiple_requests 1 ";
         cmd += "-user_agent " + shell_escape("pcm-transport/0.9") + " ";
     }
     if (is_raw_aac) {
@@ -837,17 +912,18 @@ std::string ExternalAudioDecoder::decode_command(double seconds) const {
 }
 
 void ExternalAudioDecoder::close_pipe(bool log_stderr, const std::string& context) {
-    if (pipe_ != nullptr) {
-        const int status = pclose(pipe_);
+    interrupt_requested_ = true;
+    if (pipe_ != nullptr || child_pid_ > 0) {
+        ManagedSubprocess proc{pipe_, child_pid_};
         pipe_ = nullptr;
-        if (log_stderr && status != 0) {
+        child_pid_ = 0;
+        if (log_stderr) {
             const std::string stderr_text = read_text_file_limited(stderr_path_);
             if (!stderr_text.empty()) {
-                Logger::instance().error("ffmpeg exited with non-zero status" + (context.empty() ? std::string() : (" during " + context)) + ":\n" + stderr_text);
-            } else {
-                Logger::instance().error("ffmpeg exited with non-zero status" + (context.empty() ? std::string() : (" during " + context)));
+                Logger::instance().error("ffmpeg stderr" + (context.empty() ? std::string() : (" during " + context)) + ":\n" + stderr_text);
             }
         }
+        terminate_managed_subprocess(proc, true);
     }
     remove_file_quiet(stderr_path_);
     stderr_path_.clear();
@@ -855,6 +931,7 @@ void ExternalAudioDecoder::close_pipe(bool log_stderr, const std::string& contex
 
 bool ExternalAudioDecoder::start_decode_pipe(double seconds, const std::string& context) {
     close_pipe(false, std::string());
+    interrupt_requested_ = false;
     stderr_path_ = make_temp_stderr_path("pcm_transport_ffmpeg");
     std::string command = decode_command(seconds);
     if (!stderr_path_.empty()) {
@@ -863,14 +940,23 @@ bool ExternalAudioDecoder::start_decode_pipe(double seconds, const std::string& 
         command += " 2>/dev/null";
     }
     Logger::instance().debug("ExternalAudioDecoder starting ffmpeg decode" + (context.empty() ? std::string() : (" (" + context + ")")) + " for: " + path_);
-    pipe_ = popen(command.c_str(), "r");
-    if (pipe_ == nullptr) {
+    const ManagedSubprocess proc = start_shell_pipeline(command);
+    if (proc.pipe == nullptr || proc.pid <= 0) {
         Logger::instance().error("Cannot start ffmpeg decoder for: " + path_);
         remove_file_quiet(stderr_path_);
         stderr_path_.clear();
         return false;
     }
+    pipe_ = proc.pipe;
+    child_pid_ = proc.pid;
     return true;
+}
+
+void ExternalAudioDecoder::interrupt() {
+    interrupt_requested_ = true;
+    if (child_pid_ > 0) {
+        kill_subprocess_tree(child_pid_);
+    }
 }
 
 void ExternalAudioDecoder::set_known_info(const ExternalAudioInfo& info) {
@@ -923,12 +1009,73 @@ const AudioFormat& ExternalAudioDecoder::format() const {
 }
 
 std::size_t ExternalAudioDecoder::read_samples(PcmSample* destination, std::size_t max_samples) {
-    if (!opened_ || pipe_ == nullptr) {
-        throw std::runtime_error("Decoder not opened");
+    if (!opened_ || pipe_ == nullptr || interrupt_requested_) {
+        reached_eof_ = true;
+        return 0;
     }
 
     const std::size_t bps = bytes_per_sample();
     raw_buffer_.resize(max_samples * bps);
+
+    if (is_stream_uri(path_)) {
+        const int fd = fileno(pipe_);
+        if (fd < 0) {
+            reached_eof_ = true;
+            return 0;
+        }
+        constexpr int kPollMs = 200;
+        constexpr int kConnectWaitMs = 8000;
+        constexpr int kReadWaitMs = 15000;
+        const int max_wait_ms = current_samples_per_channel_ == 0 ? kConnectWaitMs : kReadWaitMs;
+        int waited_ms = 0;
+        for (;;) {
+            if (interrupt_requested_) {
+                reached_eof_ = true;
+                return 0;
+            }
+            struct pollfd pfd = {fd, POLLIN, 0};
+            const int ready = poll(&pfd, 1, kPollMs);
+            if (ready > 0) {
+                break;
+            }
+            if (ready < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                reached_eof_ = true;
+                return 0;
+            }
+            if (child_pid_ > 0) {
+                int status = 0;
+                if (waitpid(child_pid_, &status, WNOHANG) > 0) {
+                    child_pid_ = 0;
+                    reached_eof_ = true;
+                    return 0;
+                }
+            } else {
+                reached_eof_ = true;
+                return 0;
+            }
+            waited_ms += kPollMs;
+            if (waited_ms >= max_wait_ms) {
+                Logger::instance().error("Stream read timed out: " + path_);
+                if (child_pid_ > 0) {
+                    kill_subprocess_tree(child_pid_);
+                    int status = 0;
+                    waitpid(child_pid_, &status, 0);
+                    child_pid_ = 0;
+                }
+                reached_eof_ = true;
+                return 0;
+            }
+        }
+    }
+
+    if (pipe_ == nullptr || interrupt_requested_) {
+        reached_eof_ = true;
+        return 0;
+    }
+
     const std::size_t got_bytes = fread(raw_buffer_.data(), 1, raw_buffer_.size(), pipe_);
     const std::size_t got = got_bytes / bps;
     if (got == 0 && !zero_read_logged_) {

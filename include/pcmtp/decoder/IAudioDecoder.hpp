@@ -24,6 +24,7 @@ public:
     virtual std::uint64_t total_samples_per_channel() const = 0;
     virtual std::string source_path() const = 0;
     virtual bool seek_to_sample(std::uint64_t sample_index) { (void)sample_index; return false; }
+    virtual void interrupt() {}
 };
 
 } // namespace pcmtp

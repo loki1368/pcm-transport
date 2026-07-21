@@ -68,7 +68,6 @@ private:
 
     static void on_activate(GtkApplication* app, gpointer user_data);
     static void on_open_clicked(GtkButton* button, gpointer user_data);
-    static void on_open_url_clicked(GtkButton* button, gpointer user_data);
     static void on_play_clicked(GtkButton* button, gpointer user_data);
     static void on_pause_clicked(GtkButton* button, gpointer user_data);
     static void on_stop_clicked(GtkButton* button, gpointer user_data);
@@ -107,7 +106,6 @@ private:
     void append_media_to_playlist(const std::string& path,
                                   const std::string& hint_title = std::string(),
                                   const std::string& hint_artist = std::string());
-    void open_stream_url_dialog();
     void start_current_track(bool restart_if_paused = true);
     void stop_playback();
     void play_track_index(std::size_t index);
@@ -213,7 +211,6 @@ private:
     GtkWidget* btn_stop_ = nullptr;
     GtkWidget* btn_next_ = nullptr;
     GtkWidget* btn_open_ = nullptr;
-    GtkWidget* btn_open_url_ = nullptr;
     GtkWidget* btn_repeat_ = nullptr;
     GtkWidget* btn_settings_ = nullptr;
     GtkWidget* btn_alsamixer_ = nullptr;

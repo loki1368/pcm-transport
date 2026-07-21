@@ -265,6 +265,48 @@ std::string stream_display_label(const std::string& url) {
     return url.substr(start, end - start);
 }
 
+std::uint32_t stream_sample_rate_hint(const std::string& text) {
+    std::string lower = text;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    struct RateHint {
+        const char* token;
+        std::uint32_t rate;
+    };
+    static const RateHint hints[] = {
+        {"192 khz", 192000}, {"192khz", 192000},
+        {"176.4 khz", 176400}, {"176.4khz", 176400},
+        {"96 khz", 96000}, {"96khz", 96000},
+        {"88.2 khz", 88200}, {"88.2khz", 88200},
+        {"48 khz", 48000}, {"48khz", 48000},
+        {"44.1 khz", 44100}, {"44.1khz", 44100},
+    };
+    for (const RateHint& hint : hints) {
+        if (lower.find(hint.token) != std::string::npos) {
+            return hint.rate;
+        }
+    }
+    return 0;
+}
+
+std::uint16_t stream_bits_per_sample_hint(const std::string& text) {
+    std::string lower = text;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (lower.find("24-bit") != std::string::npos || lower.find("24 bit") != std::string::npos) {
+        return 24;
+    }
+    if (lower.find("32-bit") != std::string::npos || lower.find("32 bit") != std::string::npos) {
+        return 32;
+    }
+    if (lower.find("flac") != std::string::npos) {
+        return 16;
+    }
+    return 0;
+}
+
 constexpr const char* kMprisNoTrackObjectPath = "/org/mpris/MediaPlayer2/TrackList/NoTrack";
 
 std::int64_t samples_to_usec_safe(std::uint64_t samples, std::uint32_t sample_rate) {
@@ -2154,14 +2196,13 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     btn_stop_ = create_symbolic_button("media-playback-stop-symbolic", nullptr, "[]");
     btn_next_ = create_symbolic_button("media-skip-forward-symbolic", nullptr, ">>");
     btn_open_ = create_symbolic_button("media-eject-symbolic", "document-open-symbolic", "OPEN");
-    btn_open_url_ = create_symbolic_button("network-transmit-symbolic", nullptr, "URL");
     btn_repeat_ = create_symbolic_button("media-playlist-repeat-symbolic", "view-refresh-symbolic", "Repeat");
     btn_settings_ = gtk_button_new_with_label("Settings");
     btn_eq_ = gtk_button_new_with_label("DSP Studio");
     btn_alsamixer_ = gtk_button_new_with_label("alsamixer");
     btn_about_ = gtk_button_new_with_label("About");
 
-    GtkWidget* transport_buttons_all[] = {btn_prev_, btn_play_, btn_pause_, btn_stop_, btn_next_, btn_open_, btn_open_url_, btn_repeat_};
+    GtkWidget* transport_buttons_all[] = {btn_prev_, btn_play_, btn_pause_, btn_stop_, btn_next_, btn_open_, btn_repeat_};
     for (GtkWidget* button : transport_buttons_all) {
         gtk_style_context_add_class(gtk_widget_get_style_context(button), "transport-button");
         gtk_style_context_add_class(gtk_widget_get_style_context(button), "transport-icon");
@@ -2178,7 +2219,6 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     gtk_grid_attach(GTK_GRID(controls_text), btn_eq_, 0, 1, 1, 1);
     gtk_grid_attach(GTK_GRID(controls_text), btn_about_, 1, 1, 1, 1);
     gtk_widget_set_tooltip_text(btn_open_, "Open files");
-    gtk_widget_set_tooltip_text(btn_open_url_, "Open stream URL");
     gtk_widget_set_tooltip_text(btn_repeat_, "Repeat playlist");
     gtk_widget_set_tooltip_text(btn_settings_, "Settings");
     gtk_widget_set_tooltip_text(btn_eq_, "DSP Studio");
@@ -2256,7 +2296,6 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     gtk_tree_view_append_column(GTK_TREE_VIEW(playlist_view_), col_source);
 
     g_signal_connect(btn_open_, "clicked", G_CALLBACK(GtkPlayerWindow::on_open_clicked), this);
-    g_signal_connect(btn_open_url_, "clicked", G_CALLBACK(GtkPlayerWindow::on_open_url_clicked), this);
     g_signal_connect(btn_play_, "clicked", G_CALLBACK(GtkPlayerWindow::on_play_clicked), this);
     g_signal_connect(btn_pause_, "clicked", G_CALLBACK(GtkPlayerWindow::on_pause_clicked), this);
     g_signal_connect(btn_stop_, "clicked", G_CALLBACK(GtkPlayerWindow::on_stop_clicked), this);
@@ -2318,10 +2357,13 @@ gboolean GtkPlayerWindow::on_timer_tick(gpointer user_data) {
                 should_advance = true;
             }
 
+            if (finished_index < self->playlist_.size() && self->playlist_[finished_index].is_stream) {
+                should_advance = false;
+            }
+
             if (should_advance) {
                 self->play_track_index(next_index);
             } else {
-                self->stop_playback();
                 self->select_playlist_row(self->current_track_index_);
             }
         }
@@ -2377,7 +2419,6 @@ void GtkPlayerWindow::on_window_destroy(GtkWidget*, gpointer user_data) {
         self->btn_stop_ = nullptr;
         self->btn_next_ = nullptr;
         self->btn_open_ = nullptr;
-        self->btn_open_url_ = nullptr;
         self->btn_repeat_ = nullptr;
         self->btn_settings_ = nullptr;
         self->btn_alsamixer_ = nullptr;
@@ -2407,10 +2448,6 @@ void GtkPlayerWindow::cancel_pending_seek() {
 
 void GtkPlayerWindow::on_open_clicked(GtkButton*, gpointer user_data) {
     static_cast<GtkPlayerWindow*>(user_data)->open_file_dialog();
-}
-
-void GtkPlayerWindow::on_open_url_clicked(GtkButton*, gpointer user_data) {
-    static_cast<GtkPlayerWindow*>(user_data)->open_stream_url_dialog();
 }
 
 void GtkPlayerWindow::on_play_clicked(GtkButton*, gpointer user_data) {
@@ -3028,13 +3065,16 @@ std::unique_ptr<IAudioDecoder> GtkPlayerWindow::create_decoder_for_entry(const P
         } else {
             decoder.reset(new ExternalAudioDecoder());
         }
-        ExternalAudioInfo known = ExternalAudioDecoder::probe_metadata(
-            entry.audio_file_path,
-            resample_needed ? target_rate : 0,
-            bitdepth_needed ? target_bits : 0);
+        ExternalAudioInfo known;
+        known.format = entry.decoded_format;
+        known.source_format = entry.decoded_format;
+        known.source_format.sample_rate = entry.source_sample_rate > 0 ? entry.source_sample_rate : entry.decoded_format.sample_rate;
+        known.source_format.bits_per_sample = entry.source_bits_per_sample > 0 ? entry.source_bits_per_sample : entry.decoded_format.bits_per_sample;
         known.total_samples_per_channel = 0;
         known.source_total_samples_per_channel = 0;
         known.duration_reliable = false;
+        known.codec_name = entry.codec_name;
+        known.lossless = entry.lossless_source;
         decoder->set_known_info(known);
         return std::unique_ptr<IAudioDecoder>(decoder.release());
     }
@@ -3278,9 +3318,12 @@ void GtkPlayerWindow::append_media_to_playlist(const std::string& path,
         entry.start_sample = 0;
         entry.end_sample = 0;
         entry.source_label = stream_display_label(path);
-        entry.decoded_format.sample_rate = 44100;
+        const std::string stream_hint = !hint_title.empty() ? hint_title : path;
+        const std::uint32_t hinted_rate = stream_sample_rate_hint(stream_hint);
+        const std::uint16_t hinted_bits = stream_bits_per_sample_hint(stream_hint);
+        entry.decoded_format.sample_rate = hinted_rate > 0 ? hinted_rate : 44100;
         entry.decoded_format.channels = 2;
-        entry.decoded_format.bits_per_sample = 16;
+        entry.decoded_format.bits_per_sample = hinted_bits > 0 ? hinted_bits : 16;
         entry.source_sample_rate = entry.decoded_format.sample_rate;
         entry.source_bits_per_sample = entry.decoded_format.bits_per_sample;
         const std::uint32_t target_rate = target_sample_rate_for(entry.source_sample_rate);
@@ -3296,9 +3339,17 @@ void GtkPlayerWindow::append_media_to_playlist(const std::string& path,
         if (entry.bitdepth_converted) {
             entry.decoded_format.bits_per_sample = target_bits;
         }
-        entry.codec_name = "stream";
-        entry.lossless_source = false;
-        entry.lossy_source = true;
+        const std::string stream_hint_lower = [&stream_hint]() {
+            std::string lower = stream_hint;
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            return lower;
+        }();
+        const bool hinted_flac = stream_hint_lower.find("flac") != std::string::npos;
+        entry.codec_name = hinted_flac ? "flac" : "stream";
+        entry.lossless_source = hinted_flac;
+        entry.lossy_source = !hinted_flac;
         entry.title = safe_utf8_for_display(entry.title);
         entry.performer = safe_utf8_for_display(entry.performer);
         entry.source_label = safe_utf8_for_display(entry.source_label);
@@ -3758,78 +3809,6 @@ void GtkPlayerWindow::open_file_dialog() {
         }
         if (current_folder != nullptr) {
             g_free(current_folder);
-        }
-    }
-
-    gtk_widget_destroy(dialog);
-}
-
-void GtkPlayerWindow::open_stream_url_dialog() {
-    GtkWidget* dialog = gtk_dialog_new_with_buttons("Open stream or playlist URL",
-                                                    GTK_WINDOW(window_),
-                                                    GTK_DIALOG_MODAL,
-                                                    "_Cancel", GTK_RESPONSE_CANCEL,
-                                                    "_Open", GTK_RESPONSE_ACCEPT,
-                                                    nullptr);
-    GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-    gtk_container_set_border_width(GTK_CONTAINER(content), 12);
-
-    GtkWidget* label = gtk_label_new("Enter an HTTP/HTTPS stream or M3U playlist URL:");
-    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
-    gtk_box_pack_start(GTK_BOX(content), label, FALSE, FALSE, 0);
-
-    GtkWidget* entry = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "https://example.com/radio.m3u");
-    gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
-    gtk_box_pack_start(GTK_BOX(content), entry, TRUE, TRUE, 8);
-
-    gtk_widget_show_all(dialog);
-    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-        const gchar* text = gtk_entry_get_text(GTK_ENTRY(entry));
-        if (text != nullptr) {
-            std::string url = text;
-            const auto trim_start = url.find_first_not_of(" \t\r\n");
-            if (trim_start != std::string::npos) {
-                url.erase(0, trim_start);
-            }
-            const auto trim_end = url.find_last_not_of(" \t\r\n");
-            if (trim_end != std::string::npos) {
-                url.erase(trim_end + 1);
-            } else {
-                url.clear();
-            }
-
-            if (!url.empty() &&
-                (ExternalAudioDecoder::is_stream_uri(url) || M3uPlaylistReader::looks_like_playlist_path(url))) {
-                try {
-                    stop_playback();
-                    playlist_.clear();
-                    cue_cache_.clear();
-                    external_probe_cache_.clear();
-                    append_media_to_playlist(url);
-                    save_preferences();
-                    current_track_index_ = 0;
-                    rebuild_playlist_view();
-                    if (!playlist_.empty()) {
-                        select_playlist_row(current_track_index_);
-                        track_switch_in_progress_ = false;
-                        finish_handled_ = true;
-                        refresh_display();
-                        mark_mpris_track_changed();
-                        play_track_index(current_track_index_);
-                    }
-                } catch (const std::exception& ex) {
-                    Logger::instance().error(ex.what());
-                    GtkWidget* msg = gtk_message_dialog_new(GTK_WINDOW(window_),
-                                                            GTK_DIALOG_MODAL,
-                                                            GTK_MESSAGE_ERROR,
-                                                            GTK_BUTTONS_CLOSE,
-                                                            "%s",
-                                                            ex.what());
-                    gtk_dialog_run(GTK_DIALOG(msg));
-                    gtk_widget_destroy(msg);
-                }
-            }
         }
     }
 
@@ -5183,11 +5162,13 @@ void GtkPlayerWindow::refresh_display(bool update_text, bool update_progress, bo
             const PlaylistEntry& track = playlist_[current_track_index_];
             const std::uint64_t track_length = track_length_samples(track);
             const std::uint64_t track_position = current_track_position_from_status(status);
-            if (track_length > 0) {
+            if (track.is_stream) {
+                time_text = format_time(track_position, track.decoded_format.sample_rate) + " / LIVE";
+            } else if (track_length > 0) {
                 display_progress_ratio_ = std::max(0.0, std::min(1.0, static_cast<double>(track_position) / static_cast<double>(track_length)));
+                time_text = format_time(track_position, track.decoded_format.sample_rate) +
+                            " / " + format_time(track_length, track.decoded_format.sample_rate);
             }
-            time_text = format_time(track_position, track.decoded_format.sample_rate) +
-                        " / " + format_time(track_length, track.decoded_format.sample_rate);
         }
         display_time_text_ = time_text;
         if (display_time_ != nullptr) {
