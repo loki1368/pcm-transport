@@ -6812,6 +6812,29 @@ std::string GtkPlayerWindow::display_title_for(const PlaylistEntry& entry) const
     return entry.title;
 }
 
+namespace {
+
+bool session_path_is_remote_uri(const std::string& path) {
+    auto starts_with_ci = [](const std::string& text, const char* prefix) -> bool {
+        const std::size_t len = std::strlen(prefix);
+        if (text.size() < len) {
+            return false;
+        }
+        for (std::size_t i = 0; i < len; ++i) {
+            if (std::tolower(static_cast<unsigned char>(text[i])) !=
+                std::tolower(static_cast<unsigned char>(prefix[i]))) {
+                return false;
+            }
+        }
+        return true;
+    };
+    return starts_with_ci(path, "http://") || starts_with_ci(path, "https://") ||
+           starts_with_ci(path, "ftp://") || starts_with_ci(path, "rtsp://") ||
+           starts_with_ci(path, "rtmp://") || starts_with_ci(path, "icy://");
+}
+
+} // namespace
+
 PlaylistSessionTrack GtkPlayerWindow::session_track_from_entry(const PlaylistEntry& entry) {
     PlaylistSessionTrack track;
     track.audio_file_path = entry.audio_file_path;
@@ -6836,6 +6859,7 @@ PlaylistSessionTrack GtkPlayerWindow::session_track_from_entry(const PlaylistEnt
     track.codec_name = entry.codec_name;
     track.cue_track = entry.cue_track;
     track.cue_album_end_sample = entry.cue_album_end_sample;
+    track.is_stream = session_path_is_remote_uri(entry.audio_file_path);
     return track;
 }
 
@@ -6866,6 +6890,16 @@ GtkPlayerWindow::PlaylistEntry GtkPlayerWindow::entry_from_session_track(const P
     return entry;
 }
 
+bool GtkPlayerWindow::session_track_restorable(const PlaylistSessionTrack& track) {
+    if (track.audio_file_path.empty()) {
+        return false;
+    }
+    if (track.is_stream || session_path_is_remote_uri(track.audio_file_path)) {
+        return true;
+    }
+    return access(track.audio_file_path.c_str(), F_OK) == 0;
+}
+
 void GtkPlayerWindow::save_playlist_session() const {
     PlaylistSessionSnapshot snapshot;
     snapshot.tracks.reserve(playlist_.size());
@@ -6892,7 +6926,7 @@ bool GtkPlayerWindow::restore_playlist_session() {
     std::vector<PlaylistEntry> restored;
     restored.reserve(snapshot.tracks.size());
     for (const PlaylistSessionTrack& track : snapshot.tracks) {
-        if (track.audio_file_path.empty() || access(track.audio_file_path.c_str(), F_OK) != 0) {
+        if (!session_track_restorable(track)) {
             continue;
         }
         restored.push_back(entry_from_session_track(track));

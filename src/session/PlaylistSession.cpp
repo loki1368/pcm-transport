@@ -115,6 +115,8 @@ std::string serialize_track(const PlaylistSessionTrack& track) {
     append_json_bool(out, "cue_track", track.cue_track);
     out << ',';
     append_json_uint64(out, "cue_album_end_sample", track.cue_album_end_sample);
+    out << ',';
+    append_json_bool(out, "is_stream", track.is_stream);
     out << '}';
     return out.str();
 }
@@ -306,6 +308,8 @@ public:
                 if (!parse_bool(track.cue_track)) return false;
             } else if (key == "cue_album_end_sample") {
                 if (!parse_number(track.cue_album_end_sample)) return false;
+            } else if (key == "is_stream") {
+                if (!parse_bool(track.is_stream)) return false;
             } else if (!skip_value()) {
                 return false;
             }

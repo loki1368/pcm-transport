@@ -30,6 +30,7 @@ struct PlaylistSessionTrack {
     std::string codec_name;
     bool cue_track = false;
     std::uint64_t cue_album_end_sample = 0;
+    bool is_stream = false;
 };
 
 struct PlaylistSessionSnapshot {
