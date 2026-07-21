@@ -10,6 +10,7 @@
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <memory>
 #include <poll.h>
 #include <sstream>
 #include <stdexcept>
@@ -826,6 +827,33 @@ ExternalAudioInfo ExternalAudioDecoder::probe_info(const std::string& path, std:
     ExternalAudioInfo info = probe_metadata(path, forced_output_sample_rate, forced_output_bits_per_sample);
     info.tags = GenericTags{};
     return info;
+}
+
+bool ExternalAudioDecoder::verify_stream_playback(const std::string& path,
+                                                const ExternalAudioInfo& probed_info,
+                                                std::uint32_t forced_output_sample_rate,
+                                                std::uint16_t forced_output_bits_per_sample) {
+    if (!is_stream_uri(path)) {
+        return true;
+    }
+    try {
+        std::unique_ptr<ExternalAudioDecoder> decoder(new ExternalAudioDecoder(forced_output_sample_rate,
+                                                                               forced_output_bits_per_sample));
+        ExternalAudioInfo known = probed_info;
+        known.live_format_probed = true;
+        decoder->set_known_info(known);
+        decoder->open(path);
+        PcmSample buffer[2048];
+        const std::size_t got = decoder->read_samples(buffer, 2048);
+        decoder->interrupt();
+        return got > 0;
+    } catch (const std::exception& ex) {
+        Logger::instance().debug(std::string("Stream verify failed: ") + path + " -> " + ex.what());
+        return false;
+    } catch (...) {
+        Logger::instance().debug(std::string("Stream verify failed: ") + path);
+        return false;
+    }
 }
 
 GenericTags ExternalAudioDecoder::read_tags(const std::string& path) {

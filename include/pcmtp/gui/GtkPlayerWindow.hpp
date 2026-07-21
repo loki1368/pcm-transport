@@ -3,10 +3,14 @@
 #include <gtk/gtk.h>
 
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <cstdint>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -130,6 +134,49 @@ private:
                                     bool preserve_paused = false,
                                     bool update_mpris_track = true,
                                     bool skip_engine_stop = false);
+    void begin_async_stream_probe_and_play(std::size_t index,
+                                           std::uint64_t offset_samples,
+                                           bool preserve_paused,
+                                           bool update_mpris_track,
+                                           bool skip_engine_stop,
+                                           std::uint64_t probe_generation);
+    void apply_stream_probe_to_entry(PlaylistEntry& entry, const ExternalAudioInfo& info);
+    void ensure_stream_probe_worker();
+    void enqueue_stream_probe(std::size_t index,
+                              std::uint64_t offset_samples,
+                              bool preserve_paused,
+                              bool update_mpris_track,
+                              bool skip_engine_stop,
+                              std::uint64_t probe_generation,
+                              const std::string& url,
+                              std::uint32_t forced_output_sample_rate,
+                              std::uint16_t forced_output_bits_per_sample);
+    void stream_probe_worker_loop();
+    void shutdown_stream_probe_worker();
+    bool stream_probe_is_current(std::uint64_t generation) const;
+    std::size_t find_playlist_index_by_url(const std::string& url) const;
+    void mark_stream_broken_from_probe(const std::string& url, const std::string& error);
+    static gboolean on_stream_probe_idle(gpointer user_data);
+
+    struct StreamProbeTask {
+        GtkPlayerWindow* self = nullptr;
+        std::uint64_t generation = 0;
+        std::size_t index = 0;
+        std::uint64_t offset_samples = 0;
+        bool preserve_paused = false;
+        bool update_mpris_track = true;
+        bool skip_engine_stop = false;
+        std::string url;
+        std::uint32_t forced_output_sample_rate = 0;
+        std::uint16_t forced_output_bits_per_sample = 0;
+    };
+
+    struct StreamProbeResult : StreamProbeTask {
+        ExternalAudioInfo info;
+        bool probe_ok = false;
+        std::string error;
+    };
+
     void open_file_dialog();
     void open_settings_dialog();
     void open_about_dialog();
@@ -144,6 +191,7 @@ private:
     void stop_ui_updates();
     void cancel_pending_seek();
     void rebuild_playlist_view();
+    void refresh_stream_health_rows_for_url(const std::string& url);
     void select_playlist_row(std::size_t index);
     void update_playlist_selection_from_ui();
 
@@ -306,6 +354,12 @@ private:
     int stream_reconnect_attempts_ = 0;
     bool stream_reconnect_pending_ = false;
     std::chrono::steady_clock::time_point stream_reconnect_due_{};
+    std::uint64_t stream_probe_generation_ = 0;
+    mutable std::mutex stream_probe_mutex_;
+    std::condition_variable stream_probe_cv_;
+    std::deque<StreamProbeTask> stream_probe_queue_;
+    std::thread stream_probe_thread_;
+    bool stream_probe_shutdown_ = false;
 };
 
 } // namespace pcmtp
