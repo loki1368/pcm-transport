@@ -5,6 +5,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
+#include <future>
+#include <memory>
 #include <utility>
 
 namespace pcmtp {
@@ -112,6 +115,51 @@ private:
     GVariant* variant_ = nullptr;
 };
 
+void dispatch_on_main_context(const std::function<void()>& action) {
+    if (!action) {
+        return;
+    }
+
+    GMainContext* const context = g_main_context_default();
+    if (g_main_context_is_owner(context)) {
+        action();
+        return;
+    }
+
+    std::packaged_task<void()> task(action);
+    std::future<void> future = task.get_future();
+    auto* task_ptr = new std::packaged_task<void()>(std::move(task));
+    g_main_context_invoke(context,
+                          +[](gpointer data) -> gboolean {
+                              std::unique_ptr<std::packaged_task<void()>> packaged(
+                                  static_cast<std::packaged_task<void()>*>(data));
+                              (*packaged)();
+                              return G_SOURCE_REMOVE;
+                          },
+                          task_ptr);
+    future.get();
+}
+
+bool dispatch_bool_on_main_context(const std::function<bool()>& action) {
+    GMainContext* const context = g_main_context_default();
+    if (g_main_context_is_owner(context)) {
+        return action();
+    }
+
+    std::packaged_task<bool()> task(action);
+    std::future<bool> future = task.get_future();
+    auto* task_ptr = new std::packaged_task<bool()>(std::move(task));
+    g_main_context_invoke(context,
+                          +[](gpointer data) -> gboolean {
+                              std::unique_ptr<std::packaged_task<bool()>> packaged(
+                                  static_cast<std::packaged_task<bool()>*>(data));
+                              (*packaged)();
+                              return G_SOURCE_REMOVE;
+                          },
+                          task_ptr);
+    return future.get();
+}
+
 GVariant* metadata_variant(const MprisPlayerState& state) {
     GVariantBuilder builder;
     g_variant_builder_init(&builder, G_VARIANT_TYPE("a{sv}"));
@@ -199,10 +247,28 @@ MprisService::~MprisService() {
 }
 
 MprisPlayerState MprisService::current_state() const {
-    if (actions_.get_state) {
+    if (!actions_.get_state) {
+        return MprisPlayerState{};
+    }
+
+    GMainContext* const context = g_main_context_default();
+    if (g_main_context_is_owner(context)) {
         return actions_.get_state();
     }
-    return MprisPlayerState{};
+
+    const MprisService* self = this;
+    std::packaged_task<MprisPlayerState()> task([self]() { return self->actions_.get_state(); });
+    std::future<MprisPlayerState> future = task.get_future();
+    auto* task_ptr = new std::packaged_task<MprisPlayerState()>(std::move(task));
+    g_main_context_invoke(context,
+                          +[](gpointer data) -> gboolean {
+                              std::unique_ptr<std::packaged_task<MprisPlayerState()>> packaged(
+                                  static_cast<std::packaged_task<MprisPlayerState()>*>(data));
+                              (*packaged)();
+                              return G_SOURCE_REMOVE;
+                          },
+                          task_ptr);
+    return future.get();
 }
 
 GVariant* MprisService::root_property_from_state(const char* property_name, const MprisPlayerState& state) const {
@@ -424,11 +490,13 @@ void MprisService::handle_method_call(GDBusConnection*,
                         return;
                     }
                     const bool fullscreen = g_variant_get_boolean(value_ref.get()) != FALSE;
-                    if (service->actions_.set_fullscreen) {
-                        service->actions_.set_fullscreen(fullscreen);
-                    }
+                    dispatch_on_main_context([service, fullscreen]() {
+                        if (service->actions_.set_fullscreen) {
+                            service->actions_.set_fullscreen(fullscreen);
+                        }
+                        service->notify_state_changed();
+                    });
                     g_dbus_method_invocation_return_value(invocation, nullptr);
-                    service->notify_state_changed();
                     return;
                 }
 
@@ -452,11 +520,13 @@ void MprisService::handle_method_call(GDBusConnection*,
                     gdouble volume = 0.0;
                     g_variant_get(value_ref.get(), "d", &volume);
                     volume = std::max(0.0, std::min(1.0, volume));
-                    if (service->actions_.set_volume) {
-                        service->actions_.set_volume(volume);
-                    }
+                    dispatch_on_main_context([service, volume]() {
+                        if (service->actions_.set_volume) {
+                            service->actions_.set_volume(volume);
+                        }
+                        service->notify_state_changed();
+                    });
                     g_dbus_method_invocation_return_value(invocation, nullptr);
-                    service->notify_state_changed();
                     return;
                 }
                 if (std::strcmp(property_name, "LoopStatus") == 0) {
@@ -477,11 +547,14 @@ void MprisService::handle_method_call(GDBusConnection*,
                                                               "Invalid LoopStatus value");
                         return;
                     }
-                    if (service->actions_.set_loop_status) {
-                        service->actions_.set_loop_status(loop_status);
-                    }
+                    const std::string loop_status_value = loop_status;
+                    dispatch_on_main_context([service, loop_status_value]() {
+                        if (service->actions_.set_loop_status) {
+                            service->actions_.set_loop_status(loop_status_value);
+                        }
+                        service->notify_state_changed();
+                    });
                     g_dbus_method_invocation_return_value(invocation, nullptr);
-                    service->notify_state_changed();
                     return;
                 }
                 if (std::strcmp(property_name, "Rate") == 0) {
@@ -494,9 +567,11 @@ void MprisService::handle_method_call(GDBusConnection*,
                     }
                     gdouble rate = 0.0;
                     g_variant_get(value_ref.get(), "d", &rate);
-                    if (service->actions_.set_rate) {
-                        service->actions_.set_rate(rate);
-                    }
+                    dispatch_on_main_context([service, rate]() {
+                        if (service->actions_.set_rate) {
+                            service->actions_.set_rate(rate);
+                        }
+                    });
                     g_dbus_method_invocation_return_value(invocation, nullptr);
                     return;
                 }
@@ -509,11 +584,13 @@ void MprisService::handle_method_call(GDBusConnection*,
                         return;
                     }
                     const bool shuffle = g_variant_get_boolean(value_ref.get()) != FALSE;
-                    if (service->actions_.set_shuffle) {
-                        service->actions_.set_shuffle(shuffle);
-                    }
+                    dispatch_on_main_context([service, shuffle]() {
+                        if (service->actions_.set_shuffle) {
+                            service->actions_.set_shuffle(shuffle);
+                        }
+                        service->notify_state_changed();
+                    });
                     g_dbus_method_invocation_return_value(invocation, nullptr);
-                    service->notify_state_changed();
                     return;
                 }
             }
@@ -529,9 +606,11 @@ void MprisService::handle_method_call(GDBusConnection*,
 
     if (std::strcmp(interface_name, "org.mpris.MediaPlayer2") == 0) {
         if (std::strcmp(method_name, "Raise") == 0) {
-            if (service->actions_.raise) {
-                service->actions_.raise();
-            }
+            dispatch_on_main_context([service]() {
+                if (service->actions_.raise) {
+                    service->actions_.raise();
+                }
+            });
             g_dbus_method_invocation_return_value(invocation, nullptr);
             return;
         }
@@ -546,62 +625,77 @@ void MprisService::handle_method_call(GDBusConnection*,
 
     if (std::strcmp(interface_name, "org.mpris.MediaPlayer2.Player") == 0) {
         if (std::strcmp(method_name, "Play") == 0) {
-            if (service->actions_.play) {
-                service->actions_.play();
-            }
+            dispatch_on_main_context([service]() {
+                if (service->actions_.play) {
+                    service->actions_.play();
+                }
+                service->notify_state_changed();
+            });
             g_dbus_method_invocation_return_value(invocation, nullptr);
-            service->notify_state_changed();
             return;
         }
         if (std::strcmp(method_name, "Pause") == 0) {
-            if (service->actions_.pause) {
-                service->actions_.pause();
-            }
+            dispatch_on_main_context([service]() {
+                if (service->actions_.pause) {
+                    service->actions_.pause();
+                }
+                service->notify_state_changed();
+            });
             g_dbus_method_invocation_return_value(invocation, nullptr);
-            service->notify_state_changed();
             return;
         }
         if (std::strcmp(method_name, "PlayPause") == 0) {
-            if (service->actions_.play_pause) {
-                service->actions_.play_pause();
-            }
+            dispatch_on_main_context([service]() {
+                if (service->actions_.play_pause) {
+                    service->actions_.play_pause();
+                }
+                service->notify_state_changed();
+            });
             g_dbus_method_invocation_return_value(invocation, nullptr);
-            service->notify_state_changed();
             return;
         }
         if (std::strcmp(method_name, "Stop") == 0) {
-            if (service->actions_.stop) {
-                service->actions_.stop();
-            }
+            dispatch_on_main_context([service]() {
+                if (service->actions_.stop) {
+                    service->actions_.stop();
+                }
+                service->notify_state_changed();
+            });
             g_dbus_method_invocation_return_value(invocation, nullptr);
-            service->notify_state_changed();
             return;
         }
         if (std::strcmp(method_name, "Next") == 0) {
-            if (service->actions_.next) {
-                service->actions_.next();
-            }
+            dispatch_on_main_context([service]() {
+                if (service->actions_.next) {
+                    service->actions_.next();
+                }
+                service->notify_state_changed();
+            });
             g_dbus_method_invocation_return_value(invocation, nullptr);
-            service->notify_state_changed();
             return;
         }
         if (std::strcmp(method_name, "Previous") == 0) {
-            if (service->actions_.previous) {
-                service->actions_.previous();
-            }
+            dispatch_on_main_context([service]() {
+                if (service->actions_.previous) {
+                    service->actions_.previous();
+                }
+                service->notify_state_changed();
+            });
             g_dbus_method_invocation_return_value(invocation, nullptr);
-            service->notify_state_changed();
             return;
         }
         if (std::strcmp(method_name, "Seek") == 0) {
             gint64 offset = 0;
             g_variant_get(parameters, "(x)", &offset);
-            if (service->actions_.seek) {
-                const std::int64_t position_usec = service->actions_.seek(static_cast<std::int64_t>(offset));
-                if (position_usec >= 0) {
-                    service->notify_seeked(position_usec);
+            const std::int64_t offset_usec = static_cast<std::int64_t>(offset);
+            dispatch_on_main_context([service, offset_usec]() {
+                if (service->actions_.seek) {
+                    const std::int64_t position_usec = service->actions_.seek(offset_usec);
+                    if (position_usec >= 0) {
+                        service->notify_seeked(position_usec);
+                    }
                 }
-            }
+            });
             g_dbus_method_invocation_return_value(invocation, nullptr);
             return;
         }
@@ -609,14 +703,17 @@ void MprisService::handle_method_call(GDBusConnection*,
             const char* track_id = nullptr;
             gint64 position = 0;
             g_variant_get(parameters, "(&ox)", &track_id, &position);
-            if (service->actions_.set_position) {
-                const std::string track_id_value = track_id != nullptr ? track_id : std::string{};
-                const std::int64_t position_usec =
-                    service->actions_.set_position(static_cast<std::int64_t>(position), track_id_value);
-                if (position_usec >= 0) {
-                    service->notify_seeked(position_usec);
+            const std::string track_id_value = track_id != nullptr ? track_id : std::string{};
+            const std::int64_t position_usec = static_cast<std::int64_t>(position);
+            dispatch_on_main_context([service, track_id_value, position_usec]() {
+                if (service->actions_.set_position) {
+                    const std::int64_t new_position_usec =
+                        service->actions_.set_position(position_usec, track_id_value);
+                    if (new_position_usec >= 0) {
+                        service->notify_seeked(new_position_usec);
+                    }
                 }
-            }
+            });
             g_dbus_method_invocation_return_value(invocation, nullptr);
             return;
         }
@@ -630,15 +727,19 @@ void MprisService::handle_method_call(GDBusConnection*,
                                                       "Missing URI");
                 return;
             }
-            if (!service->actions_.open_uri || !service->actions_.open_uri(uri)) {
+            const std::string uri_value = uri;
+            const bool opened = dispatch_bool_on_main_context([service, uri_value]() {
+                return service->actions_.open_uri && service->actions_.open_uri(uri_value);
+            });
+            if (!opened) {
                 g_dbus_method_invocation_return_error(invocation,
                                                       G_DBUS_ERROR,
                                                       G_DBUS_ERROR_FAILED,
                                                       "Failed to open URI");
                 return;
             }
+            dispatch_on_main_context([service]() { service->notify_state_changed(); });
             g_dbus_method_invocation_return_value(invocation, nullptr);
-            service->notify_state_changed();
             return;
         }
     }
