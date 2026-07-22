@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "pcmtp/util/Logger.hpp"
+#include "pcmtp/util/TextEncoding.hpp"
 
 namespace pcmtp {
 namespace {
@@ -176,9 +177,9 @@ FlacTags FlacStreamDecoder::read_tags(const std::string& path) {
                 const std::string key = to_upper_ascii(text.substr(0, eq));
                 const std::string value = text.substr(eq + 1);
                 if (key == "TITLE") {
-                    tags.title = value;
+                    tags.title = pcmtp::text::normalize_metadata_value(value);
                 } else if (key == "ARTIST") {
-                    tags.artist = value;
+                    tags.artist = pcmtp::text::normalize_metadata_value(value);
                 } else if (key == "TRACKNUMBER") {
                     try {
                         tags.track_number = std::stoi(value);

@@ -11,7 +11,7 @@ namespace pcmtp {
 
 struct MprisPlayerState {
     std::string playback_status;
-    bool can_control = false;
+    bool can_control = true;
     bool can_play = false;
     bool can_pause = false;
     bool can_seek = false;
@@ -51,6 +51,7 @@ public:
         std::function<void(bool fullscreen)> set_fullscreen;
         std::function<void(bool shuffle)> set_shuffle;
         std::function<void()> raise;
+        std::function<std::int64_t()> get_position;
         std::function<MprisPlayerState()> get_state;
     };
 
@@ -85,11 +86,13 @@ private:
                                          const gchar* property_name,
                                          GError** error,
                                          gpointer user_data);
+    static gboolean on_state_notify_idle(gpointer user_data);
 
     void register_object(GDBusConnection* connection);
     void unregister_object();
     void emit_player_properties(GVariantBuilder* changed_builder);
     void emit_seeked(std::int64_t position_usec);
+    void emit_state_changed_now();
     GVariant* player_property_from_state(const char* property_name, const MprisPlayerState& state) const;
     GVariant* root_property_from_state(const char* property_name, const MprisPlayerState& state) const;
     MprisPlayerState current_state() const;
@@ -98,6 +101,7 @@ private:
     GDBusConnection* connection_ = nullptr;
     std::vector<unsigned int> registration_ids_;
     unsigned int bus_owner_id_ = 0;
+    unsigned int state_notify_source_id_ = 0;
     std::string last_playback_status_;
     std::string last_metadata_signature_;
     std::string last_capabilities_signature_;

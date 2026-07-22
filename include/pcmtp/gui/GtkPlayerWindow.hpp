@@ -3,10 +3,14 @@
 #include <gtk/gtk.h>
 
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <cstdint>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -18,6 +22,8 @@
 #include "pcmtp/dsp/AlsaControlBridge.hpp"
 #include "pcmtp/hardware/CardProfileRegistry.hpp"
 #include "pcmtp/mpris/MprisService.hpp"
+#include "pcmtp/playlist/MediaProbe.hpp"
+#include "pcmtp/util/ManagedSubprocess.hpp"
 
 namespace pcmtp {
 
@@ -33,23 +39,44 @@ public:
         std::uint16_t to_bits = 0;
     };
 
+    struct DsdPcmRule {
+        std::uint32_t dsd_sample_rate = 0;
+        // Zero preserves FFmpeg's native DSD/8 PCM output rate.
+        std::uint32_t pcm_sample_rate = 0;
+    };
+
     explicit GtkPlayerWindow(std::size_t transport_buffer_ms);
     ~GtkPlayerWindow();
 
     void show();
 
 private:
+    enum class MetadataState {
+        Pending,
+        Ready,
+        Failed
+    };
+
     struct PlaylistEntry {
         std::string audio_file_path;
+        std::string top_level_source_path;
+        MetadataState metadata_state = MetadataState::Pending;
+        std::uint64_t load_generation = 0;
         int track_number = 0;
         std::string title;
         std::string performer;
         std::uint64_t start_sample = 0;
         std::uint64_t end_sample = 0;
+        std::uint64_t source_start_sample = 0;
+        std::uint64_t source_end_sample = 0;
+        std::uint64_t cue_start_frame_75 = 0;
+        std::uint64_t cue_end_frame_75 = 0;
+        bool cue_has_end_frame_75 = false;
         std::string source_label;
         AudioFormat decoded_format{};
         std::uint32_t source_sample_rate = 0;
         std::uint16_t source_bits_per_sample = 0;
+        bool native_source_available = false;
         bool native_decode = false;
         bool lossless_source = false;
         bool lossy_source = false;
@@ -58,11 +85,25 @@ private:
         bool bitdepth_converted = false;
         bool processed_by_ffmpeg = false;
         std::string codec_name;
+        bool dsd_source = false;
+        std::uint32_t dsd_sample_rate = 0;
         bool cue_track = false;
         std::uint64_t cue_album_end_sample = 0;
+        std::uint64_t source_cue_album_end_sample = 0;
         std::shared_ptr<PcmBuffer> normalized_pcm;
         AudioFormat normalized_format{};
         bool normalization_matches_current = false;
+    };
+
+    struct MetadataProbeJob {
+        std::uint64_t generation = 0;
+        std::string path;
+    };
+
+    struct MetadataProbeCompletion {
+        std::uint64_t generation = 0;
+        std::string path;
+        MediaProbeResult result;
     };
 
     static void on_activate(GtkApplication* app, gpointer user_data);
@@ -99,9 +140,28 @@ private:
     static void on_media_stop(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_next(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_previous(GSimpleAction* action, GVariant* parameter, gpointer user_data);
+    static gboolean on_restore_last_sources_idle(gpointer user_data);
 
     void build_ui(GtkApplication* app);
-    void append_path_to_playlist(const std::string& path);
+    std::size_t append_source_placeholders(const std::string& path,
+                                           const std::string& top_level_source_path,
+                                           std::vector<std::string>* probe_paths);
+    void start_metadata_worker();
+    void stop_metadata_worker();
+    void metadata_worker_loop();
+    void submit_metadata_jobs(std::uint64_t generation, const std::vector<std::string>& paths);
+    void drain_metadata_probe_results();
+    void apply_metadata_probe_result(const std::string& path, const MediaProbeResult& result);
+    void finish_metadata_load_session();
+    void update_loading_controls();
+    bool playback_available() const;
+    std::vector<std::string> load_source_paths(const std::vector<std::string>& paths,
+                                               bool replace_playlist,
+                                               bool quiet,
+                                               bool record_last_sources,
+                                               const std::string& play_after_load_path = std::string());
+    void finalize_loaded_playlist();
+    void schedule_last_sources_restore();
     void start_current_track(bool restart_if_paused = true);
     void stop_playback();
     void play_track_index(std::size_t index);
@@ -124,6 +184,7 @@ private:
     void stop_ui_updates();
     void cancel_pending_seek();
     void rebuild_playlist_view();
+    void update_playlist_row(std::size_t index);
     void select_playlist_row(std::size_t index);
     void update_playlist_selection_from_ui();
 
@@ -136,9 +197,15 @@ private:
     void activate_gapless_chain(std::size_t start_index, std::size_t end_index);
     void clear_gapless_chain();
     void update_gapless_chain_track_from_status(const PlaybackStatusSnapshot& status);
+    std::uint64_t current_track_position_from_samples(std::uint64_t samples_per_channel) const;
     std::uint64_t current_track_position_from_status(const PlaybackStatusSnapshot& status) const;
     std::uint32_t target_sample_rate_for(std::uint32_t source_rate) const;
     std::uint16_t target_bits_for(std::uint16_t source_bits) const;
+    std::uint32_t dsd_target_sample_rate_for(std::uint32_t dsd_sample_rate,
+                                             std::uint32_t ffmpeg_pcm_rate) const;
+    std::uint32_t output_sample_rate_for_entry(const PlaylistEntry& entry) const;
+    std::uint16_t output_bits_for_entry(const PlaylistEntry& entry) const;
+    void reset_dsd_pcm_defaults();
     void refresh_playlist_processing_metadata();
     void invalidate_normalized_playlist();
     void normalize_playlist(GtkWidget* progress_bar = nullptr);
@@ -148,6 +215,8 @@ private:
     void apply_auto_pre_eq_headroom(bool save_preferences_after = true);
     void draw_tone_response_graph(cairo_t* cr, int width, int height) const;
     std::uint32_t current_tone_control_sample_rate() const;
+    std::string current_dsd_conversion_report() const;
+    void refresh_active_alsa_output_diagnostics();
     void setup_mpris();
     void setup_media_keys(GtkApplication* app);
     void handle_media_play();
@@ -217,6 +286,7 @@ private:
     bool softvol_dragging_ = false;
     GtkListStore* playlist_store_ = nullptr;
     GtkWidget* playlist_view_ = nullptr;
+    GtkWidget* diagnostics_active_output_value_ = nullptr;
 
     PlaybackEngine engine_;
     std::vector<PlaylistEntry> playlist_;
@@ -242,11 +312,11 @@ private:
     std::string bitdepth_quality_ = "tpdf_hp";
     std::vector<ResampleRule> resample_rules_;
     std::vector<BitDepthRule> bitdepth_rules_;
+    std::vector<DsdPcmRule> dsd_pcm_rules_;
+    std::uint16_t dsd_pcm_output_bits_ = 24;
     bool normalization_in_progress_ = false;
     bool repeat_enabled_ = false;
     std::string mpris_loop_status_ = "None";
-    bool mpris_shuffle_ = false;
-    bool mpris_fullscreen_ = false;
     bool finish_handled_ = false;
     bool track_switch_in_progress_ = false;
     bool gapless_chain_active_ = false;
@@ -255,8 +325,30 @@ private:
     std::vector<std::uint64_t> gapless_chain_offsets_;
     std::uint64_t gapless_chain_total_samples_ = 0;
     std::string last_open_directory_;
+    std::thread metadata_worker_;
+    std::unique_ptr<ManagedSubprocess> metadata_probe_process_;
+    mutable std::mutex metadata_worker_mutex_;
+    std::condition_variable metadata_worker_cv_;
+    std::deque<MetadataProbeJob> metadata_jobs_;
+    std::deque<MetadataProbeCompletion> metadata_completions_;
+    bool metadata_worker_stop_ = false;
+    bool playlist_loading_ = false;
+    std::uint64_t metadata_generation_ = 0;
+    std::size_t metadata_total_files_ = 0;
+    std::size_t metadata_completed_files_ = 0;
+    std::size_t metadata_failed_files_ = 0;
+    bool metadata_load_quiet_ = false;
+    bool metadata_load_record_sources_ = false;
+    bool metadata_load_replace_playlist_ = false;
+    std::vector<std::string> metadata_load_requested_sources_;
+    std::string play_after_metadata_path_;
+    std::uint64_t play_after_metadata_generation_ = 0;
+    std::unordered_map<std::string, MediaProbeResult> media_probe_cache_;
+    bool restore_last_sources_enabled_ = false;
+    std::vector<std::string> last_opened_sources_;
+    std::vector<std::string> current_loaded_source_paths_;
+    guint restore_sources_idle_id_ = 0;
     std::unordered_map<std::string, CueSheet> cue_cache_;
-    std::unordered_map<std::string, ExternalAudioInfo> external_probe_cache_;
     std::chrono::steady_clock::time_point clip_hold_until_{};
     std::uint32_t clip_hold_samples_ = 0;
     guint ui_timer_id_ = 0;

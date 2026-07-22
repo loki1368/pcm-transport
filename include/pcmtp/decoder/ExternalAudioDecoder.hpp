@@ -8,6 +8,8 @@
 
 namespace pcmtp {
 
+class ManagedSubprocess;
+
 struct GenericTags {
     std::string title;
     std::string artist;
@@ -21,6 +23,8 @@ struct ExternalAudioInfo {
     std::uint64_t source_total_samples_per_channel = 0;
     GenericTags tags{};
     std::string codec_name;
+    bool dsd_source = false;
+    std::uint32_t dsd_sample_rate = 0;
     std::int64_t duration_ts = 0;
     std::string time_base;
     bool lossless = false;
@@ -44,7 +48,10 @@ public:
     bool seek_to_sample(std::uint64_t sample_index) override;
 
     static bool looks_supported(const std::string& path);
-    static ExternalAudioInfo probe_metadata(const std::string& path, std::uint32_t forced_output_sample_rate = 0, std::uint16_t forced_output_bits_per_sample = 0);
+    static ExternalAudioInfo probe_metadata(const std::string& path,
+                                            std::uint32_t forced_output_sample_rate = 0,
+                                            std::uint16_t forced_output_bits_per_sample = 0,
+                                            ManagedSubprocess* probe_process = nullptr);
     static ExternalAudioInfo probe_info(const std::string& path, std::uint32_t forced_output_sample_rate = 0, std::uint16_t forced_output_bits_per_sample = 0);
     static GenericTags read_tags(const std::string& path);
 
@@ -71,6 +78,7 @@ private:
     std::uint64_t total_samples_per_channel_ = 0;
     std::string path_;
     std::string codec_name_;
+    bool dsd_source_ = false;
     bool opened_ = false;
     bool reached_eof_ = false;
     bool zero_read_logged_ = false;

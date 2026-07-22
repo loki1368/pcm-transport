@@ -1,4 +1,4 @@
-# PCM Transport v0.9.109
+# PCM Transport v0.9.110
 
 **PCM Transport** is a Linux desktop audio player focused on direct PCM playback, predictable DSP, and clear signal-path reporting.
 
@@ -29,17 +29,23 @@ Website: https://andreyberestov.github.io/pcm-transport/
 - GTK 3 desktop interface
 - Direct ALSA output
 - Native FLAC decoding through libFLAC
-- Runtime FFmpeg / FFprobe support for MP3, M4A, AAC, OGG, OPUS, WAV, AIFF/AIF, APE, WV and selected legacy formats
+- Runtime FFmpeg / FFprobe support for MP3/MP2, M4A/M4R, AAC, AC-3, DTS, OGG/OPUS/Speex, WAV/W64, AIFF/AIF, APE, WV and selected legacy formats
 - CUE support, including continuous CUE image playback
 - Local M3U / M3U8 playlist import
+- UTF-8 and Windows-1251 normalization for legacy CUE, playlist and tag text
+- Optional restoration of the last successfully opened sources
+- Immediate playlist display with sequential background metadata loading
 - Same-format gapless playback where possible
 - Optional SoXr resampling and bit-depth rules
+- Configurable DSD-to-PCM conversion through FFmpeg and SoXr with 44.1/48 kHz family presets and 16/24/32-bit PCM output
 - Baxandall-style Bass / Treble controls
 - Deep Bass with Reference and Punch presets
 - Soft volume, Pre-EQ Headroom, level meter and clip indicator
 - Classic scalar ALSA write path
 - FLAC bit-perfect test
 - Active ALSA output report, ALSA device probe, 24-bit container preference and optional realtime priority
+- MPRIS desktop integration with multimedia keys and cover art metadata (initial implementation: [@loki1368](https://github.com/loki1368))
+- Branded GTK and Linux desktop integration with embedded window icons, desktop entry and hicolor install assets
 
 ---
 
@@ -63,26 +69,37 @@ FFmpeg-backed lossless / PCM / container formats:
 *.aiff
 *.ape
 *.wv
+*.w64
 *.bwf
 *.au
 *.snd
 *.caf
+*.voc
 *.tak
 *.tta
+*.dsf
+*.dff
 ```
 
 FFmpeg-backed lossy formats:
 
 ```text
 *.mp3
+*.mp2
 *.m4a
+*.m4r
 *.aac
+*.ac3
+*.dts
 *.ogg
 *.oga
 *.opus
+*.spx
+*.ra
 *.wma
 *.asf
 *.xwma
+*.wmv
 *.oma
 *.aa3
 *.at3
@@ -95,9 +112,12 @@ FFmpeg-backed formats require `ffmpeg` and `ffprobe` at runtime. Rare-format sup
 
 ## Playback notes
 
+- DSF and DFF sources, including DST-compressed DFF, are detected by FFprobe codec metadata and converted to PCM; native DSD and DoP output are not used.
 - Native FLAC is used when no Processing Rules are applied.
-- ALAC-in-M4A is decoded through FFmpeg.
-- Selected FFmpeg-backed legacy formats include AU/SND, BWF, CAF, TAK, TTA, WMA, ATRAC and MPC.
+- ALAC in M4A or M4R is decoded through FFmpeg.
+- W64, VOC and M4R are classified as lossless or lossy from the probed codec rather than the container extension alone.
+- Supported audio files may be referenced by local M3U/M3U8 playlists and by CUE sheets where the CUE layout is meaningful for that source.
+- Selected FFmpeg-backed formats include W64, MP2, M4R, AC3, DTS, Speex, VOC, RealAudio, AU/SND, BWF, CAF, TAK, TTA, WMA/WMV, ATRAC and MPC.
 - FFmpeg is used for external formats and conversion paths.
 - DSP is bypassed when Bass/Treble are neutral, volume is 100%, Pre-EQ Headroom is 0 dB, and Deep Bass is off.
 - The main display shows the active playback path.
@@ -168,6 +188,8 @@ cmake -S . -B build
 cmake --build build -j
 ```
 
+CMake generates the embedded GLib resources automatically through `glib-compile-resources`.
+
 ---
 
 ## Run
@@ -175,6 +197,18 @@ cmake --build build -j
 ```bash
 ./build/pcm_transport
 ```
+
+The embedded application icons are available when running directly from `build`.
+
+---
+
+## Install — optional desktop integration
+
+```bash
+cmake --install build --prefix <prefix>
+```
+
+This optional desktop integration installs the binary, desktop entry and hicolor application icons under the selected prefix. Installation is not required for running from `build`.
 
 ---
 

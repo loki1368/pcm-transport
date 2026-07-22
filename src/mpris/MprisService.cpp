@@ -14,7 +14,7 @@ constexpr const char* kBusName = "org.mpris.MediaPlayer2.pcmtransport";
 constexpr const char* kObjectPath = "/org/mpris/MediaPlayer2";
 constexpr const char* kNoTrackObjectPath = "/org/mpris/MediaPlayer2/TrackList/NoTrack";
 constexpr const char* kIdentity = "PCM Transport";
-constexpr const char* kDesktopEntry = "pcm_transport";
+constexpr const char* kDesktopEntry = "org.berestov.pcmtransport";
 
 constexpr const char* kIntrospectionXml =
     "<node>"
@@ -93,7 +93,7 @@ constexpr const char* kIntrospectionXml =
 class VariantRef {
 public:
     explicit VariantRef(GVariant* variant)
-        : variant_(variant != nullptr ? g_variant_ref(variant) : nullptr) {}
+        : variant_(variant) {}
 
     VariantRef(const VariantRef&) = delete;
     VariantRef& operator=(const VariantRef&) = delete;
@@ -153,8 +153,8 @@ std::string metadata_signature(const MprisPlayerState& state) {
 }
 
 std::string capabilities_signature(const MprisPlayerState& state) {
-    return std::to_string(state.can_control) + "|" + std::to_string(state.can_play) + "|" +
-           std::to_string(state.can_pause) + "|" + std::to_string(state.can_seek) + "|" +
+    return std::to_string(state.can_play) + "|" + std::to_string(state.can_pause) + "|" +
+           std::to_string(state.can_seek) + "|" +
            std::to_string(state.can_go_next) + "|" + std::to_string(state.can_go_previous);
 }
 
@@ -186,7 +186,6 @@ void add_capability_properties(GVariantBuilder* changed_builder, const MprisPlay
     g_variant_builder_add(changed_builder, "{sv}", "CanSeek", g_variant_new_boolean(state.can_seek));
     g_variant_builder_add(changed_builder, "{sv}", "CanPlay", g_variant_new_boolean(state.can_play));
     g_variant_builder_add(changed_builder, "{sv}", "CanPause", g_variant_new_boolean(state.can_pause));
-    g_variant_builder_add(changed_builder, "{sv}", "CanControl", g_variant_new_boolean(state.can_control));
 }
 
 } // namespace
@@ -235,9 +234,19 @@ GVariant* MprisService::root_property_from_state(const char* property_name, cons
         const char* mime_types[] = {
             "audio/flac",
             "audio/mpeg",
+            "audio/mp4",
+            "audio/ac3",
+            "audio/vnd.dts",
+            "audio/speex",
+            "audio/x-voc",
+            "audio/vnd.rn-realaudio",
+            "audio/x-pn-realaudio",
+            "audio/x-w64",
             "audio/x-flac",
             "audio/wav",
             "audio/x-wav",
+            "audio/x-ms-wma",
+            "video/x-ms-wmv",
             "application/x-cue",
             "audio/x-mpegurl",
         };
@@ -340,12 +349,18 @@ void MprisService::handle_method_call(GDBusConnection*,
             const char* property_name = nullptr;
             g_variant_get(parameters, "(&s&s)", &property_interface, &property_name);
 
-            const MprisPlayerState state = service->current_state();
             GVariant* value = nullptr;
-            if (std::strcmp(property_interface, "org.mpris.MediaPlayer2") == 0) {
-                value = service->root_property_from_state(property_name, state);
-            } else if (std::strcmp(property_interface, "org.mpris.MediaPlayer2.Player") == 0) {
-                value = service->player_property_from_state(property_name, state);
+            if (std::strcmp(property_interface, "org.mpris.MediaPlayer2.Player") == 0 &&
+                std::strcmp(property_name, "Position") == 0 && service->actions_.get_position) {
+                const std::int64_t position_usec = std::max<std::int64_t>(0, service->actions_.get_position());
+                value = g_variant_new_int64(position_usec);
+            } else {
+                const MprisPlayerState state = service->current_state();
+                if (std::strcmp(property_interface, "org.mpris.MediaPlayer2") == 0) {
+                    value = service->root_property_from_state(property_name, state);
+                } else if (std::strcmp(property_interface, "org.mpris.MediaPlayer2.Player") == 0) {
+                    value = service->player_property_from_state(property_name, state);
+                }
             }
 
             if (value == nullptr) {
@@ -428,7 +443,6 @@ void MprisService::handle_method_call(GDBusConnection*,
                         service->actions_.set_fullscreen(fullscreen);
                     }
                     g_dbus_method_invocation_return_value(invocation, nullptr);
-                    service->notify_state_changed();
                     return;
                 }
 
@@ -456,7 +470,6 @@ void MprisService::handle_method_call(GDBusConnection*,
                         service->actions_.set_volume(volume);
                     }
                     g_dbus_method_invocation_return_value(invocation, nullptr);
-                    service->notify_state_changed();
                     return;
                 }
                 if (std::strcmp(property_name, "LoopStatus") == 0) {
@@ -481,7 +494,6 @@ void MprisService::handle_method_call(GDBusConnection*,
                         service->actions_.set_loop_status(loop_status);
                     }
                     g_dbus_method_invocation_return_value(invocation, nullptr);
-                    service->notify_state_changed();
                     return;
                 }
                 if (std::strcmp(property_name, "Rate") == 0) {
@@ -513,7 +525,6 @@ void MprisService::handle_method_call(GDBusConnection*,
                         service->actions_.set_shuffle(shuffle);
                     }
                     g_dbus_method_invocation_return_value(invocation, nullptr);
-                    service->notify_state_changed();
                     return;
                 }
             }
@@ -550,7 +561,6 @@ void MprisService::handle_method_call(GDBusConnection*,
                 service->actions_.play();
             }
             g_dbus_method_invocation_return_value(invocation, nullptr);
-            service->notify_state_changed();
             return;
         }
         if (std::strcmp(method_name, "Pause") == 0) {
@@ -558,7 +568,6 @@ void MprisService::handle_method_call(GDBusConnection*,
                 service->actions_.pause();
             }
             g_dbus_method_invocation_return_value(invocation, nullptr);
-            service->notify_state_changed();
             return;
         }
         if (std::strcmp(method_name, "PlayPause") == 0) {
@@ -566,7 +575,6 @@ void MprisService::handle_method_call(GDBusConnection*,
                 service->actions_.play_pause();
             }
             g_dbus_method_invocation_return_value(invocation, nullptr);
-            service->notify_state_changed();
             return;
         }
         if (std::strcmp(method_name, "Stop") == 0) {
@@ -574,7 +582,6 @@ void MprisService::handle_method_call(GDBusConnection*,
                 service->actions_.stop();
             }
             g_dbus_method_invocation_return_value(invocation, nullptr);
-            service->notify_state_changed();
             return;
         }
         if (std::strcmp(method_name, "Next") == 0) {
@@ -582,7 +589,6 @@ void MprisService::handle_method_call(GDBusConnection*,
                 service->actions_.next();
             }
             g_dbus_method_invocation_return_value(invocation, nullptr);
-            service->notify_state_changed();
             return;
         }
         if (std::strcmp(method_name, "Previous") == 0) {
@@ -590,7 +596,6 @@ void MprisService::handle_method_call(GDBusConnection*,
                 service->actions_.previous();
             }
             g_dbus_method_invocation_return_value(invocation, nullptr);
-            service->notify_state_changed();
             return;
         }
         if (std::strcmp(method_name, "Seek") == 0) {
@@ -638,7 +643,6 @@ void MprisService::handle_method_call(GDBusConnection*,
                 return;
             }
             g_dbus_method_invocation_return_value(invocation, nullptr);
-            service->notify_state_changed();
             return;
         }
     }
@@ -662,11 +666,16 @@ GVariant* MprisService::handle_get_property(GDBusConnection*,
         return nullptr;
     }
 
-    const MprisPlayerState state = service->current_state();
     if (std::strcmp(interface_name, "org.mpris.MediaPlayer2") == 0) {
+        const MprisPlayerState state = service->current_state();
         return service->root_property_from_state(property_name, state);
     }
     if (std::strcmp(interface_name, "org.mpris.MediaPlayer2.Player") == 0) {
+        if (std::strcmp(property_name, "Position") == 0 && service->actions_.get_position) {
+            const std::int64_t position_usec = std::max<std::int64_t>(0, service->actions_.get_position());
+            return g_variant_new_int64(position_usec);
+        }
+        const MprisPlayerState state = service->current_state();
         return service->player_property_from_state(property_name, state);
     }
     return nullptr;
@@ -785,6 +794,11 @@ void MprisService::start() {
 }
 
 void MprisService::stop() {
+    if (state_notify_source_id_ != 0) {
+        g_source_remove(state_notify_source_id_);
+        state_notify_source_id_ = 0;
+    }
+
     if (bus_owner_id_ != 0) {
         const unsigned int owner_id = bus_owner_id_;
         bus_owner_id_ = 0;
@@ -794,7 +808,33 @@ void MprisService::stop() {
     disconnect_bus();
 }
 
+gboolean MprisService::on_state_notify_idle(gpointer user_data) {
+    auto* service = static_cast<MprisService*>(user_data);
+    if (service == nullptr) {
+        return G_SOURCE_REMOVE;
+    }
+
+    service->state_notify_source_id_ = 0;
+    service->emit_state_changed_now();
+    return G_SOURCE_REMOVE;
+}
+
 void MprisService::notify_state_changed() {
+    if (!bus_connected_ || connection_ == nullptr || !actions_.get_state ||
+        state_notify_source_id_ != 0) {
+        return;
+    }
+
+    state_notify_source_id_ = g_idle_add_full(G_PRIORITY_DEFAULT_IDLE,
+                                              on_state_notify_idle,
+                                              this,
+                                              nullptr);
+    if (state_notify_source_id_ == 0) {
+        emit_state_changed_now();
+    }
+}
+
+void MprisService::emit_state_changed_now() {
     if (!bus_connected_ || connection_ == nullptr || !actions_.get_state) {
         return;
     }
@@ -817,59 +857,63 @@ void MprisService::notify_state_changed() {
         return;
     }
 
-    GVariantBuilder changed_builder;
-    g_variant_builder_init(&changed_builder, G_VARIANT_TYPE("a{sv}"));
+    if (capabilities_changed) {
+        GVariantBuilder capabilities_builder;
+        g_variant_builder_init(&capabilities_builder, G_VARIANT_TYPE("a{sv}"));
+        add_capability_properties(&capabilities_builder, state);
+        emit_player_properties(&capabilities_builder);
+        last_capabilities_signature_ = capabilities_signature_value;
+    }
 
-    if (metadata_changed) {
-        last_metadata_signature_ = metadata_signature_value;
-        GVariant* metadata = metadata_variant(state);
-        if (metadata != nullptr) {
-            g_variant_builder_add(&changed_builder, "{sv}", "Metadata", metadata);
+    const bool player_state_changed = metadata_changed || playback_changed || volume_changed ||
+                                      loop_changed || shuffle_changed;
+    if (player_state_changed) {
+        GVariantBuilder changed_builder;
+        g_variant_builder_init(&changed_builder, G_VARIANT_TYPE("a{sv}"));
+
+        if (metadata_changed) {
+            GVariant* metadata = metadata_variant(state);
+            if (metadata != nullptr) {
+                g_variant_builder_add(&changed_builder, "{sv}", "Metadata", metadata);
+            }
+            last_metadata_signature_ = metadata_signature_value;
         }
-    }
 
-    if (playback_changed) {
-        last_playback_status_ = state.playback_status;
-        g_variant_builder_add(&changed_builder,
-                              "{sv}",
-                              "PlaybackStatus",
-                              g_variant_new_string(state.playback_status.c_str()));
-    }
+        if (playback_changed) {
+            g_variant_builder_add(&changed_builder,
+                                  "{sv}",
+                                  "PlaybackStatus",
+                                  g_variant_new_string(state.playback_status.c_str()));
+            last_playback_status_ = state.playback_status;
+        }
 
-    if (volume_changed) {
-        last_volume_ = state.volume;
-        g_variant_builder_add(&changed_builder, "{sv}", "Volume", g_variant_new_double(state.volume));
-    }
+        if (volume_changed) {
+            g_variant_builder_add(&changed_builder, "{sv}", "Volume", g_variant_new_double(state.volume));
+            last_volume_ = state.volume;
+        }
 
-    if (loop_changed) {
-        last_loop_status_ = state.loop_status;
-        g_variant_builder_add(&changed_builder,
-                              "{sv}",
-                              "LoopStatus",
-                              g_variant_new_string(state.loop_status.c_str()));
-    }
+        if (loop_changed) {
+            g_variant_builder_add(&changed_builder,
+                                  "{sv}",
+                                  "LoopStatus",
+                                  g_variant_new_string(state.loop_status.c_str()));
+            last_loop_status_ = state.loop_status;
+        }
 
-    if (shuffle_changed) {
-        last_shuffle_ = state.shuffle;
-        g_variant_builder_add(&changed_builder, "{sv}", "Shuffle", g_variant_new_boolean(state.shuffle));
+        if (shuffle_changed) {
+            g_variant_builder_add(&changed_builder, "{sv}", "Shuffle", g_variant_new_boolean(state.shuffle));
+            last_shuffle_ = state.shuffle;
+        }
+
+        emit_player_properties(&changed_builder);
     }
 
     if (fullscreen_changed) {
-        last_fullscreen_ = state.fullscreen;
         GVariantBuilder root_builder;
         g_variant_builder_init(&root_builder, G_VARIANT_TYPE("a{sv}"));
         g_variant_builder_add(&root_builder, "{sv}", "Fullscreen", g_variant_new_boolean(state.fullscreen));
         emit_properties_changed(connection_, "org.mpris.MediaPlayer2", &root_builder);
-    }
-
-    if (capabilities_changed) {
-        last_capabilities_signature_ = capabilities_signature_value;
-        add_capability_properties(&changed_builder, state);
-    }
-
-    if (metadata_changed || playback_changed || volume_changed || loop_changed || shuffle_changed ||
-        capabilities_changed) {
-        emit_player_properties(&changed_builder);
+        last_fullscreen_ = state.fullscreen;
     }
 }
 

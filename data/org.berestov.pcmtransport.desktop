@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=PCM Transport
+GenericName=Audio Player
+Comment=Direct PCM audio player
+Exec=pcm_transport
+TryExec=pcm_transport
+Icon=org.berestov.pcmtransport
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupNotify=true

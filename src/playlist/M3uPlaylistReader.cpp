@@ -6,6 +6,8 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "pcmtp/util/TextEncoding.hpp"
+
 namespace pcmtp {
 namespace {
 
@@ -127,16 +129,10 @@ std::vector<std::string> M3uPlaylistReader::read_local_paths(const std::string& 
 
     std::ostringstream ss;
     ss << input.rdbuf();
-    std::string text = ss.str();
-    if (text.size() >= 3 &&
-        static_cast<unsigned char>(text[0]) == 0xEF &&
-        static_cast<unsigned char>(text[1]) == 0xBB &&
-        static_cast<unsigned char>(text[2]) == 0xBF) {
-        text.erase(0, 3);
-    }
+    const std::string normalized_text = pcmtp::text::normalize_text_file_bytes(ss.str());
 
     std::vector<std::string> paths;
-    std::istringstream lines(text);
+    std::istringstream lines(normalized_text);
     std::string line;
     while (std::getline(lines, line)) {
         if (!line.empty() && line.back() == '\r') {

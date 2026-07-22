@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/org/berestov/pcmtransport/icons/hicolor">
+    <file>16x16/apps/org.berestov.pcmtransport.png</file>
+    <file>32x32/apps/org.berestov.pcmtransport.png</file>
+    <file>48x48/apps/org.berestov.pcmtransport.png</file>
+    <file>128x128/apps/org.berestov.pcmtransport.png</file>
+  </gresource>
+</gresources>

@@ -3,11 +3,13 @@
 #include <cerrno>
 #include <cstdint>
 #include <stdexcept>
+#include <limits>
 #include <string>
 #include <sstream>
 #include <vector>
 
 
+#include "pcmtp/backend/AlsaBufferPolicy.hpp"
 #include "pcmtp/util/Logger.hpp"
 
 namespace pcmtp {
@@ -130,14 +132,25 @@ void AlsaPcmBackend::open(const std::string& device_name, const AudioFormat& for
         throw std::runtime_error("ALSA device does not accept requested sample rate exactly");
     }
 
-    snd_pcm_uframes_t requested_period = 588;
-    snd_pcm_uframes_t requested_buffer = 2352;
+    const AlsaBufferPolicy target_buffer_policy = alsa_buffer_policy_for_sample_rate(format.sample_rate);
+    snd_pcm_uframes_t requested_period = static_cast<snd_pcm_uframes_t>(target_buffer_policy.period_frames);
     check_alsa(snd_pcm_hw_params_set_period_size_near(handle_, hw_params, &requested_period, nullptr),
                "snd_pcm_hw_params_set_period_size_near failed");
+
+    const snd_pcm_uframes_t max_frames = std::numeric_limits<snd_pcm_uframes_t>::max();
+    snd_pcm_uframes_t requested_buffer = requested_period;
+    if (requested_period <= max_frames / 4U) {
+        requested_buffer = requested_period * 4U;
+    } else {
+        requested_buffer = max_frames;
+    }
     check_alsa(snd_pcm_hw_params_set_buffer_size_near(handle_, hw_params, &requested_buffer),
                "snd_pcm_hw_params_set_buffer_size_near failed");
-    Logger::instance().debug("ALSA period requested_near=" + std::to_string(static_cast<unsigned long long>(requested_period)) +
-                             " buffer requested_near=" + std::to_string(static_cast<unsigned long long>(requested_buffer)));
+    Logger::instance().debug("ALSA target period/buffer=" +
+                             std::to_string(static_cast<unsigned long long>(target_buffer_policy.period_frames)) + "/" +
+                             std::to_string(static_cast<unsigned long long>(target_buffer_policy.buffer_frames)) +
+                             " negotiated period target=" + std::to_string(static_cast<unsigned long long>(requested_period)) +
+                             " negotiated buffer target=" + std::to_string(static_cast<unsigned long long>(requested_buffer)));
 
     Logger::instance().debug(std::string("ALSA test_format S16_LE => ") + (hw_format_supported(handle_, hw_params, SND_PCM_FORMAT_S16_LE) ? "supported" : "unsupported"));
     const std::vector<snd_pcm_format_t> candidates = format_candidates_for_bits(format.bits_per_sample, format_24bit_preference_);
@@ -166,8 +179,14 @@ void AlsaPcmBackend::open(const std::string& device_name, const AudioFormat& for
         opened = true;
         pcm_container_format_ = candidates[i];
         check_alsa(snd_pcm_hw_params_current(handle_, hw_params), "snd_pcm_hw_params_current failed");
-        snd_pcm_hw_params_get_period_size(hw_params, &period_frames_, nullptr);
-        snd_pcm_hw_params_get_buffer_size(hw_params, &buffer_frames_);
+        snd_pcm_uframes_t negotiated_period = 0;
+        snd_pcm_uframes_t negotiated_buffer = 0;
+        check_alsa(snd_pcm_hw_params_get_period_size(hw_params, &negotiated_period, nullptr),
+                   "snd_pcm_hw_params_get_period_size failed");
+        check_alsa(snd_pcm_hw_params_get_buffer_size(hw_params, &negotiated_buffer),
+                   "snd_pcm_hw_params_get_buffer_size failed");
+        period_frames_ = negotiated_period;
+        buffer_frames_ = negotiated_buffer;
         snd_pcm_format_t accepted = SND_PCM_FORMAT_UNKNOWN;
         if (snd_pcm_hw_params_get_format(hw_params, &accepted) >= 0) {
             pcm_container_format_ = accepted;
@@ -345,14 +364,20 @@ std::string AlsaPcmBackend::active_output_report() const {
        << " (24-bit preference: " << preference_name(format_24bit_preference_) << ")" << '\n';
     ss << "ALSA rate: " << accepted_sample_rate_
        << (accepted_sample_rate_ == format_.sample_rate ? " Hz exact" : " Hz near") << '\n';
-    ss << "Period / buffer: " << static_cast<unsigned long long>(period_frames_)
-       << " / " << static_cast<unsigned long long>(buffer_frames_);
+    const AlsaBufferPolicy target_policy = alsa_buffer_policy_for_sample_rate(format_.sample_rate);
+    ss << "Target period/buffer: " << static_cast<unsigned long long>(target_policy.period_frames)
+       << "/" << static_cast<unsigned long long>(target_policy.buffer_frames) << '\n';
+    ss << "Actual ALSA period/buffer: " << static_cast<unsigned long long>(period_frames_)
+       << "/" << static_cast<unsigned long long>(buffer_frames_);
     return ss.str();
 }
 
 
 AlsaProbeMatrix AlsaPcmBackend::probe_device_format_matrix(const std::string& device_name) {
-    const std::vector<unsigned> rates = {44100, 48000, 88200, 96000, 176400, 192000};
+    const std::vector<unsigned> rates = {
+        44100, 48000, 88200, 96000, 176400, 192000,
+        352800, 384000, 705600, 768000, 1411200, 1536000
+    };
     const std::vector<snd_pcm_format_t> formats = {
         SND_PCM_FORMAT_S16_LE,
         SND_PCM_FORMAT_S24_LE,
@@ -406,17 +431,18 @@ std::string AlsaPcmBackend::probe_device_formats(const std::string& device_name)
     out << "ALSA device probe\n";
     out << "Device: " << matrix.device_name << "\n";
     out << "Mode: playback, RW_INTERLEAVED, stereo\n\n";
-    out << "Format        44.1k    48k      88.2k    96k      176.4k   192k\n";
-    out << "----------------------------------------------------------------\n";
+    out << "Format";
+    for (std::size_t r = 0; r < matrix.sample_rates.size(); ++r) {
+        out << '\t' << matrix.sample_rates[r];
+    }
+    out << "\n";
 
     for (std::size_t f = 0; f < matrix.format_names.size(); ++f) {
         out << matrix.format_names[f];
-        for (std::size_t pad = matrix.format_names[f].size(); pad < 14; ++pad) out << ' ';
         for (std::size_t r = 0; r < matrix.sample_rates.size(); ++r) {
             const std::size_t idx = f * matrix.sample_rates.size() + r;
             const bool ok = idx < matrix.cells.size() && matrix.cells[idx].supported;
-            out << (ok ? "yes" : "no ");
-            if (r + 1 < matrix.sample_rates.size()) out << "      ";
+            out << '\t' << (ok ? "yes" : "no");
         }
         out << '\n';
     }

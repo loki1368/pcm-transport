@@ -29,6 +29,12 @@ struct PlaybackStatusSnapshot {
     std::uint32_t clipped_samples = 0;
 };
 
+struct PlaybackTransportSnapshot {
+    bool playing = false;
+    bool paused = false;
+    std::uint64_t current_samples_per_channel = 0;
+};
+
 using PlaybackStatusCallback = std::function<void(const PlaybackStatusSnapshot&)>;
 
 class PlaybackEngine {
@@ -67,6 +73,7 @@ public:
     int bass_db() const;
     int treble_db() const;
     PlaybackStatusSnapshot snapshot() const;
+    PlaybackTransportSnapshot transport_snapshot() const;
     std::string last_error() const;
     std::size_t transport_buffer_milliseconds() const;
 
