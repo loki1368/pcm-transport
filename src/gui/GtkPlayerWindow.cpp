@@ -8615,7 +8615,12 @@ void GtkPlayerWindow::save_preferences_now() const {
 
 void GtkPlayerWindow::setup_mpris() {
     MprisService::Actions actions;
-    actions.play = [this]() { mpris_play(); };
+    actions.play = [this]() {
+        if (!playlist_search_enabled_) {
+            update_playlist_selection_from_ui();
+        }
+        mpris_play();
+    };
     actions.pause = [this]() {
         const PlaybackTransportSnapshot transport = engine_.transport_snapshot();
         if (transport.playing && !transport.paused) {
@@ -8624,6 +8629,9 @@ void GtkPlayerWindow::setup_mpris() {
         }
     };
     actions.play_pause = [this]() {
+        if (!playlist_search_enabled_) {
+            update_playlist_selection_from_ui();
+        }
         const PlaybackTransportSnapshot transport = engine_.transport_snapshot();
         if (transport.playing && transport.paused) {
             engine_.resume();
@@ -8636,8 +8644,14 @@ void GtkPlayerWindow::setup_mpris() {
         }
     };
     actions.stop = [this]() { stop_playback(); };
-    actions.next = [this]() { mpris_advance_track(1); };
-    actions.previous = [this]() { mpris_advance_track(-1); };
+    actions.next = [this]() {
+        update_playlist_selection_from_ui();
+        mpris_advance_track(1);
+    };
+    actions.previous = [this]() {
+        update_playlist_selection_from_ui();
+        mpris_advance_track(-1);
+    };
     actions.seek = [this](std::int64_t offset_usec) { return mpris_seek(offset_usec); };
     actions.set_position = [this](std::int64_t position_usec, const std::string& track_id) {
         return mpris_set_position(position_usec, track_id);
