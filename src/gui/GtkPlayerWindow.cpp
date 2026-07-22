@@ -2244,6 +2244,10 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     g_signal_connect(btn_alsamixer_, "clicked", G_CALLBACK(GtkPlayerWindow::on_open_alsamixer_clicked), this);
     g_signal_connect(btn_about_, "clicked", G_CALLBACK(GtkPlayerWindow::on_about_clicked), this);
     g_signal_connect(playlist_view_, "row-activated", G_CALLBACK(GtkPlayerWindow::on_playlist_row_activated), this);
+    gtk_widget_add_events(playlist_view_, GDK_KEY_PRESS_MASK);
+    g_signal_connect(playlist_view_, "key-press-event", G_CALLBACK(GtkPlayerWindow::on_playlist_view_media_key_press), this);
+    gtk_widget_add_events(window_, GDK_KEY_PRESS_MASK);
+    g_signal_connect(window_, "key-press-event", G_CALLBACK(GtkPlayerWindow::on_window_key_press), this);
     g_signal_connect(window_, "delete-event", G_CALLBACK(GtkPlayerWindow::on_window_delete_event), this);
     g_signal_connect(window_, "destroy", G_CALLBACK(GtkPlayerWindow::on_window_destroy), this);
     refresh_device_list();
@@ -5735,26 +5739,26 @@ void GtkPlayerWindow::setup_media_keys(GtkApplication* app) {
     const GActionEntry actions[] = {
         {"media-play", on_media_play, nullptr, nullptr, nullptr, {0}},
         {"media-pause", on_media_pause, nullptr, nullptr, nullptr, {0}},
+        {"media-play-pause", on_media_play_pause, nullptr, nullptr, nullptr, {0}},
         {"media-stop", on_media_stop, nullptr, nullptr, nullptr, {0}},
         {"media-next", on_media_next, nullptr, nullptr, nullptr, {0}},
         {"media-previous", on_media_previous, nullptr, nullptr, nullptr, {0}},
     };
     g_action_map_add_action_entries(G_ACTION_MAP(app), actions, G_N_ELEMENTS(actions), this);
 
-    static const char* kPlayKeys[] = {"XF86AudioPlay", nullptr};
-    static const char* kPauseKeys[] = {"XF86AudioPause", nullptr};
+    static const char* kPlayPauseKeys[] = {"XF86AudioPlay", "XF86AudioPause", nullptr};
     static const char* kStopKeys[] = {"XF86AudioStop", nullptr};
     static const char* kNextKeys[] = {"XF86AudioNext", nullptr};
     static const char* kPreviousKeys[] = {"XF86AudioPrev", nullptr};
 
-    gtk_application_set_accels_for_action(app, "app.media-play", kPlayKeys);
-    gtk_application_set_accels_for_action(app, "app.media-pause", kPauseKeys);
+    gtk_application_set_accels_for_action(app, "app.media-play-pause", kPlayPauseKeys);
     gtk_application_set_accels_for_action(app, "app.media-stop", kStopKeys);
     gtk_application_set_accels_for_action(app, "app.media-next", kNextKeys);
     gtk_application_set_accels_for_action(app, "app.media-previous", kPreviousKeys);
 }
 
 void GtkPlayerWindow::handle_media_play() {
+    update_playlist_selection_from_ui();
     mpris_play();
 }
 
@@ -5765,16 +5769,68 @@ void GtkPlayerWindow::handle_media_pause() {
     }
 }
 
+void GtkPlayerWindow::handle_media_play_pause() {
+    update_playlist_selection_from_ui();
+    if (engine_.is_playing() && engine_.is_paused()) {
+        engine_.resume();
+    } else if (engine_.is_playing()) {
+        engine_.pause();
+    } else {
+        mpris_play();
+    }
+    notify_mpris_state_changed();
+}
+
 void GtkPlayerWindow::handle_media_stop() {
     stop_playback();
 }
 
 void GtkPlayerWindow::handle_media_next() {
+    update_playlist_selection_from_ui();
     mpris_advance_track(1);
 }
 
 void GtkPlayerWindow::handle_media_previous() {
+    update_playlist_selection_from_ui();
     mpris_advance_track(-1);
+}
+
+bool GtkPlayerWindow::handle_media_key(guint keyval) {
+    switch (keyval) {
+        case GDK_KEY_AudioPlay:
+        case GDK_KEY_AudioPause:
+            handle_media_play_pause();
+            return true;
+        case GDK_KEY_AudioStop:
+            handle_media_stop();
+            return true;
+        case GDK_KEY_AudioNext:
+            handle_media_next();
+            return true;
+        case GDK_KEY_AudioPrev:
+            handle_media_previous();
+            return true;
+        default:
+            return false;
+    }
+}
+
+gboolean GtkPlayerWindow::on_window_key_press(GtkWidget*, GdkEvent* event, gpointer user_data) {
+    auto* self = static_cast<GtkPlayerWindow*>(user_data);
+    if (self == nullptr || event == nullptr || event->type != GDK_KEY_PRESS) {
+        return FALSE;
+    }
+    const auto* key_event = reinterpret_cast<GdkEventKey*>(event);
+    return self->handle_media_key(key_event->keyval) ? TRUE : FALSE;
+}
+
+gboolean GtkPlayerWindow::on_playlist_view_media_key_press(GtkWidget*, GdkEvent* event, gpointer user_data) {
+    auto* self = static_cast<GtkPlayerWindow*>(user_data);
+    if (self == nullptr || event == nullptr || event->type != GDK_KEY_PRESS) {
+        return FALSE;
+    }
+    const auto* key_event = reinterpret_cast<GdkEventKey*>(event);
+    return self->handle_media_key(key_event->keyval) ? TRUE : FALSE;
 }
 
 void GtkPlayerWindow::on_media_play(GSimpleAction*, GVariant*, gpointer user_data) {
@@ -5783,6 +5839,10 @@ void GtkPlayerWindow::on_media_play(GSimpleAction*, GVariant*, gpointer user_dat
 
 void GtkPlayerWindow::on_media_pause(GSimpleAction*, GVariant*, gpointer user_data) {
     static_cast<GtkPlayerWindow*>(user_data)->handle_media_pause();
+}
+
+void GtkPlayerWindow::on_media_play_pause(GSimpleAction*, GVariant*, gpointer user_data) {
+    static_cast<GtkPlayerWindow*>(user_data)->handle_media_play_pause();
 }
 
 void GtkPlayerWindow::on_media_stop(GSimpleAction*, GVariant*, gpointer user_data) {
