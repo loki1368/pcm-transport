@@ -57,6 +57,7 @@ private:
         AudioFormat decoded_format{};
         std::uint32_t source_sample_rate = 0;
         std::uint16_t source_bits_per_sample = 0;
+        std::uint32_t source_bit_rate = 0;
         bool native_decode = false;
         bool lossless_source = false;
         bool lossy_source = false;
@@ -294,6 +295,7 @@ private:
 
     static std::string format_time(std::uint64_t samples_per_channel, std::uint32_t sample_rate = 44100);
     std::string display_title_for(const PlaylistEntry& entry) const;
+    std::string media_source_summary(const PlaylistEntry& entry) const;
 
     const std::size_t transport_buffer_ms_;
     GtkApplication* app_ = nullptr;
