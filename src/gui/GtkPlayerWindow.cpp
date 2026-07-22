@@ -8645,11 +8645,15 @@ void GtkPlayerWindow::setup_mpris() {
     };
     actions.stop = [this]() { stop_playback(); };
     actions.next = [this]() {
-        update_playlist_selection_from_ui();
+        if (!playlist_search_enabled_) {
+            update_playlist_selection_from_ui();
+        }
         mpris_advance_track(1);
     };
     actions.previous = [this]() {
-        update_playlist_selection_from_ui();
+        if (!playlist_search_enabled_) {
+            update_playlist_selection_from_ui();
+        }
         mpris_advance_track(-1);
     };
     actions.seek = [this](std::int64_t offset_usec) { return mpris_seek(offset_usec); };

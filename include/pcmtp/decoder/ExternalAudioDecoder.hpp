@@ -29,6 +29,7 @@ struct ExternalAudioInfo {
     std::string codec_name;
     bool dsd_source = false;
     std::uint32_t dsd_sample_rate = 0;
+    std::uint32_t bit_rate = 0;
     std::int64_t duration_ts = 0;
     std::string time_base;
     bool lossless = false;
