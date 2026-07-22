@@ -21,6 +21,7 @@ struct ExternalAudioInfo {
     std::uint64_t source_total_samples_per_channel = 0;
     GenericTags tags{};
     std::string codec_name;
+    std::uint32_t bit_rate = 0;
     std::int64_t duration_ts = 0;
     std::string time_base;
     bool lossless = false;

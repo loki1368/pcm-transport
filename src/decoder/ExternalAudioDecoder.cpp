@@ -549,7 +549,7 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path, 
     if (!have_info) {
         const std::string probe_cmd =
             "ffprobe -v error -select_streams a:0 "
-            "-show_entries stream=codec_name,sample_fmt,sample_rate,channels,bits_per_sample,bits_per_raw_sample,duration,duration_ts,time_base:format=duration:format_tags=title,artist,track "
+            "-show_entries stream=codec_name,sample_fmt,sample_rate,channels,bits_per_sample,bits_per_raw_sample,bit_rate,duration,duration_ts,time_base:format=duration:format_tags=title,artist,track "
             "-of default=nokey=0:noprint_wrappers=1 " +
             shell_escape_for_command(path);
         Logger::instance().debug("ExternalAudioDecoder unified probe: " + path);
@@ -587,6 +587,8 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path, 
                     if (bits == 16 || bits == 24 || bits == 32) {
                         info.format.bits_per_sample = bits;
                     }
+                } else if (key == "bit_rate" && !value.empty() && value != "N/A") {
+                    info.bit_rate = static_cast<std::uint32_t>(std::stoul(value));
                 } else if (key == "duration_ts" && !value.empty() && value != "N/A") {
                     info.duration_ts = std::stoll(value);
                 } else if (key == "time_base" && !value.empty() && value != "N/A") {

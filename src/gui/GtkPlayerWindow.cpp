@@ -771,6 +771,77 @@ bool lossy_gapless_family(const std::string& family) {
     return family == "mp3" || family == "aac" || family == "vorbis" || family == "opus";
 }
 
+std::string codec_display_name(const std::string& codec_name) {
+    if (codec_name.empty()) {
+        return "File";
+    }
+    if (codec_name == "mp3") return "MP3";
+    if (codec_name == "flac") return "FLAC";
+    if (codec_name == "aac") return "AAC";
+    if (codec_name == "vorbis") return "Vorbis";
+    if (codec_name == "opus") return "Opus";
+    if (codec_name == "alac") return "ALAC";
+    if (codec_name == "ape") return "APE";
+    if (codec_name == "wavpack") return "WavPack";
+    if (codec_name == "tta") return "TTA";
+    if (codec_name == "tak") return "TAK";
+    std::string out = codec_name;
+    if (!out.empty()) {
+        out[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(out[0])));
+    }
+    return out;
+}
+
+std::string codec_label_for_entry(const std::string& codec_name, const std::string& path) {
+    if (!codec_name.empty()) {
+        if (codec_name.size() >= 4 && codec_name.compare(0, 4, "pcm_") == 0) {
+            const std::string ext = lower_extension(path);
+            if (ext == ".wav" || ext == ".wave") return "WAV";
+            if (ext == ".bwf") return "BWF";
+            if (ext == ".aiff" || ext == ".aif") return "AIFF";
+            if (ext == ".au" || ext == ".snd") return "AU/SND";
+            if (ext == ".caf") return "CAF";
+            return "PCM";
+        }
+        return codec_display_name(codec_name);
+    }
+
+    const std::string ext = lower_extension(path);
+    if (ext == ".flac") return "FLAC";
+    if (ext == ".wav" || ext == ".wave") return "WAV";
+    if (ext == ".bwf") return "BWF";
+    if (ext == ".au" || ext == ".snd") return "AU/SND";
+    if (ext == ".caf") return "CAF";
+    if (ext == ".aiff" || ext == ".aif") return "AIFF";
+    if (ext == ".ape") return "APE";
+    if (ext == ".wv") return "WavPack";
+    if (ext == ".m4a") return "M4A";
+    if (ext == ".aac") return "AAC";
+    if (ext == ".ogg" || ext == ".oga") return "OGG";
+    if (ext == ".opus") return "OPUS";
+    if (ext == ".tak") return "TAK";
+    if (ext == ".tta") return "TTA";
+    if (ext == ".wma" || ext == ".asf" || ext == ".xwma") return "WMA";
+    if (ext == ".oma" || ext == ".aa3" || ext == ".at3") return "ATRAC";
+    if (ext == ".mpc" || ext == ".mp+" || ext == ".mpp") return "MPC";
+    if (ext == ".dsf") return "DSF";
+    if (ext == ".mp3") return "MP3";
+    return "File";
+}
+
+std::string channels_layout_label(std::uint16_t channels) {
+    if (channels == 1) {
+        return "mono";
+    }
+    if (channels == 2) {
+        return {};
+    }
+    if (channels > 0) {
+        return std::to_string(channels) + " ch";
+    }
+    return {};
+}
+
 
 std::string safe_utf8_for_display(const std::string& text) {
     if (text.empty()) return text;
@@ -3308,6 +3379,7 @@ void GtkPlayerWindow::append_path_to_playlist(const std::string& path) {
                 entry.decoded_format.bits_per_sample = cue_target_bits;
             }
             entry.codec_name = cue_native ? std::string("flac") : cue_external_info.codec_name;
+            entry.source_bit_rate = cue_external_info_ready ? cue_external_info.bit_rate : 0;
             entry.lossless_source = cue_native || (cue_external_info_ready && cue_external_info.lossless) ||
                                     (cue_audio_ext == ".flac" || cue_audio_ext == ".wav" || cue_audio_ext == ".wave" || cue_audio_ext == ".bwf" || cue_audio_ext == ".aiff" || cue_audio_ext == ".aif" || cue_audio_ext == ".au" || cue_audio_ext == ".snd" || cue_audio_ext == ".caf" || cue_audio_ext == ".ape" || cue_audio_ext == ".wv" || cue_audio_ext == ".tak" || cue_audio_ext == ".tta" || cue_audio_ext == ".dsf");
             entry.lossy_source = (!entry.lossless_source && (cue_audio_ext == ".mp3" || cue_audio_ext == ".m4a" || cue_audio_ext == ".aac" || cue_audio_ext == ".ogg" || cue_audio_ext == ".oga" || cue_audio_ext == ".opus" || cue_audio_ext == ".wma" || cue_audio_ext == ".asf" || cue_audio_ext == ".xwma" || cue_audio_ext == ".oma" || cue_audio_ext == ".aa3" || cue_audio_ext == ".at3" || cue_audio_ext == ".mpc" || cue_audio_ext == ".mp+" || cue_audio_ext == ".mpp"));
@@ -3383,6 +3455,7 @@ void GtkPlayerWindow::append_path_to_playlist(const std::string& path) {
         entry.decoded_format.bits_per_sample = target_bits;
     }
     entry.codec_name = native_decode ? std::string("flac") : external_info.codec_name;
+    entry.source_bit_rate = have_external_info ? external_info.bit_rate : 0;
     entry.lossless_source = native_decode || (have_external_info && external_info.lossless) ||
                             (ext == ".flac" || ext == ".wav" || ext == ".wave" || ext == ".bwf" || ext == ".aiff" || ext == ".aif" || ext == ".au" || ext == ".snd" || ext == ".caf" || ext == ".ape" || ext == ".wv" || ext == ".tak" || ext == ".tta" || ext == ".dsf");
     entry.lossy_source = (!entry.lossless_source && (ext == ".mp3" || ext == ".m4a" || ext == ".aac" || ext == ".ogg" || ext == ".oga" || ext == ".opus" || ext == ".wma" || ext == ".asf" || ext == ".xwma" || ext == ".oma" || ext == ".aa3" || ext == ".at3" || ext == ".mpc" || ext == ".mp+" || ext == ".mpp"));
@@ -5051,29 +5124,9 @@ void GtkPlayerWindow::refresh_display(bool update_text, bool update_progress, bo
 
     if (!playlist_.empty() && current_track_index_ < playlist_.size()) {
         const PlaylistEntry& track = playlist_[current_track_index_];
-        const std::string ext = lower_extension(track.audio_file_path);
         track_text = "Track " + std::to_string(track.track_number) + ": " + display_title_for(track);
 
-        std::string source_name = "File";
-        if (ext == ".flac") source_name = "FLAC";
-        else if (ext == ".wav" || ext == ".wave") source_name = "WAV";
-        else if (ext == ".bwf") source_name = "BWF";
-        else if (ext == ".au" || ext == ".snd") source_name = "AU/SND";
-        else if (ext == ".caf") source_name = "CAF";
-        else if (ext == ".aiff" || ext == ".aif") source_name = "AIFF";
-        else if (ext == ".ape") source_name = "APE";
-        else if (ext == ".wv") source_name = "WavPack";
-        else if (ext == ".m4a") source_name = "M4A";
-        else if (ext == ".aac") source_name = "AAC";
-        else if (ext == ".ogg" || ext == ".oga") source_name = "OGG";
-        else if (ext == ".opus") source_name = "OPUS";
-        else if (ext == ".tak") source_name = "TAK";
-        else if (ext == ".tta") source_name = "TTA";
-        else if (ext == ".wma" || ext == ".asf" || ext == ".xwma") source_name = "WMA";
-        else if (ext == ".oma" || ext == ".aa3" || ext == ".at3") source_name = "ATRAC";
-        else if (ext == ".mpc" || ext == ".mp+" || ext == ".mpp") source_name = "MPC";
-        else if (ext == ".dsf") source_name = "DSF";
-        else if (ext == ".mp3") source_name = "MP3";
+        const std::string source_name = media_source_summary(track);
         const std::uint32_t effective_target_rate = target_sample_rate_for(track.source_sample_rate);
         const std::uint16_t effective_target_bits = target_bits_for(track.source_bits_per_sample);
         const bool effective_resampled = (effective_target_rate > 0 && effective_target_rate != track.source_sample_rate);
@@ -5183,6 +5236,30 @@ std::string GtkPlayerWindow::display_title_for(const PlaylistEntry& entry) {
         return entry.performer + " - " + entry.title;
     }
     return entry.title;
+}
+
+std::string GtkPlayerWindow::media_source_summary(const PlaylistEntry& entry) const {
+    std::ostringstream summary;
+    summary << codec_label_for_entry(entry.codec_name, entry.audio_file_path);
+
+    const std::uint32_t rate = entry.source_sample_rate > 0 ? entry.source_sample_rate : entry.decoded_format.sample_rate;
+    const std::uint16_t channels = entry.decoded_format.channels > 0 ? entry.decoded_format.channels : 2;
+    const std::uint16_t bits = entry.source_bits_per_sample > 0 ? entry.source_bits_per_sample : entry.decoded_format.bits_per_sample;
+
+    if (rate > 0) {
+        summary << ", " << rate << " Hz";
+        const std::string layout = channels_layout_label(channels);
+        if (!layout.empty()) {
+            summary << ", " << layout;
+        }
+        if (entry.lossy_source && entry.source_bit_rate >= 1000) {
+            summary << ", " << ((entry.source_bit_rate + 500) / 1000) << " kb/s";
+        } else if (bits > 0 && !entry.lossy_source) {
+            summary << ", " << bits << " bit";
+        }
+    }
+
+    return summary.str();
 }
 
 void GtkPlayerWindow::load_preferences() {
