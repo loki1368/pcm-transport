@@ -9,6 +9,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(ALSA REQUIRED alsa)
 pkg_check_modules(FLAC REQUIRED flac)
 pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
+find_package(OpenSSL REQUIRED)
 
 add_executable(pcm_transport
     src/main.cpp
@@ -60,5 +61,7 @@ target_link_libraries(pcm_transport PRIVATE
     ${ALSA_LIBRARIES}
     ${FLAC_LIBRARIES}
     ${GTK3_LIBRARIES}
+    OpenSSL::SSL
+    OpenSSL::Crypto
     pthread
 )

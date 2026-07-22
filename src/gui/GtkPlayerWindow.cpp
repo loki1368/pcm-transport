@@ -4299,11 +4299,14 @@ void GtkPlayerWindow::update_playlist_view_row(std::size_t index) {
         const std::string trackno = stream_broken
             ? ("× " + std::to_string(entry.track_number))
             : std::to_string(entry.track_number);
+        const std::string title = (index == current_track_index_)
+            ? display_title_for(entry)
+            : entry.title;
         gtk_list_store_set(playlist_store_, &iter,
                            COL_INDEX, static_cast<int>(index),
                            COL_TRACKNO, trackno.c_str(),
                            COL_ARTIST, safe_utf8_for_display(entry.performer).c_str(),
-                           COL_TITLE, safe_utf8_for_display(entry.title).c_str(),
+                           COL_TITLE, safe_utf8_for_display(title).c_str(),
                            COL_SOURCE, safe_utf8_for_display(entry.source_label).c_str(),
                            COL_STREAM_BROKEN, stream_broken ? TRUE : FALSE,
                            -1);
@@ -4324,10 +4327,13 @@ gboolean GtkPlayerWindow::on_stream_metadata_idle(gpointer user_data) {
 }
 
 void GtkPlayerWindow::apply_stream_metadata(const std::string& title) {
-    if (title.empty()) {
+    if (title.empty() || title == stream_now_playing_) {
         return;
     }
     stream_now_playing_ = title;
+    if (!playlist_.empty() && current_track_index_ < playlist_.size()) {
+        update_playlist_view_row(current_track_index_);
+    }
     refresh_display();
     notify_mpris_state_changed();
 }
