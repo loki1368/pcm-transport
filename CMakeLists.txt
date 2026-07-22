@@ -9,6 +9,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(ALSA REQUIRED alsa)
 pkg_check_modules(FLAC REQUIRED flac)
 pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
+find_package(OpenSSL REQUIRED)
 
 add_executable(pcm_transport
     src/main.cpp
@@ -16,6 +17,10 @@ add_executable(pcm_transport
     src/backend/AlsaPcmBackend.cpp
     src/core/PlaybackEngine.cpp
     src/cue/CueParser.cpp
+    src/util/MediaUri.cpp
+    src/stream/IcyMetadataClient.cpp
+    src/stream/StreamSidecar.cpp
+    src/stream/StreamHealthRegistry.cpp
     src/playlist/M3uPlaylistReader.cpp
     src/decoder/FlacStreamDecoder.cpp
     src/decoder/ExternalAudioDecoder.cpp
@@ -24,6 +29,7 @@ add_executable(pcm_transport
     src/decoder/MemoryAudioDecoder.cpp
     src/core/TransportFifo.cpp
     src/gui/GtkPlayerWindow.cpp
+    src/session/PlaylistSession.cpp
     src/mpris/MprisService.cpp
     src/hardware/CardProfileRegistry.cpp
     src/dsp/AlsaControlBridge.cpp
@@ -55,5 +61,7 @@ target_link_libraries(pcm_transport PRIVATE
     ${ALSA_LIBRARIES}
     ${FLAC_LIBRARIES}
     ${GTK3_LIBRARIES}
+    OpenSSL::SSL
+    OpenSSL::Crypto
     pthread
 )
