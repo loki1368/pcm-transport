@@ -212,11 +212,14 @@ private:
                                           gpointer user_data);
     static void on_media_play(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_pause(GSimpleAction* action, GVariant* parameter, gpointer user_data);
+    static void on_media_play_pause(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_stop(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_next(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_previous(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static gboolean on_restore_last_sources_idle(gpointer user_data);
     static gboolean on_preferences_save_timeout(gpointer user_data);
+    static gboolean on_window_key_press(GtkWidget* widget, GdkEvent* event, gpointer user_data);
+    static gboolean on_playlist_view_media_key_press(GtkWidget* widget, GdkEvent* event, gpointer user_data);
 
     void build_ui(GtkApplication* app);
     void start_source_scan_worker();
@@ -376,6 +379,8 @@ private:
     void handle_media_stop();
     void handle_media_next();
     void handle_media_previous();
+    bool handle_media_key(guint keyval);
+    void handle_media_play_pause();
     void notify_mpris_state_changed();
     void mark_mpris_track_changed();
     void invalidate_mpris_cover_cache();
