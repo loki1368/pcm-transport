@@ -1,0 +1,39 @@
+---
+description: Fork workflow — minimal upstream diffs, patches in separate modules
+alwaysApply: true
+---
+
+# Fork patch workflow (pcm-transport)
+
+This repo is a **fork**: `main` tracks upstream; custom work lives on `my_patches` (via `fixes` for small upstreamable bugfixes).
+
+## Branches
+
+- `main` — upstream mirror only; no feature commits.
+- `fixes` — bugfixes off `main`; merge into `my_patches`.
+- `my_patches` — integration branch with all fork features.
+
+## Adding new functionality
+
+1. **Prefer new files** under `include/pcmtp/patches/` and `src/patches/` (or existing domain dirs: `stream/`, `session/`).
+2. **Do not grow** `GtkPlayerWindow` with business logic — only glue: include, one manager field, lifecycle calls (`init` / `play` / `stop` / shutdown).
+3. **Do not extend** upstream types (`PlaylistEntry`, `ExternalAudioDecoder`) unless unavoidable; use composition or `patches/` side structs.
+4. **Mark glue** in upstream files: `// PATCH: <feature-name>` on each touch point (easy grep during merge).
+5. **CMakeLists.txt**: add new `.cpp` in a single `patches` block; avoid scattering edits.
+
+## Decoder / playlist / MPRIS
+
+- Stream URLs → `StreamAudioDecoder` or `stream/`, not `ExternalAudioDecoder` file-path code.
+- Radio M3U / EXTINF → `patches/` reader, not upstream `M3uPlaylistReader` unless submitting PR upstream.
+- MPRIS wiring → `MprisPlayerBridge` in `patches/`; keep `MprisService` as D-Bus layer.
+
+## Before merging upstream into `main`
+
+1. Update `main` from upstream remote.
+2. Rebase or merge `fixes` onto `main`, then merge into `my_patches`.
+3. Build; smoke-test: local file, stream, session restore, MPRIS keys.
+4. Resolve conflicts favoring **upstream structure** + re-apply `// PATCH:` glue.
+
+## Backlog
+
+Refactoring phases and metrics: `docs/BACKLOG.md`.
