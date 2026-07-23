@@ -1,14 +1,49 @@
 # Changelog
 
+## 0.9.110
+
+- Added DSF, DFF and DST playback with configurable DSD-to-PCM conversion up to 1.536 MHz.
+- Added W64, MP2, M4R, AC3, SPX, VOC, RA and DTS support through the existing FFmpeg playback path.
+- Added asynchronous metadata loading with progress reporting, cancellation, timeouts and safe playlist replacement.
+- Improved metadata handling for container and audio-stream tags, UTF-8 and Windows-1251 text.
+- Corrected high-resolution CUE timing and refined codec-based gapless playback.
+- Added optional restoration of previously opened sources.
+- Added unified ALSA buffer targets and negotiated-value diagnostics.
+- Added Linux desktop integration with application icons and desktop entry.
+- Standardized application dialogs while preserving native GTK controls.
+- Further optimization, bug fixes, and polishing for MPRIS integration.
+- Initial MPRIS implementation contributed by [@loki1368](https://github.com/loki1368).
+
 ## 0.9.109
 
 - Added persistent realtime permission controls using pkexec/setcap cap_sys_nice.
+- Added revoke control for persistent realtime permission.
+- Added direct SCHED_RR request before RTKit when permissions allow it.
+- Wrapped realtime status text to avoid Settings window expansion.
+- Kept realtime priority disabled by default and audio path unchanged.
+
+## 0.9.108
+
+- Improved RTKit realtime status reporting and verification.
+- Clamped RTKit requests to the service-reported maximum realtime priority.
 - Applied RTKit to the current playback thread when the option is enabled during playback.
+- Restyled the ALSA probe table for readability, with green OK and red unsupported markers.
+- Kept realtime priority disabled by default.
+- Kept 24-bit ALSA container preference and audio path unchanged.
+
+## 0.9.106
+
+- Removed the memory lock option.
 - Moved Active ALSA output report to DSP Studio → Diagnostics / Tests.
 - Added selected ALSA device probe for common PCM containers and sample rates.
+- Improved realtime audio-thread priority status.
+- Kept 24-bit ALSA container preference in Settings.
+
+## 0.9.104
+
 - Restored the classic scalar ALSA write conversion path.
 - Removed SIMD PCM conversion and benchmark code.
-- Added FFmpeg-backed playback for AU/SND, BWF, CAF, TAK, TTA, WMA/ASF/XWMA, ATRAC OMA/AA3/AT3 and MPC.
+- Added FFmpeg-backed playback for AU/SND, BWF, CAF, TAK, TTA, WMA/ASF/XWMA, ATRAC OMA/AA3/AT3, MPC and DSF.
 - Fixed GTK3 maximize / restore layout behavior.
 
 ## 0.9.103

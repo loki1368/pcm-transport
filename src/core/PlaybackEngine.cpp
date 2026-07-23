@@ -127,9 +127,14 @@ void PlaybackEngine::stop() {
     decoder_.reset();
     backend_.reset();
     {
+        std::lock_guard<std::mutex> runtime_lock(runtime_mutex_);
+        last_active_output_report_.clear();
+    }
+    {
         std::lock_guard<std::mutex> lock(state_mutex_);
         snapshot_.playing = false;
         snapshot_.paused = false;
+        snapshot_.active_output_report.clear();
         if (!snapshot_.finished) {
             snapshot_.current_samples_per_channel = 0;
             snapshot_.message = last_error_.empty() ? "Stopped" : last_error_;
@@ -187,6 +192,14 @@ bool PlaybackEngine::clip_detection_enabled() const { return clip_detection_enab
 int PlaybackEngine::bass_db() const { return bass_db_.load(std::memory_order_relaxed); }
 int PlaybackEngine::treble_db() const { return treble_db_.load(std::memory_order_relaxed); }
 PlaybackStatusSnapshot PlaybackEngine::snapshot() const { std::lock_guard<std::mutex> lock(state_mutex_); return snapshot_; }
+PlaybackTransportSnapshot PlaybackEngine::transport_snapshot() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    PlaybackTransportSnapshot transport;
+    transport.playing = snapshot_.playing;
+    transport.paused = snapshot_.paused;
+    transport.current_samples_per_channel = snapshot_.current_samples_per_channel;
+    return transport;
+}
 std::string PlaybackEngine::last_error() const { std::lock_guard<std::mutex> lock(state_mutex_); return last_error_; }
 std::size_t PlaybackEngine::transport_buffer_milliseconds() const { return transport_buffer_milliseconds_; }
 

@@ -9,7 +9,7 @@
   <meta name="google-site-verification" content="LaX8w2fVCSqvaE7lpvXAm_Dbg1c70HW8lHM2qU0yz1k">
 
   <link rel="canonical" href="https://andreyberestov.github.io/pcm-transport/">
-  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="icon" type="image/png" href="icon.png">
 
   <meta property="og:type" content="website">
   <meta property="og:title" content="PCM Transport — Linux FLAC/WAV Player">
@@ -102,23 +102,8 @@
       width: clamp(42px, 6vw, 58px);
       height: clamp(42px, 6vw, 58px);
       flex: 0 0 auto;
-      border: 3px solid var(--accent);
-      border-radius: 16px;
-      background: #fff;
-      position: relative;
-      box-shadow: 0 6px 16px rgba(0,0,0,.04);
-    }
-
-    .brand-mark::before {
-      content: "";
-      position: absolute;
-      left: 38%;
-      top: 28%;
-      width: 0;
-      height: 0;
-      border-top: 11px solid transparent;
-      border-bottom: 11px solid transparent;
-      border-left: 17px solid var(--accent);
+      display: block;
+      object-fit: contain;
     }
 
     .brand-title h1 {
@@ -448,7 +433,7 @@
       <p class="eyebrow">Open-source Linux audio player</p>
 
       <div class="brand-title">
-        <span class="brand-mark" aria-hidden="true"></span>
+        <img class="brand-mark" src="icon.png" alt="" aria-hidden="true">
         <h1>PCM Transport</h1>
       </div>
 
@@ -513,7 +498,18 @@
           </svg>
         </div>
         <h3>Additional formats via FFmpeg</h3>
-        <p>Uses FFmpeg and FFprobe at runtime for MP3, M4A, AAC, OGG, OPUS, WAV, AIFF, APE, WV and selected legacy formats.</p>
+        <p>Uses FFmpeg and FFprobe at runtime for MP3/MP2, M4A/M4R, AAC, AC-3, DTS, OGG/OPUS/Speex, WAV/W64, AIFF, APE, WV and selected legacy formats.</p>
+      </div>
+
+      <div class="card">
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 32 32">
+            <path d="M7 8h18v16H7z"/>
+            <path d="M11 12h10M11 16h10M11 20h6"/>
+          </svg>
+        </div>
+        <h3>DSD to PCM conversion</h3>
+        <p>Detects DSF and DFF sources, including DST-compressed DFF, through FFprobe and converts them through the existing FFmpeg and SoXr path to configurable PCM rates and 16/24/32-bit output.</p>
       </div>
 
       <div class="card">
@@ -531,13 +527,38 @@
       <div class="card">
         <div class="feature-icon" aria-hidden="true">
           <svg viewBox="0 0 32 32">
+            <rect x="5" y="7" width="22" height="16" rx="3"/>
+            <path d="M10 27h12M16 23v4"/>
+            <path d="M11 12v6l5-3z"/>
+            <path d="M20 12h3M20 15h3M20 18h3"/>
+          </svg>
+        </div>
+        <h3>MPRIS desktop integration</h3>
+        <p>Desktop media controls, multimedia keys and cover art metadata. Initial implementation: <a href="https://github.com/loki1368">loki1368</a>.</p>
+      </div>
+
+      <div class="card">
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 32 32">
+            <rect x="6" y="5" width="20" height="17" rx="3"/>
+            <path d="M12 27h8M16 22v5"/>
+            <path d="M12 10h8v7h-8z"/>
+          </svg>
+        </div>
+        <h3>Linux desktop integration</h3>
+        <p>Embedded GTK window icons plus a desktop entry and hicolor icon set for optional system installation.</p>
+      </div>
+
+      <div class="card">
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 32 32">
             <path d="M6 10h8l4 6-4 6H6"/>
             <path d="M18 10h8v12h-8"/>
             <path d="M13 16h10"/>
           </svg>
         </div>
         <h3>Gapless-oriented playback</h3>
-        <p>Continuous CUE image playback, local M3U/M3U8 import and same-format file chaining are used where possible.</p>
+        <p>Continuous CUE image playback, local M3U/M3U8 import and same-format file chaining are used where possible. Legacy Windows-1251 text is normalized to UTF-8.</p>
       </div>
 
       <div class="card">
@@ -601,7 +622,7 @@
     <h2>Supported formats</h2>
     <p class="section-intro">
       Native FLAC playback is handled through libFLAC. Additional formats use FFmpeg and FFprobe at runtime.
-      Rare-format support depends on the local FFmpeg build.
+      DSF and DFF sources, including DST-compressed DFF, are converted to PCM; native DSD and DoP output are not used. W64, VOC and M4R are classified from the probed codec. Supported local audio paths may also be used by M3U/M3U8 and CUE. Rare-format support depends on the local FFmpeg build.
     </p>
 
     <div class="grid">
@@ -611,11 +632,11 @@
       </div>
       <div class="card">
         <h3>FFmpeg-backed lossless / PCM / containers</h3>
-        <p><code>*.aif</code>, <code>*.aiff</code>, <code>*.ape</code>, <code>*.wv</code>, <code>*.bwf</code>, <code>*.au</code>, <code>*.snd</code>, <code>*.caf</code>, <code>*.tak</code>, <code>*.tta</code></p>
+        <p><code>*.aif</code>, <code>*.aiff</code>, <code>*.ape</code>, <code>*.wv</code>, <code>*.w64</code>, <code>*.bwf</code>, <code>*.au</code>, <code>*.snd</code>, <code>*.caf</code>, <code>*.voc</code>, <code>*.tak</code>, <code>*.tta</code>, <code>*.dsf</code>, <code>*.dff</code></p>
       </div>
       <div class="card">
         <h3>FFmpeg-backed lossy</h3>
-        <p><code>*.mp3</code>, <code>*.m4a</code>, <code>*.aac</code>, <code>*.ogg</code>, <code>*.oga</code>, <code>*.opus</code>, <code>*.wma</code>, <code>*.asf</code>, <code>*.xwma</code>, <code>*.oma</code>, <code>*.aa3</code>, <code>*.at3</code>, <code>*.mpc</code>, <code>*.mp+</code>, <code>*.mpp</code></p>
+        <p><code>*.mp3</code>, <code>*.mp2</code>, <code>*.m4a</code>, <code>*.m4r</code>, <code>*.aac</code>, <code>*.ac3</code>, <code>*.dts</code>, <code>*.ogg</code>, <code>*.oga</code>, <code>*.opus</code>, <code>*.spx</code>, <code>*.ra</code>, <code>*.wma</code>, <code>*.asf</code>, <code>*.xwma</code>, <code>*.wmv</code>, <code>*.oma</code>, <code>*.aa3</code>, <code>*.at3</code>, <code>*.mpc</code>, <code>*.mp+</code>, <code>*.mpp</code></p>
       </div>
     </div>
 
@@ -690,13 +711,24 @@ cmake --build build -j</code></pre>
           <pre><code>./build/pcm_transport</code></pre>
         </div>
       </div>
+
+      <div class="build-row">
+        <div class="build-label">
+          <strong>Install</strong>
+          <span>Optional desktop integration</span>
+        </div>
+        <div class="build-content">
+          <pre><code>cmake --install build --prefix &lt;prefix&gt;</code></pre>
+          <p class="note">Installs the binary, desktop entry and hicolor icons. Running directly from <code>build</code> does not require installation.</p>
+        </div>
+      </div>
     </div>
 
     <p class="note">
       Runtime dependencies include ALSA, GTK 3, libFLAC, FFmpeg and FFprobe. RTKit is optional for realtime audio-thread priority. pkexec/setcap is optional for persistent cap_sys_nice permission.
       Native FLAC playback can work without FFmpeg. FFmpeg/FFprobe are required for external formats, metadata probing and conversion paths.
       RTKit support uses GLib/GIO D-Bus from GTK 3 and does not add a separate build dependency. Persistent realtime permission uses pkexec/setcap cap_sys_nice and requires restart.
-      Selected FFmpeg-backed legacy formats include AU/SND, BWF, CAF, TAK, TTA, WMA, ATRAC and MPC.
+      Selected FFmpeg-backed formats include W64, MP2, M4R, AC3, DTS, Speex, VOC, RealAudio, AU/SND, BWF, CAF, TAK, TTA, WMA/WMV, ATRAC and MPC. DSF and DFF sources, including DST-compressed DFF, use configurable PCM conversion through FFmpeg and SoXr.
     </p>
 
     <h2>Project goals</h2>

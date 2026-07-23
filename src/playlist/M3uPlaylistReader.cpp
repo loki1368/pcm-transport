@@ -11,6 +11,8 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "pcmtp/util/TextEncoding.hpp"
+
 namespace pcmtp {
 namespace {
 
@@ -171,7 +173,7 @@ std::string read_playlist_text(const std::string& path) {
     }
     std::ostringstream ss;
     ss << input.rdbuf();
-    return ss.str();
+    return pcmtp::text::normalize_text_file_bytes(ss.str());
 }
 
 bool parse_extinf_line(const std::string& line, int* duration_seconds, std::string* title, std::string* artist) {
@@ -211,12 +213,7 @@ bool parse_extinf_line(const std::string& line, int* duration_seconds, std::stri
 }
 
 std::vector<M3uPlaylistEntry> parse_playlist_text(const std::string& playlist_path, const std::string& text) {
-    std::string normalized = text;
-    if (normalized.size() >= 3 && static_cast<unsigned char>(normalized[0]) == 0xEF &&
-        static_cast<unsigned char>(normalized[1]) == 0xBB &&
-        static_cast<unsigned char>(normalized[2]) == 0xBF) {
-        normalized.erase(0, 3);
-    }
+    const std::string normalized = pcmtp::text::normalize_text_file_bytes(text);
 
     std::vector<M3uPlaylistEntry> entries;
     M3uPlaylistEntry pending{};

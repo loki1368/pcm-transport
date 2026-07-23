@@ -2,10 +2,10 @@
 
 Цель: держать форк с кастомными фичами, периодически подтягивая `main` (upstream), с **минимальными конфликтами** при merge.
 
-Текущее состояние (`main` → `my_patches`, ориентир на июль 2026):
-- ~4900 строк diff в 22 файлах.
-- Уже вынесено в отдельные модули: `session/`, `stream/`, `util/MediaUri`, большая часть `mpris/`.
-- Основной долг: `GtkPlayerWindow.cpp` (+~2400 строк), затем `ExternalAudioDecoder.cpp` (+~360), `M3uPlaylistReader.cpp` (+~200).
+Текущее состояние (после merge upstream 0.9.110, июль 2026):
+- `main` = upstream `3011cae` (MPRIS, MediaProbe, DSD, desktop integration).
+- `my_patches` = merge upstream + форковые фичи (стримы, session, playlist search).
+- MPRIS **в апстриме** (~400 строк в `GtkPlayerWindow`); форк добавляет ~30–50 строк патчей.
 
 Целевое состояние: апстримные файлы меняются **тонко** (glue, hooks, factory); логика фич — в `include/pcmtp/patches/` + `src/patches/`.
 
@@ -73,17 +73,26 @@
 
 **Оценка:** −350…450 строк.
 
-### Фаза 3 — MPRIS bridge
+### Фаза 3 — MPRIS: минимальные патчи (пересмотрено 2026-07-23)
 
-**Новый класс:** `MprisPlayerBridge` (`patches/MprisPlayerBridge.hpp/.cpp`)
+**Решение:** MPRIS принят в upstream (`GtkPlayerWindow` + `MprisService`). Вынос в `MprisPlayerBridge` **отменён** — конфликтует с апстримом.
 
-Забирает из `GtkPlayerWindow`:
-- `setup_mpris`, все `mpris_*`, `build_mpris_state`, cover cache
-- `notify_mpris_state_changed`, `mark_mpris_track_changed`
+**Форковые патчи** (держать в `GtkPlayerWindow` с `// PATCH: stream-mpris`):
 
-`MprisService` остаётся низкоуровневым D-Bus слоем (можно оставить общим с upstream).
+| Патч | Где |
+|------|-----|
+| `update_playlist_selection_from_ui()` в play/next/prev | `setup_mpris` |
+| ICY title в `build_mpris_state` | `stream_now_playing_` |
+| URL/cover для стримов | `build_mpris_state` |
+| `validate_mpris_open_uri` + http/icy | `mpris_open_uri` |
+| Media keys (`handle_media_key`) | `GtkPlayerWindow` |
 
-**Оценка:** −450…550 строк.
+**Форковые патчи в `MprisService.cpp`** (кандидат на PR в upstream):
+
+- `dispatch_on_main_context` — D-Bus → GTK main thread
+- `SupportedUriSchemes`: `file, http, https`
+
+**Статус:** патчи сохранены при merge upstream 0.9.110.
 
 ### Фаза 4 — декодер потоков
 
