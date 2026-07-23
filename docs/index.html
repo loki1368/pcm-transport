@@ -487,7 +487,7 @@
           </svg>
         </div>
         <h3>Native FLAC playback</h3>
-        <p>Uses libFLAC for native FLAC decoding and FFmpeg / FFprobe for additional formats.</p>
+        <p>Native FLAC decoding via libFLAC</p>
       </div>
 
       <div class="card">
@@ -498,18 +498,7 @@
           </svg>
         </div>
         <h3>Additional formats via FFmpeg</h3>
-        <p>Uses FFmpeg and FFprobe at runtime for MP3/MP2, M4A/M4R, AAC, AC-3, DTS, OGG/OPUS/Speex, WAV/W64, AIFF, APE, WV and selected legacy formats.</p>
-      </div>
-
-      <div class="card">
-        <div class="feature-icon" aria-hidden="true">
-          <svg viewBox="0 0 32 32">
-            <path d="M7 8h18v16H7z"/>
-            <path d="M11 12h10M11 16h10M11 20h6"/>
-          </svg>
-        </div>
-        <h3>DSD to PCM conversion</h3>
-        <p>Detects DSF and DFF sources, including DST-compressed DFF, through FFprobe and converts them through the existing FFmpeg and SoXr path to configurable PCM rates and 16/24/32-bit output.</p>
+        <p>MP3, AAC, OGG, WAV, AIFF, APE, WV, DSF/DFF and more via FFmpeg</p>
       </div>
 
       <div class="card">
@@ -521,7 +510,7 @@
           </svg>
         </div>
         <h3>Direct ALSA output</h3>
-        <p>Designed for Linux playback with GTK 3 and ALSA, without requiring a mandatory PulseAudio or PipeWire layer.</p>
+        <p>Native Linux playback with GTK 3 and ALSA — no PulseAudio or PipeWire required.</p>
       </div>
 
       <div class="card">
@@ -540,39 +529,13 @@
       <div class="card">
         <div class="feature-icon" aria-hidden="true">
           <svg viewBox="0 0 32 32">
-            <rect x="6" y="5" width="20" height="17" rx="3"/>
-            <path d="M12 27h8M16 22v5"/>
-            <path d="M12 10h8v7h-8z"/>
-          </svg>
-        </div>
-        <h3>Linux desktop integration</h3>
-        <p>Embedded GTK window icons plus a desktop entry and hicolor icon set for optional system installation.</p>
-      </div>
-
-      <div class="card">
-        <div class="feature-icon" aria-hidden="true">
-          <svg viewBox="0 0 32 32">
             <path d="M6 10h8l4 6-4 6H6"/>
             <path d="M18 10h8v12h-8"/>
             <path d="M13 16h10"/>
           </svg>
         </div>
         <h3>Gapless-oriented playback</h3>
-        <p>Continuous CUE image playback, local M3U/M3U8 import and same-format file chaining are used where possible. Legacy Windows-1251 text is normalized to UTF-8.</p>
-      </div>
-
-      <div class="card">
-        <div class="feature-icon" aria-hidden="true">
-          <svg viewBox="0 0 32 32">
-            <circle cx="7" cy="16" r="3"/>
-            <circle cx="16" cy="8" r="3"/>
-            <circle cx="25" cy="16" r="3"/>
-            <circle cx="16" cy="24" r="3"/>
-            <path d="M10 15l4-5M18 10l5 5M23 17l-5 5M14 22l-4-5"/>
-          </svg>
-        </div>
-        <h3>Transparent signal path</h3>
-        <p>Shows the active playback chain, format and processing state.</p>
+        <p>Continuous CUE image playback, local M3U/M3U8 import and same-format file chaining where possible.</p>
       </div>
 
       <div class="card">
@@ -585,44 +548,25 @@
           </svg>
         </div>
         <h3>DSP Studio</h3>
-        <p>Includes bass/treble, Deep Bass, soft volume, Pre-EQ Headroom and optional processing rules.</p>
+        <p>Bass/Treble controls, Deep Bass and optional processing rules.</p>
       </div>
 
-      <div class="card">
-        <div class="feature-icon" aria-hidden="true">
-          <svg viewBox="0 0 32 32">
-            <path d="M7 24V14M13 24V10M19 24V6M25 24V17"/>
-            <path d="M5 24h22"/>
-            <path d="M8 7l5 3 6-5 5 4"/>
-          </svg>
-        </div>
-        <h3>Diagnostics and indicators</h3>
-        <p>Provides level metering, clip detection, active ALSA output reporting, ALSA device probing and bit-perfect testing.</p>
-      </div>
     </div>
 
     <h2>Why another Linux audio player?</h2>
     <div class="text-panel">
       <p>
-        PCM Transport is built for users who want a small Linux FLAC player with a visible signal path,
-        native libFLAC decoding, direct ALSA output, CUE support, gapless-oriented playback and optional DSP that can be fully bypassed.
+        PCM Transport is a focused, lightweight FLAC player for Linux — direct ALSA output, native libFLAC decoding, CUE/gapless support, and optional DSP that can be fully bypassed.
       </p>
       <p>
-        The goal is not to replace large music library managers. PCM Transport is closer to a focused
-        playback tool for local lossless audio: simple controls, honest runtime reporting and a clear
-        distinction between native playback, conversion paths and optional processing.
-      </p>
-      <p>
-        It may be useful for Linux users interested in a lightweight open-source audio player,
-        an ALSA-based FLAC player, a GTK desktop player, or a compact tool for experimenting with
-        transparent DSP and playback diagnostics.
+        Not a music library manager, just honest playback with a visible signal path.
       </p>
     </div>
 
     <h2>Supported formats</h2>
     <p class="section-intro">
       Native FLAC playback is handled through libFLAC. Additional formats use FFmpeg and FFprobe at runtime.
-      DSF and DFF sources, including DST-compressed DFF, are converted to PCM; native DSD and DoP output are not used. W64, VOC and M4R are classified from the probed codec. Supported local audio paths may also be used by M3U/M3U8 and CUE. Rare-format support depends on the local FFmpeg build.
+      DSF and DFF sources, including DST-compressed DFF, are converted to PCM; native DSD and DoP output are not used. Rare-format support depends on the local FFmpeg build.
     </p>
 
     <div class="grid">
@@ -725,16 +669,14 @@ cmake --build build -j</code></pre>
     </div>
 
     <p class="note">
-      Runtime dependencies include ALSA, GTK 3, libFLAC, FFmpeg and FFprobe. RTKit is optional for realtime audio-thread priority. pkexec/setcap is optional for persistent cap_sys_nice permission.
-      Native FLAC playback can work without FFmpeg. FFmpeg/FFprobe are required for external formats, metadata probing and conversion paths.
-      RTKit support uses GLib/GIO D-Bus from GTK 3 and does not add a separate build dependency. Persistent realtime permission uses pkexec/setcap cap_sys_nice and requires restart.
-      Selected FFmpeg-backed formats include W64, MP2, M4R, AC3, DTS, Speex, VOC, RealAudio, AU/SND, BWF, CAF, TAK, TTA, WMA/WMV, ATRAC and MPC. DSF and DFF sources, including DST-compressed DFF, use configurable PCM conversion through FFmpeg and SoXr.
+      Dependencies: ALSA, GTK 3, libFLAC, FFmpeg and FFprobe.
+      Native FLAC works without FFmpeg. FFmpeg adds support for MP3, AAC, OGG, WAV, AIFF, APE, DSF/DFF and more.
+      Realtime audio priority is optional (via RTKit or cap_sys_nice).
     </p>
 
     <h2>Project goals</h2>
     <p>
-      The project is developed as a small, understandable and conservative Linux player:
-      stable playback first, transparent signal path, predictable DSP behavior, ALSA diagnostics and no hidden processing.
+      A small, understandable Linux player focused on stability, transparent signal path and predictable DSP.
     </p>
 
     <h2>Source code</h2>

@@ -29,23 +29,15 @@ Website: https://andreyberestov.github.io/pcm-transport/
 - GTK 3 desktop interface
 - Direct ALSA output
 - Native FLAC decoding through libFLAC
-- Runtime FFmpeg / FFprobe support for MP3/MP2, M4A/M4R, AAC, AC-3, DTS, OGG/OPUS/Speex, WAV/W64, AIFF/AIF, APE, WV and selected legacy formats
+- Runtime FFmpeg/FFprobe support for MP3, M4A, AAC, OGG, WAV, AIFF, APE, WV and other formats
 - CUE support, including continuous CUE image playback
 - Local M3U / M3U8 playlist import
-- UTF-8 and Windows-1251 normalization for legacy CUE, playlist and tag text
-- Optional restoration of the last successfully opened sources
-- Immediate playlist display with sequential background metadata loading
+- UTF-8 and Windows-1251 normalization for legacy metadata
 - Same-format gapless playback where possible
 - Optional SoXr resampling and bit-depth rules
-- Configurable DSD-to-PCM conversion through FFmpeg and SoXr with 44.1/48 kHz family presets and 16/24/32-bit PCM output
-- Baxandall-style Bass / Treble controls
-- Deep Bass with Reference and Punch presets
-- Soft volume, Pre-EQ Headroom, level meter and clip indicator
-- Classic scalar ALSA write path
-- FLAC bit-perfect test
-- Active ALSA output report, ALSA device probe, 24-bit container preference and optional realtime priority
-- MPRIS desktop integration with multimedia keys and cover art metadata (initial implementation: [@loki1368](https://github.com/loki1368))
-- Branded GTK and Linux desktop integration with embedded window icons, desktop entry and hicolor install assets
+- Baxandall-style Bass/Treble controls and Deep Bass presets
+- MPRIS integration (media keys, cover art) — initial work by [@loki1368](https://github.com/loki1368), further refined
+
 
 ---
 
@@ -112,16 +104,10 @@ FFmpeg-backed formats require `ffmpeg` and `ffprobe` at runtime. Rare-format sup
 
 ## Playback notes
 
-- DSF and DFF sources, including DST-compressed DFF, are detected by FFprobe codec metadata and converted to PCM; native DSD and DoP output are not used.
-- Native FLAC is used when no Processing Rules are applied.
-- ALAC in M4A or M4R is decoded through FFmpeg.
-- W64, VOC and M4R are classified as lossless or lossy from the probed codec rather than the container extension alone.
-- Supported audio files may be referenced by local M3U/M3U8 playlists and by CUE sheets where the CUE layout is meaningful for that source.
-- Selected FFmpeg-backed formats include W64, MP2, M4R, AC3, DTS, Speex, VOC, RealAudio, AU/SND, BWF, CAF, TAK, TTA, WMA/WMV, ATRAC and MPC.
-- FFmpeg is used for external formats and conversion paths.
-- DSP is bypassed when Bass/Treble are neutral, volume is 100%, Pre-EQ Headroom is 0 dB, and Deep Bass is off.
-- The main display shows the active playback path.
 - For the cleanest ALSA path, select a direct `hw:X,Y` device and avoid forced conversion rules.
+- DSP is bypassed when Bass/Treble are neutral, volume is 100%, Pre-EQ Headroom is 0 dB, and Deep Bass is off.
+- Native FLAC is used when no Processing Rules are applied.
+- DSD sources (DSF/DFF) are played via PCM conversion; native DSD output is not available.
 
 ---
 
