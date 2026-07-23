@@ -220,6 +220,7 @@ struct GtkPlayerWindow::SessionDelegate final : PlaylistSessionController::Deleg
         self->select_playlist_row(self->current_track_index_);
         self->track_switch_in_progress_ = false;
         self->finish_handled_ = true;
+        self->update_loading_controls();
         self->refresh_display();
         self->mark_mpris_track_changed();
     }

@@ -2588,13 +2588,13 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     refresh_device_list();
     refresh_dsp_info_for_current_device();
     refresh_display();
-    update_loading_controls();
     ui_timer_id_ = g_timeout_add(kUiRefreshIntervalMs, GtkPlayerWindow::on_timer_tick, this);
     setup_media_keys(app);
     setup_mpris();
 
     gtk_widget_show_all(window_);
     restore_playlist_session();
+    update_loading_controls();
     schedule_last_sources_restore();
 }
 
@@ -6072,11 +6072,13 @@ void GtkPlayerWindow::refresh_display(bool update_text, bool update_progress, bo
             const PlaylistEntry& track = playlist_[current_track_index_];
             const std::uint64_t track_length = track_length_samples(track);
             const std::uint64_t track_position = current_track_position_from_status(status);
-            if (track_length > 0) {
+            if (track.patch.is_stream) {
+                time_text = format_time(track_position, track.decoded_format.sample_rate) + " / LIVE";
+            } else if (track_length > 0) {
                 display_progress_ratio_ = std::max(0.0, std::min(1.0, static_cast<double>(track_position) / static_cast<double>(track_length)));
+                time_text = format_time(track_position, track.decoded_format.sample_rate) +
+                            " / " + format_time(track_length, track.decoded_format.sample_rate);
             }
-            time_text = format_time(track_position, track.decoded_format.sample_rate) +
-                        " / " + format_time(track_length, track.decoded_format.sample_rate);
         }
         display_time_text_ = time_text;
         if (display_time_ != nullptr) {
@@ -6126,36 +6128,7 @@ void GtkPlayerWindow::refresh_display(bool update_text, bool update_progress, bo
         const std::string ext = lower_extension(track.audio_file_path);
         track_text = "Track " + std::to_string(track.track_number) + ": " + display_title_for(track);
 
-        std::string source_name = "File";
-        if (ext == ".flac") source_name = "FLAC";
-        else if (ext == ".wav" || ext == ".wave") source_name = "WAV";
-        else if (ext == ".bwf") source_name = "BWF";
-        else if (ext == ".au" || ext == ".snd") source_name = "AU/SND";
-        else if (ext == ".caf") source_name = "CAF";
-        else if (ext == ".aiff" || ext == ".aif") source_name = "AIFF";
-        else if (ext == ".ape") source_name = "APE";
-        else if (ext == ".wv") source_name = "WavPack";
-        else if (ext == ".w64") source_name = "W64";
-        else if (ext == ".voc") source_name = "VOC";
-        else if (ext == ".ra") source_name = "RA";
-        else if (ext == ".m4a") source_name = "M4A";
-        else if (ext == ".m4r") source_name = "M4R";
-        else if (ext == ".aac") source_name = "AAC";
-        else if (ext == ".mp2") source_name = "MP2";
-        else if (ext == ".ac3") source_name = "AC3";
-        else if (ext == ".dts") source_name = "DTS";
-        else if (ext == ".ogg" || ext == ".oga") source_name = "OGG";
-        else if (ext == ".opus") source_name = "OPUS";
-        else if (ext == ".spx") source_name = "SPX";
-        else if (ext == ".tak") source_name = "TAK";
-        else if (ext == ".tta") source_name = "TTA";
-        else if (ext == ".wmv") source_name = "WMV";
-        else if (ext == ".wma" || ext == ".asf" || ext == ".xwma") source_name = "WMA";
-        else if (ext == ".oma" || ext == ".aa3" || ext == ".at3") source_name = "ATRAC";
-        else if (ext == ".mpc" || ext == ".mp+" || ext == ".mpp") source_name = "MPC";
-        else if (ext == ".dsf") source_name = "DSF";
-        else if (ext == ".dff") source_name = "DFF";
-        else if (ext == ".mp3") source_name = "MP3";
+        const std::string source_name = media_source_summary(track);
         const std::uint32_t effective_target_rate = output_sample_rate_for_entry(track);
         const std::uint16_t effective_target_bits = output_bits_for_entry(track);
         const bool effective_resampled = (effective_target_rate > 0 && effective_target_rate != track.source_sample_rate);
