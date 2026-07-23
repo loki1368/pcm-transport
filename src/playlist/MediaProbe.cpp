@@ -21,10 +21,6 @@ std::string lower_extension(const std::string& path) {
     return extension;
 }
 
-bool is_wav_extension(const std::string& extension) {
-    return extension == ".wav" || extension == ".wave" || extension == ".bwf";
-}
-
 void fill_result_from_external_info(const ExternalAudioInfo& info, MediaProbeResult* result) {
     result->format = info.format;
     result->total_samples_per_channel = info.total_samples_per_channel;
@@ -73,47 +69,6 @@ MediaProbeResult probe_media_file(const std::string& path,
         result.error = "unknown metadata probe error";
     }
     return result;
-}
-
-bool try_probe_media_file_fast(const std::string& path, MediaProbeResult* out_result) {
-    if (out_result == nullptr) {
-        return false;
-    }
-    *out_result = MediaProbeResult{};
-
-    const std::string extension = lower_extension(path);
-    if (extension == ".flac") {
-        const FlacFileProbe flac_probe = FlacStreamDecoder::probe_file(path);
-        if (!flac_probe.valid) {
-            return false;
-        }
-        out_result->format = flac_probe.format;
-        out_result->total_samples_per_channel = flac_probe.total_samples_per_channel;
-        out_result->tags.title = flac_probe.tags.title;
-        out_result->tags.artist = flac_probe.tags.artist;
-        out_result->tags.track_number = flac_probe.tags.track_number;
-        out_result->codec_name = "flac";
-        out_result->native_decode = true;
-        out_result->lossless = true;
-        out_result->success = true;
-        return true;
-    }
-
-    if (!is_wav_extension(extension)) {
-        return false;
-    }
-
-    ExternalAudioInfo wav_info;
-    if (!ExternalAudioDecoder::try_probe_wav_metadata_fast(path, &wav_info)) {
-        return false;
-    }
-    fill_result_from_external_info(wav_info, out_result);
-    if (out_result->format.sample_rate == 0 || out_result->format.channels == 0) {
-        *out_result = MediaProbeResult{};
-        return false;
-    }
-    out_result->success = true;
-    return true;
 }
 
 } // namespace pcmtp

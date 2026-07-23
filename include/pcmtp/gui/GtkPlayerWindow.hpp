@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <cstdint>
 #include <string>
@@ -175,7 +176,6 @@ private:
     bool complete_metadata_probe_path(std::uint64_t generation,
                                     const std::string& path,
                                     const MediaProbeResult& result);
-    bool try_fast_playlist_entry_metadata(std::size_t index);
     bool prepare_track_for_playback(std::size_t index);
     void prioritize_metadata_probe(const std::string& path);
     void set_pending_metadata_playback(std::size_t index,
@@ -201,6 +201,9 @@ private:
     void finalize_loaded_playlist(bool rebuild_view = true);
     void schedule_last_sources_restore();
     void start_current_track(bool restart_if_paused = true);
+    void halt_active_transport(bool clear_pending_state);
+    void remap_playlist_indices_after_failed_removal(
+        const std::vector<std::optional<std::size_t>>& index_remap);
     void stop_playback();
     void play_track_index(std::size_t index);
     void play_track_index_at_offset(std::size_t index,
