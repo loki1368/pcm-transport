@@ -19,9 +19,11 @@
 #include "pcmtp/core/PlaybackEngine.hpp"
 #include "pcmtp/cue/CueParser.hpp"
 #include "pcmtp/decoder/ExternalAudioDecoder.hpp"
+#include "pcmtp/patches/PlaylistSearchController.hpp"
 #include "pcmtp/patches/PlaylistSessionController.hpp"
 #include "pcmtp/patches/PatchTrackExtensions.hpp"
 #include "pcmtp/patches/StreamPlaybackManager.hpp"
+#include "pcmtp/patches/StreamPlaylistGlue.hpp"
 #include "pcmtp/decoder/GaplessChainDecoder.hpp"
 #include "pcmtp/dsp/AlsaControlBridge.hpp"
 #include "pcmtp/hardware/CardProfileRegistry.hpp"
@@ -31,7 +33,43 @@
 
 namespace pcmtp {
 
+class GtkPlayerWindow;
+class StreamPlaylistGlue;
+
+namespace patches {
+void handle_media_play(GtkPlayerWindow* window);
+void handle_media_pause(GtkPlayerWindow* window);
+void handle_media_stop(GtkPlayerWindow* window);
+void handle_media_next(GtkPlayerWindow* window);
+void handle_media_previous(GtkPlayerWindow* window);
+void handle_media_play_pause(GtkPlayerWindow* window);
+bool handle_media_key(GtkPlayerWindow* window, guint keyval);
+void run_open_audio_dialog(GtkPlayerWindow& window);
+void update_current_track_from_playlist_ui(GtkPlayerWindow& window, int index_column);
+void save_playlist_session(GtkPlayerWindow& window);
+bool restore_playlist_session(GtkPlayerWindow& window);
+void apply_fork_mpris_action_patches(GtkPlayerWindow& window, MprisService::Actions& actions);
+gboolean on_playlist_focus_in(GtkWidget* widget, GdkEventFocus* event, gpointer user_data);
+gboolean on_playlist_view_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data);
+} // namespace patches
+
 class GtkPlayerWindow {
+    friend class StreamPlaylistGlue;
+    friend void patches::handle_media_play(GtkPlayerWindow* window);
+    friend void patches::handle_media_pause(GtkPlayerWindow* window);
+    friend void patches::handle_media_stop(GtkPlayerWindow* window);
+    friend void patches::handle_media_next(GtkPlayerWindow* window);
+    friend void patches::handle_media_previous(GtkPlayerWindow* window);
+    friend void patches::handle_media_play_pause(GtkPlayerWindow* window);
+    friend bool patches::handle_media_key(GtkPlayerWindow* window, guint keyval);
+    friend void patches::run_open_audio_dialog(GtkPlayerWindow& window);
+    friend void patches::update_current_track_from_playlist_ui(GtkPlayerWindow& window, int index_column);
+    friend void patches::save_playlist_session(GtkPlayerWindow& window);
+    friend bool patches::restore_playlist_session(GtkPlayerWindow& window);
+    friend void patches::apply_fork_mpris_action_patches(GtkPlayerWindow& window, MprisService::Actions& actions);
+    friend gboolean patches::on_playlist_focus_in(GtkWidget* widget, GdkEventFocus* event, gpointer user_data);
+    friend gboolean patches::on_playlist_view_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data);
+
 public:
     struct ResampleRule {
         std::uint32_t from_rate = 0;
@@ -54,7 +92,6 @@ public:
 
     void show();
 
-private:
     enum class MetadataState {
         Pending,
         Ready,
@@ -100,6 +137,10 @@ private:
         bool normalization_matches_current = false;
     };
 
+private:
+    void initialize_patch_subsystems();
+    void finish_initialization_after_patch_subsystems();
+
     struct MetadataProbeJob {
         std::uint64_t generation = 0;
         std::string path;
@@ -140,18 +181,6 @@ private:
                                           GtkTreePath* path,
                                           GtkTreeViewColumn* column,
                                           gpointer user_data);
-    static void on_playlist_search_changed(GtkEditable* editable, gpointer user_data);
-    static gboolean on_playlist_filter_visible(GtkTreeModel* model, GtkTreeIter* iter, gpointer user_data);
-    static gboolean on_playlist_view_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data);
-    static gboolean on_playlist_typeahead_clear_timeout(gpointer user_data);
-    static gboolean on_playlist_focus_in(GtkWidget* widget, GdkEventFocus* event, gpointer user_data);
-    static void on_media_play(GSimpleAction* action, GVariant* parameter, gpointer user_data);
-    static void on_media_pause(GSimpleAction* action, GVariant* parameter, gpointer user_data);
-    static void on_media_play_pause(GSimpleAction* action, GVariant* parameter, gpointer user_data);
-    static void on_media_stop(GSimpleAction* action, GVariant* parameter, gpointer user_data);
-    static void on_media_next(GSimpleAction* action, GVariant* parameter, gpointer user_data);
-    static void on_media_previous(GSimpleAction* action, GVariant* parameter, gpointer user_data);
-    static gboolean on_window_key_press(GtkWidget* widget, GdkEvent* event, gpointer user_data);
     static gboolean on_restore_last_sources_idle(gpointer user_data);
 
     void build_ui(GtkApplication* app);
@@ -174,19 +203,10 @@ private:
                                                const std::string& play_after_load_path = std::string());
     void finalize_loaded_playlist();
     void schedule_last_sources_restore();
-    void clear_playlist_search();
-    void reset_playlist_typeahead();
-    void apply_playlist_typeahead_selection();
-    void update_playlist_typeahead_popup();
     void append_media_to_playlist(const std::string& path,
                                   const std::string& hint_title = std::string(),
                                   const std::string& hint_artist = std::string(),
                                   bool defer_metadata_probe = false);
-    void append_stream_entry(const std::string& path,
-                             const std::string& hint_title = std::string(),
-                             const std::string& hint_artist = std::string());
-    void refresh_stream_health_rows_for_url(const std::string& url);
-    void handle_stream_probe_result(StreamPlaybackManager::ProbeResult result);
     void start_current_track(bool restart_if_paused = true);
     void stop_playback();
     void play_track_index(std::size_t index);
@@ -196,13 +216,6 @@ private:
                                     bool preserve_paused = false,
                                     bool update_mpris_track = true,
                                     bool skip_engine_stop = false);
-    void begin_async_stream_probe_and_play(std::size_t index,
-                                           std::uint64_t offset_samples,
-                                           bool preserve_paused,
-                                           bool update_mpris_track,
-                                           bool skip_engine_stop,
-                                           std::uint64_t probe_generation);
-    void apply_stream_probe_to_entry(PlaylistEntry& entry, const ExternalAudioInfo& info);
     std::size_t find_playlist_index_by_url(const std::string& url) const;
     void open_file_dialog();
     void open_settings_dialog();
@@ -328,15 +341,8 @@ private:
     GtkWidget* soft_volume_scale_ = nullptr;
     bool softvol_dragging_ = false;
     GtkListStore* playlist_store_ = nullptr;
-    GtkTreeModelFilter* playlist_filter_ = nullptr;
-    GtkWidget* playlist_search_entry_ = nullptr;
-    GtkWidget* playlist_typeahead_popup_ = nullptr;
-    GtkWidget* playlist_typeahead_entry_ = nullptr;
     GtkWidget* playlist_scrolled_ = nullptr;
     GtkWidget* playlist_view_ = nullptr;
-    std::string playlist_filter_text_;
-    std::string playlist_typeahead_text_;
-    guint playlist_typeahead_timeout_id_ = 0;
     GtkWidget* diagnostics_active_output_value_ = nullptr;
 
     PlaybackEngine engine_;
@@ -420,9 +426,15 @@ private:
     struct StreamDelegate;
     std::unique_ptr<StreamDelegate> stream_delegate_;
     std::unique_ptr<StreamPlaybackManager> stream_manager_;
+    struct StreamGlueDelegate;
+    std::unique_ptr<StreamGlueDelegate> stream_glue_delegate_;
+    std::unique_ptr<StreamPlaylistGlue> stream_glue_;
     struct SessionDelegate;
     std::unique_ptr<SessionDelegate> session_delegate_;
     std::unique_ptr<PlaylistSessionController> session_controller_;
+    struct SearchDelegate;
+    std::unique_ptr<SearchDelegate> search_delegate_;
+    std::unique_ptr<PlaylistSearchController> search_controller_;
 };
 
 } // namespace pcmtp

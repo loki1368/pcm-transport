@@ -49,10 +49,20 @@ add_custom_command(
 set_source_files_properties(${PCM_TRANSPORT_RESOURCE_SOURCE} PROPERTIES GENERATED TRUE)
 
 set(PCM_TRANSPORT_PATCH_SOURCES
+    src/patches/GtkPlayerFileChooserPatches.cpp
+    src/patches/GtkPlayerMediaKeys.cpp
+    src/patches/GtkPlayerWindowDelegates.cpp
     src/patches/M3uPlaylistExtensions.cpp
+    src/patches/MprisStreamPatches.cpp
+    src/patches/PlaylistSearchController.cpp
+    src/patches/PlaylistSelectionPatches.cpp
     src/patches/PlaylistSessionController.cpp
+    src/patches/PlaylistStreamViewPatches.cpp
     src/patches/StreamAudioDecoder.cpp
+    src/patches/StreamDecoderFactory.cpp
+    src/patches/StreamPlaybackHooks.cpp
     src/patches/StreamPlaybackManager.cpp
+    src/patches/StreamPlaylistGlue.cpp
     src/patches/StreamPlaylistUtils.cpp
 )
 

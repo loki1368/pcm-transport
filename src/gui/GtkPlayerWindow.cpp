@@ -1,5 +1,12 @@
 #include "pcmtp/gui/GtkPlayerWindow.hpp"
-#include "pcmtp/patches/PlaylistSessionController.hpp"
+#include "pcmtp/patches/GtkPlayerFileChooserPatches.hpp"
+#include "pcmtp/patches/GtkPlayerMediaKeys.hpp"
+#include "pcmtp/patches/MprisStreamPatches.hpp"
+#include "pcmtp/patches/MprisStreamPatches.hpp"
+#include "pcmtp/patches/PlaylistSelectionPatches.hpp"
+#include "pcmtp/patches/PlaylistStreamViewPatches.hpp"
+#include "pcmtp/patches/StreamDecoderFactory.hpp"
+#include "pcmtp/patches/StreamPlaybackHooks.hpp"
 #include "pcmtp/patches/StreamPlaybackManager.hpp"
 #include "pcmtp/patches/StreamPlaylistUtils.hpp"
 #include <climits>
@@ -54,8 +61,6 @@
 namespace pcmtp {
 
 namespace {
-
-constexpr int kMaxStreamReconnectAttempts = 5;
 
 constexpr int kClipIndicatorHoldMs = 700;
 constexpr gint kDialogOuterMargin = 14;
@@ -187,25 +192,6 @@ void install_default_application_icons() {
         g_object_unref(node->data);
     }
     g_list_free(icons);
-}
-
-std::string path_from_mpris_uri(const std::string& uri) {
-    if (uri.compare(0, 7, "file://") != 0) {
-        return {};
-    }
-
-    GError* error = nullptr;
-    gchar* path = g_filename_from_uri(uri.c_str(), nullptr, &error);
-    if (path == nullptr) {
-        if (error != nullptr) {
-            g_error_free(error);
-        }
-        return {};
-    }
-
-    const std::string result(path);
-    g_free(path);
-    return result;
 }
 
 std::string file_uri_for_path(const std::string& path) {
@@ -355,145 +341,6 @@ std::string find_cover_art_in_directory(const std::string& audio_file_path) {
     return candidates.front().path;
 }
 
-bool is_supported_media_path(const std::string& path) {
-    if (StreamAudioDecoder::is_stream_uri(path)) {
-        return true;
-    }
-    if (M3uPlaylistReader::looks_like_playlist_path(path) || CueParser::looks_like_cue_path(path)) {
-        return true;
-    }
-
-    const std::size_t dot = path.find_last_of('.');
-    if (dot == std::string::npos || dot + 1 >= path.size()) {
-        return false;
-    }
-
-    std::string ext = path.substr(dot);
-    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-
-    static const char* kSupportedExtensions[] = {
-        ".flac", ".mp3", ".mp2", ".wav", ".wave", ".w64", ".bwf", ".aiff", ".aif", ".au", ".snd", ".caf", ".voc", ".ra",
-        ".ape", ".wv", ".tak", ".tta", ".dsf", ".dff", ".m4a", ".m4r", ".aac", ".ac3", ".dts", ".ogg", ".oga", ".opus", ".spx",
-        ".wma", ".asf", ".xwma", ".wmv", ".oma", ".aa3", ".at3", ".mpc", ".mp+", ".mpp",
-    };
-    for (const char* supported : kSupportedExtensions) {
-        if (ext == supported) {
-            return true;
-        }
-    }
-    return false;
-}
-
-
-bool is_audio_file_path(const std::string& path) {
-    const std::size_t dot = path.find_last_of('.');
-    if (dot == std::string::npos || dot + 1 >= path.size()) {
-        return false;
-    }
-    std::string ext = path.substr(dot);
-    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    static const char* kAudioExtensions[] = {
-        ".flac", ".mp3", ".wav", ".wave", ".bwf", ".aiff", ".aif", ".au", ".snd", ".caf", ".ape", ".wv", ".tak",
-        ".tta", ".dsf", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".wma", ".asf", ".xwma", ".oma", ".aa3", ".at3",
-        ".mpc", ".mp+", ".mpp",
-    };
-    for (const char* supported : kAudioExtensions) {
-        if (ext == supported) return true;
-    }
-    return false;
-}
-
-std::string join_directory_entry(const std::string& directory, const char* name) {
-    if (directory.empty()) return name;
-    if (directory.back() == '/') return directory + name;
-    return directory + "/" + name;
-}
-
-std::string media_path_key(const std::string& path) {
-    std::string key = path;
-    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    return key;
-}
-
-void prefer_cue_over_audio_files(std::vector<std::string>* paths) {
-    if (paths == nullptr || paths->empty()) return;
-    std::unordered_set<std::string> audio_paths_from_cues;
-    for (const std::string& path : *paths) {
-        if (!CueParser::looks_like_cue_path(path)) continue;
-        try {
-            audio_paths_from_cues.insert(media_path_key(CueParser::resolve_audio_file_path(path)));
-        } catch (...) {}
-    }
-    if (audio_paths_from_cues.empty()) return;
-    paths->erase(std::remove_if(paths->begin(), paths->end(),
-        [&](const std::string& path) {
-            if (CueParser::looks_like_cue_path(path) || M3uPlaylistReader::looks_like_playlist_path(path)) return false;
-            if (!is_audio_file_path(path)) return false;
-            return audio_paths_from_cues.count(media_path_key(path)) != 0;
-        }), paths->end());
-}
-
-void collect_audio_files_recursive(const std::string& directory, std::vector<std::string>* out) {
-    if (out == nullptr) return;
-    DIR* dir = opendir(directory.c_str());
-    if (dir == nullptr) return;
-    struct DirEntry { std::string name; bool is_directory = false; };
-    std::vector<DirEntry> entries;
-    while (dirent* entry = readdir(dir)) {
-        if (entry->d_name[0] == '.' &&
-            (entry->d_name[1] == '\0' || (entry->d_name[1] == '.' && entry->d_name[2] == '\0'))) continue;
-        const std::string full_path = join_directory_entry(directory, entry->d_name);
-        struct stat st {};
-        if (stat(full_path.c_str(), &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) entries.push_back(DirEntry{entry->d_name, true});
-        else if (S_ISREG(st.st_mode) && (is_audio_file_path(full_path) || CueParser::looks_like_cue_path(full_path)))
-            entries.push_back(DirEntry{entry->d_name, false});
-    }
-    closedir(dir);
-    std::sort(entries.begin(), entries.end(), [](const DirEntry& a, const DirEntry& b) { return a.name < b.name; });
-    for (const DirEntry& entry : entries) {
-        const std::string full_path = join_directory_entry(directory, entry.name.c_str());
-        if (entry.is_directory) collect_audio_files_recursive(full_path, out);
-        else out->push_back(full_path);
-    }
-}
-
-gboolean file_chooser_open_filter(const GtkFileFilterInfo* filter_info, gpointer) {
-    if (filter_info == nullptr || filter_info->filename == nullptr || filter_info->filename[0] == '\0') return FALSE;
-    if (g_file_test(filter_info->filename, G_FILE_TEST_IS_DIR)) return TRUE;
-    return is_supported_media_path(filter_info->filename) ? TRUE : FALSE;
-}
-
-std::vector<std::string> collect_file_chooser_paths(GtkFileChooser* chooser) {
-    std::vector<std::string> paths;
-    if (chooser == nullptr) return paths;
-    GSList* uris = gtk_file_chooser_get_uris(chooser);
-    for (GSList* node = uris; node != nullptr; node = node->next) {
-        const char* uri = static_cast<const char*>(node->data);
-        if (uri == nullptr || *uri == '\0') { g_free(node->data); continue; }
-        GError* error = nullptr;
-        gchar* path = g_filename_from_uri(uri, nullptr, &error);
-        if (path != nullptr) { paths.emplace_back(path); g_free(path); }
-        else if (error != nullptr) g_error_free(error);
-        g_free(node->data);
-    }
-    g_slist_free(uris);
-    if (!paths.empty()) return paths;
-    GSList* filenames = gtk_file_chooser_get_filenames(chooser);
-    for (GSList* node = filenames; node != nullptr; node = node->next) {
-        char* filename = static_cast<char*>(node->data);
-        if (filename != nullptr && *filename != '\0') paths.emplace_back(filename);
-        g_free(filename);
-    }
-    g_slist_free(filenames);
-    if (!paths.empty()) return paths;
-    gchar* filename = gtk_file_chooser_get_filename(chooser);
-    if (filename != nullptr && *filename != '\0') { paths.emplace_back(filename); g_free(filename); }
-    return paths;
-}
-
 bool extension_is_lossless(const std::string& extension) {
     return extension == ".flac" || extension == ".wav" || extension == ".wave" ||
            extension == ".bwf" || extension == ".aiff" || extension == ".aif" ||
@@ -637,35 +484,6 @@ void update_log_path_tooltip(GtkWidget* entry) {
 
 
 
-std::string utf8_casefold_copy(const std::string& text) {
-    gchar* folded = g_utf8_casefold(text.c_str(), -1);
-    if (folded == nullptr) return text;
-    std::string result(folded);
-    g_free(folded);
-    return result;
-}
-
-bool utf8_contains_casefold(const std::string& haystack, const std::string& needle_folded) {
-    if (needle_folded.empty()) return true;
-    return utf8_casefold_copy(haystack).find(needle_folded) != std::string::npos;
-}
-
-bool utf8_starts_with_casefold(const std::string& haystack, const std::string& prefix_folded) {
-    if (prefix_folded.empty()) return true;
-    const std::string hay_folded = utf8_casefold_copy(haystack);
-    return hay_folded.size() >= prefix_folded.size() &&
-           hay_folded.compare(0, prefix_folded.size(), prefix_folded) == 0;
-}
-
-bool playlist_row_matches_typeahead(const char* artist, const char* title, const std::string& key_folded) {
-    const std::string artist_text = artist != nullptr ? artist : "";
-    const std::string title_text = title != nullptr ? title : "";
-    return utf8_starts_with_casefold(artist_text, key_folded) ||
-           utf8_starts_with_casefold(title_text, key_folded) ||
-           utf8_contains_casefold(artist_text, key_folded) ||
-           utf8_contains_casefold(title_text, key_folded);
-}
-
 std::string escape_pango_markup_text(const std::string& text) {
     std::string out;
     out.reserve(text.size() + 8);
@@ -688,77 +506,11 @@ enum PlaylistColumns {
     COL_ARTIST,
     COL_TITLE,
     COL_SOURCE,
-    COL_STREAM_BROKEN,
+    COL_STREAM_BROKEN = patches::playlist_stream_broken_column(),
     COL_COUNT
 };
 
 constexpr std::size_t kBulkPlaylistImportThreshold = 8;
-
-bool find_playlist_view_path_for_index(GtkTreeView* playlist_view, std::size_t index, GtkTreePath** out_path) {
-    if (out_path == nullptr || playlist_view == nullptr) return false;
-    *out_path = nullptr;
-    GtkTreeModel* model = gtk_tree_view_get_model(playlist_view);
-    if (model == nullptr) return false;
-    GtkTreeIter iter;
-    gboolean valid = gtk_tree_model_get_iter_first(model, &iter);
-    while (valid) {
-        int row_index = -1;
-        gtk_tree_model_get(model, &iter, COL_INDEX, &row_index, -1);
-        if (row_index >= 0 && static_cast<std::size_t>(row_index) == index) {
-            *out_path = gtk_tree_model_get_path(model, &iter);
-            return true;
-        }
-        valid = gtk_tree_model_iter_next(model, &iter);
-    }
-    return false;
-}
-
-
-void on_playlist_row_cell_data(GtkTreeViewColumn* column,
-                               GtkCellRenderer* cell,
-                               GtkTreeModel* model,
-                               GtkTreeIter* iter,
-                               gpointer user_data) {
-    GtkTreeView* view = GTK_TREE_VIEW(gtk_tree_view_column_get_tree_view(column));
-    GtkTreePath* path = gtk_tree_model_get_path(model, iter);
-    const int model_column = GPOINTER_TO_INT(user_data);
-    gboolean broken = FALSE;
-    gtk_tree_model_get(model, iter, COL_STREAM_BROKEN, &broken, -1);
-    GtkTreeSelection* selection = gtk_tree_view_get_selection(view);
-    gboolean selected = gtk_tree_selection_path_is_selected(selection, path);
-    gtk_tree_path_free(path);
-    const char* weight = (selected && !broken) ? "bold" : "normal";
-    const char* fg = broken ? "#c44" : (selected ? "#ffffff" : nullptr);
-    g_object_set(cell, "weight", PANGO_WEIGHT_NORMAL, "weight-set", FALSE, nullptr);
-    if (fg != nullptr) {
-        g_object_set(cell, "foreground", fg, "foreground-set", TRUE, nullptr);
-    } else {
-        g_object_set(cell, "foreground-set", FALSE, nullptr);
-    }
-    if (selected && !broken) {
-        g_object_set(cell, "weight", PANGO_WEIGHT_BOLD, "weight-set", TRUE, nullptr);
-    }
-    (void)model_column;
-}
-
-void on_playlist_selection_changed(GtkTreeSelection* selection, gpointer) {
-    GtkTreeModel* model = nullptr;
-    GtkTreeIter iter;
-    if (gtk_tree_selection_get_selected(selection, &model, &iter)) {
-        gtk_widget_queue_draw(GTK_WIDGET(gtk_tree_selection_get_tree_view(selection)));
-    }
-}
-
-void set_playlist_column_cell_styler(GtkTreeViewColumn* column, int model_column) {
-    GtkCellRenderer* renderer = nullptr;
-    GList* cells = gtk_cell_layout_get_cells(GTK_CELL_LAYOUT(column));
-    if (cells != nullptr) renderer = GTK_CELL_RENDERER(cells->data);
-    g_list_free(cells);
-    if (renderer != nullptr) {
-        gtk_tree_view_column_set_cell_data_func(column, renderer, on_playlist_row_cell_data,
-                                                GINT_TO_POINTER(model_column), nullptr);
-    }
-}
 
 GtkWidget* create_symbolic_button(const char* primary_icon,
                                   const char* fallback_icon,
@@ -1180,80 +932,6 @@ bool lossy_gapless_entry(const std::string& family, const std::string& path) {
     }
     return family == "mp3" || family == "vorbis" || family == "opus";
 }
-
-std::string codec_display_name(const std::string& codec_name) {
-    if (codec_name.empty()) {
-        return "File";
-    }
-    if (codec_name == "stream") return "Stream";
-    if (codec_name == "hls") return "HLS";
-    if (codec_name == "mp3") return "MP3";
-    if (codec_name == "flac") return "FLAC";
-    if (codec_name == "aac") return "AAC";
-    if (codec_name == "vorbis") return "Vorbis";
-    if (codec_name == "opus") return "Opus";
-    if (codec_name == "alac") return "ALAC";
-    if (codec_name == "ape") return "APE";
-    if (codec_name == "wavpack") return "WavPack";
-    if (codec_name == "tta") return "TTA";
-    if (codec_name == "tak") return "TAK";
-    std::string out = codec_name;
-    if (!out.empty()) {
-        out[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(out[0])));
-    }
-    return out;
-}
-
-std::string codec_label_for_entry(const std::string& codec_name, const std::string& path) {
-    if (!codec_name.empty()) {
-        if (codec_name.size() >= 4 && codec_name.compare(0, 4, "pcm_") == 0) {
-            const std::string ext = lower_extension(path);
-            if (ext == ".wav" || ext == ".wave") return "WAV";
-            if (ext == ".bwf") return "BWF";
-            if (ext == ".aiff" || ext == ".aif") return "AIFF";
-            if (ext == ".au" || ext == ".snd") return "AU/SND";
-            if (ext == ".caf") return "CAF";
-            return "PCM";
-        }
-        return codec_display_name(codec_name);
-    }
-
-    const std::string ext = lower_extension(path);
-    if (ext == ".flac") return "FLAC";
-    if (ext == ".wav" || ext == ".wave") return "WAV";
-    if (ext == ".bwf") return "BWF";
-    if (ext == ".au" || ext == ".snd") return "AU/SND";
-    if (ext == ".caf") return "CAF";
-    if (ext == ".aiff" || ext == ".aif") return "AIFF";
-    if (ext == ".ape") return "APE";
-    if (ext == ".wv") return "WavPack";
-    if (ext == ".m4a") return "M4A";
-    if (ext == ".aac") return "AAC";
-    if (ext == ".ogg" || ext == ".oga") return "OGG";
-    if (ext == ".opus") return "OPUS";
-    if (ext == ".tak") return "TAK";
-    if (ext == ".tta") return "TTA";
-    if (ext == ".wma" || ext == ".asf" || ext == ".xwma") return "WMA";
-    if (ext == ".oma" || ext == ".aa3" || ext == ".at3") return "ATRAC";
-    if (ext == ".mpc" || ext == ".mp+" || ext == ".mpp") return "MPC";
-    if (ext == ".dsf") return "DSF";
-    if (ext == ".mp3") return "MP3";
-    return "File";
-}
-
-std::string channels_layout_label(std::uint16_t channels) {
-    if (channels == 1) {
-        return "mono";
-    }
-    if (channels == 2) {
-        return {};
-    }
-    if (channels > 0) {
-        return std::to_string(channels) + " ch";
-    }
-    return {};
-}
-
 
 std::string safe_utf8_for_display(const std::string& text_value) {
     if (text_value.empty() ||
@@ -2576,157 +2254,7 @@ void add_pcm_message_content(GtkWidget* content,
 
 } // namespace
 
-struct GtkPlayerWindow::StreamDelegate final : StreamPlaybackManager::Delegate {
-    GtkPlayerWindow* self = nullptr;
-
-    explicit StreamDelegate(GtkPlayerWindow* window) : self(window) {}
-
-    bool ui_closing() const override {
-        return self == nullptr || self->ui_closing_;
-    }
-
-    void on_now_playing_changed(const std::string& title) override {
-        (void)title;
-        if (self == nullptr || self->ui_closing_) {
-            return;
-        }
-        if (!self->playlist_.empty() && self->current_track_index_ < self->playlist_.size()) {
-            self->update_playlist_row(self->current_track_index_);
-        }
-        self->refresh_display();
-        self->notify_mpris_state_changed();
-    }
-
-    void on_status_override_changed() override {
-        if (self != nullptr && !self->ui_closing_) {
-            self->refresh_display();
-        }
-    }
-
-    void on_stream_health_changed(const std::string& url) override {
-        if (self != nullptr && !self->ui_closing_) {
-            self->refresh_stream_health_rows_for_url(url);
-        }
-    }
-
-    void on_probe_finished(StreamPlaybackManager::ProbeResult result) override {
-        if (self != nullptr) {
-            self->handle_stream_probe_result(std::move(result));
-        }
-    }
-
-    void on_reconnect_requested(std::size_t index) override {
-        if (self != nullptr && !self->ui_closing_) {
-            self->play_track_index(index);
-        }
-    }
-
-    std::size_t find_playlist_index_by_url(const std::string& url) const override {
-        return self != nullptr ? self->find_playlist_index_by_url(url) : static_cast<std::size_t>(-1);
-    }
-};
-
-PlaylistSessionEntryData GtkPlayerWindow::session_entry_data_from(const GtkPlayerWindow::PlaylistEntry& entry) {
-    PlaylistSessionEntryData data;
-    data.audio_file_path = entry.audio_file_path;
-    data.track_number = entry.track_number;
-    data.title = entry.title;
-    data.performer = entry.performer;
-    data.start_sample = entry.start_sample;
-    data.end_sample = entry.end_sample;
-    data.source_label = entry.source_label;
-    data.decoded_sample_rate = entry.decoded_format.sample_rate;
-    data.decoded_channels = entry.decoded_format.channels;
-    data.decoded_bits_per_sample = entry.decoded_format.bits_per_sample;
-    data.source_sample_rate = entry.source_sample_rate;
-    data.source_bits_per_sample = entry.source_bits_per_sample;
-    data.native_decode = entry.native_decode;
-    data.lossless_source = entry.lossless_source;
-    data.lossy_source = entry.lossy_source;
-    data.resampled = entry.resampled;
-    data.resampled_from_rate = entry.resampled_from_rate;
-    data.bitdepth_converted = entry.bitdepth_converted;
-    data.processed_by_ffmpeg = entry.processed_by_ffmpeg;
-    data.codec_name = entry.codec_name;
-    data.cue_track = entry.cue_track;
-    data.cue_album_end_sample = entry.cue_album_end_sample;
-    data.is_stream = entry.patch.is_stream;
-    return data;
-}
-
-GtkPlayerWindow::PlaylistEntry GtkPlayerWindow::playlist_entry_from(const PlaylistSessionEntryData& data) {
-    GtkPlayerWindow::PlaylistEntry entry;
-    entry.audio_file_path = data.audio_file_path;
-    entry.track_number = data.track_number;
-    entry.title = data.title;
-    entry.performer = data.performer;
-    entry.start_sample = data.start_sample;
-    entry.end_sample = data.end_sample;
-    entry.source_label = data.source_label;
-    entry.decoded_format.sample_rate = data.decoded_sample_rate;
-    entry.decoded_format.channels = data.decoded_channels;
-    entry.decoded_format.bits_per_sample = data.decoded_bits_per_sample;
-    entry.source_sample_rate = data.source_sample_rate;
-    entry.source_bits_per_sample = data.source_bits_per_sample;
-    entry.native_decode = data.native_decode;
-    entry.lossless_source = data.lossless_source;
-    entry.lossy_source = data.lossy_source;
-    entry.resampled = data.resampled;
-    entry.resampled_from_rate = data.resampled_from_rate;
-    entry.bitdepth_converted = data.bitdepth_converted;
-    entry.processed_by_ffmpeg = data.processed_by_ffmpeg;
-    entry.codec_name = data.codec_name;
-    entry.cue_track = data.cue_track;
-    entry.cue_album_end_sample = data.cue_album_end_sample;
-    entry.patch.is_stream = data.is_stream;
-    entry.metadata_state = MetadataState::Ready;
-    return entry;
-}
-
-struct GtkPlayerWindow::SessionDelegate final : PlaylistSessionController::Delegate {
-    GtkPlayerWindow* self = nullptr;
-
-    explicit SessionDelegate(GtkPlayerWindow* window) : self(window) {}
-
-    bool ui_closing() const override {
-        return self == nullptr || self->ui_closing_;
-    }
-
-    void apply_restored_session(const PlaylistSessionRestoreResult& result) override {
-        if (self == nullptr || self->ui_closing_) {
-            return;
-        }
-        self->playlist_.clear();
-        self->playlist_.reserve(result.entries.size());
-        for (const PlaylistSessionEntryData& data : result.entries) {
-            self->playlist_.push_back(playlist_entry_from(data));
-        }
-        self->current_track_index_ = result.current_index;
-        self->rebuild_playlist_view();
-        self->select_playlist_row(self->current_track_index_);
-        self->track_switch_in_progress_ = false;
-        self->finish_handled_ = true;
-        self->refresh_display();
-        self->mark_mpris_track_changed();
-    }
-
-    void finalize_focus_restore(std::size_t index) override {
-        if (self == nullptr || self->ui_closing_ || self->playlist_.empty()) {
-            return;
-        }
-        self->select_playlist_row(std::min(index, self->playlist_.size() - 1));
-        gtk_widget_grab_focus(self->playlist_view_);
-    }
-};
-
-GtkPlayerWindow::GtkPlayerWindow(std::size_t transport_buffer_ms)
-    : transport_buffer_ms_(transport_buffer_ms),
-      engine_(transport_buffer_ms),
-      log_path_("pcm_transport.log"),
-      stream_delegate_(std::make_unique<StreamDelegate>(this)),
-      stream_manager_(std::make_unique<StreamPlaybackManager>(*stream_delegate_)),
-      session_delegate_(std::make_unique<SessionDelegate>(this)),
-      session_controller_(std::make_unique<PlaylistSessionController>(*session_delegate_)) {
+void GtkPlayerWindow::finish_initialization_after_patch_subsystems() {
     reset_dsd_pcm_defaults();
     load_preferences();
     repeat_enabled_ = false;
@@ -2740,18 +2268,6 @@ GtkPlayerWindow::GtkPlayerWindow(std::size_t transport_buffer_ms)
     start_metadata_worker();
     stream_manager_->load_health_registry();
 }
-
-GtkPlayerWindow::~GtkPlayerWindow() {
-    ui_closing_ = true;
-    save_playlist_session();
-    stream_manager_->shutdown();
-    stop_ui_updates();
-    cancel_pending_seek();
-    stop_metadata_worker();
-    mpris_service_.reset();
-    stop_playback();
-}
-
 
 void GtkPlayerWindow::show() {
     app_ = gtk_application_new(kApplicationId, G_APPLICATION_FLAGS_NONE);
@@ -2977,10 +2493,8 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     GtkWidget* playlist_panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
     gtk_box_pack_start(GTK_BOX(content_row), playlist_panel, TRUE, TRUE, 0);
 
-    playlist_search_entry_ = gtk_search_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(playlist_search_entry_), "Search title or artist");
-    gtk_widget_set_margin_bottom(playlist_search_entry_, 2);
-    gtk_box_pack_start(GTK_BOX(playlist_panel), playlist_search_entry_, FALSE, FALSE, 0);
+    playlist_store_ = gtk_list_store_new(COL_COUNT, G_TYPE_INT, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN);
+    search_controller_->install_in_panel(GTK_BOX(playlist_panel));
 
     GtkWidget* scrolled = gtk_scrolled_window_new(nullptr, nullptr);
     playlist_scrolled_ = scrolled;
@@ -3008,20 +2522,13 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     gtk_widget_set_halign(softvol_hint, GTK_ALIGN_CENTER);
     gtk_box_pack_start(GTK_BOX(softvol_box), softvol_hint, FALSE, FALSE, 0);
 
-    playlist_store_ = gtk_list_store_new(COL_COUNT, G_TYPE_INT, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_BOOLEAN);
-    playlist_filter_ = GTK_TREE_MODEL_FILTER(gtk_tree_model_filter_new(GTK_TREE_MODEL(playlist_store_), nullptr));
-    gtk_tree_model_filter_set_visible_func(playlist_filter_,
-                                           GtkPlayerWindow::on_playlist_filter_visible,
-                                           this,
-                                           nullptr);
-    playlist_view_ = gtk_tree_view_new_with_model(GTK_TREE_MODEL(playlist_filter_));
+    playlist_view_ = gtk_tree_view_new_with_model(GTK_TREE_MODEL(search_controller_->filter_model()));
     gtk_widget_set_name(playlist_view_, "playlist-view");
     gtk_tree_selection_set_mode(gtk_tree_view_get_selection(GTK_TREE_VIEW(playlist_view_)), GTK_SELECTION_BROWSE);
     gtk_container_add(GTK_CONTAINER(scrolled), playlist_view_);
     gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(playlist_view_), TRUE);
     gtk_tree_view_set_enable_search(GTK_TREE_VIEW(playlist_view_), FALSE);
     gtk_widget_add_events(playlist_view_, GDK_KEY_PRESS_MASK);
-    g_signal_connect(playlist_search_entry_, "changed", G_CALLBACK(GtkPlayerWindow::on_playlist_search_changed), this);
 
     GtkCellRenderer* renderer = gtk_cell_renderer_text_new();
     g_object_set(renderer, "xpad", 6, "ypad", 2, nullptr);
@@ -3048,34 +2555,17 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     gtk_tree_view_column_set_resizable(col_source, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(playlist_view_), col_source);
 
-    gtk_tree_view_append_column(GTK_TREE_VIEW(playlist_view_), col_source);
+    patches::install_playlist_stream_styling(GTK_TREE_VIEW(playlist_view_),
+                                             col_track,
+                                             col_artist,
+                                             col_title,
+                                             col_source,
+                                             COL_TRACKNO,
+                                             COL_ARTIST,
+                                             COL_TITLE,
+                                             COL_SOURCE);
 
-    set_playlist_column_cell_styler(col_track, COL_TRACKNO);
-    set_playlist_column_cell_styler(col_artist, COL_ARTIST);
-    set_playlist_column_cell_styler(col_title, COL_TITLE);
-    set_playlist_column_cell_styler(col_source, COL_SOURCE);
-
-    GtkTreeSelection* playlist_selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(playlist_view_));
-    g_signal_connect(playlist_selection, "changed", G_CALLBACK(on_playlist_selection_changed), nullptr);
-
-    g_signal_connect(playlist_view_, "key-press-event", G_CALLBACK(GtkPlayerWindow::on_playlist_view_key_press), this);
-
-    playlist_typeahead_popup_ = gtk_window_new(GTK_WINDOW_POPUP);
-    gtk_window_set_decorated(GTK_WINDOW(playlist_typeahead_popup_), FALSE);
-    gtk_window_set_resizable(GTK_WINDOW(playlist_typeahead_popup_), FALSE);
-    gtk_window_set_skip_taskbar_hint(GTK_WINDOW(playlist_typeahead_popup_), TRUE);
-    gtk_window_set_skip_pager_hint(GTK_WINDOW(playlist_typeahead_popup_), TRUE);
-    gtk_window_set_type_hint(GTK_WINDOW(playlist_typeahead_popup_), GDK_WINDOW_TYPE_HINT_TOOLTIP);
-    gtk_window_set_transient_for(GTK_WINDOW(playlist_typeahead_popup_), GTK_WINDOW(window_));
-    gtk_container_set_border_width(GTK_CONTAINER(playlist_typeahead_popup_), 0);
-
-    playlist_typeahead_entry_ = gtk_entry_new();
-    gtk_entry_set_icon_from_icon_name(GTK_ENTRY(playlist_typeahead_entry_),
-                                      GTK_ENTRY_ICON_PRIMARY,
-                                      "edit-find-symbolic");
-    gtk_editable_set_editable(GTK_EDITABLE(playlist_typeahead_entry_), FALSE);
-    gtk_widget_set_can_focus(playlist_typeahead_entry_, FALSE);
-    gtk_container_add(GTK_CONTAINER(playlist_typeahead_popup_), playlist_typeahead_entry_);
+    g_signal_connect(playlist_view_, "key-press-event", G_CALLBACK(patches::on_playlist_view_key_press), this);
 
     g_signal_connect(btn_open_, "clicked", G_CALLBACK(GtkPlayerWindow::on_open_clicked), this);
     g_signal_connect(btn_play_, "clicked", G_CALLBACK(GtkPlayerWindow::on_play_clicked), this);
@@ -3090,9 +2580,9 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     g_signal_connect(btn_about_, "clicked", G_CALLBACK(GtkPlayerWindow::on_about_clicked), this);
     g_signal_connect(playlist_view_, "row-activated", G_CALLBACK(GtkPlayerWindow::on_playlist_row_activated), this);
 
-    g_signal_connect(playlist_view_, "focus-in-event", G_CALLBACK(GtkPlayerWindow::on_playlist_focus_in), this);
+    g_signal_connect(playlist_view_, "focus-in-event", G_CALLBACK(patches::on_playlist_focus_in), this);
     gtk_widget_add_events(window_, GDK_KEY_PRESS_MASK);
-    g_signal_connect(window_, "key-press-event", G_CALLBACK(GtkPlayerWindow::on_window_key_press), this);
+    g_signal_connect(window_, "key-press-event", G_CALLBACK(patches::on_window_key_press), this);
     g_signal_connect(window_, "delete-event", G_CALLBACK(GtkPlayerWindow::on_window_delete_event), this);
     g_signal_connect(window_, "destroy", G_CALLBACK(GtkPlayerWindow::on_window_destroy), this);
     refresh_device_list();
@@ -3123,18 +2613,7 @@ gboolean GtkPlayerWindow::on_timer_tick(gpointer user_data) {
 
     const PlaybackStatusSnapshot status = self->engine_.snapshot();
     self->update_gapless_chain_track_from_status(status);
-    if (!self->playlist_.empty() && self->current_track_index_ < self->playlist_.size()) {
-        const PlaylistEntry& current = self->playlist_[self->current_track_index_];
-        if (current.patch.is_stream) {
-            self->stream_manager_->update_from_playback(current.audio_file_path, status.playing, status.paused);
-        } else {
-            self->stream_manager_->reset_health_tracking();
-        }
-    } else {
-        self->stream_manager_->reset_health_tracking();
-    }
-
-    self->stream_manager_->tick_reconnect(std::chrono::steady_clock::now());
+    self->stream_glue_->on_ui_timer_tick(status);
 
     bool transport_finished = !self->track_switch_in_progress_ && status.finished && !status.playing;
     if (!transport_finished && !self->track_switch_in_progress_ && !self->playlist_.empty() && self->current_track_index_ < self->playlist_.size()) {
@@ -3161,18 +2640,7 @@ gboolean GtkPlayerWindow::on_timer_tick(gpointer user_data) {
                 should_advance = true;
             }
 
-            if (finished_index < self->playlist_.size() && self->playlist_[finished_index].patch.is_stream) {
-                should_advance = false;
-                const std::string& stream_url = self->playlist_[finished_index].audio_file_path;
-                if (self->stream_manager_->reconnect_attempts() < kMaxStreamReconnectAttempts) {
-                    self->stream_manager_->note_broken(stream_url, "Stream unavailable");
-                    self->stream_manager_->schedule_reconnect(finished_index, "Reconnecting...");
-                } else {
-                    self->stream_manager_->set_status_override("Stream unavailable");
-                    self->stream_manager_->cancel_reconnect();
-                    self->stream_manager_->note_broken(stream_url, "Stream unavailable");
-                }
-            }
+            self->stream_glue_->on_transport_finished(finished_index, &should_advance);
 
             if (should_advance) {
                 self->play_track_index(next_index);
@@ -3240,12 +2708,9 @@ void GtkPlayerWindow::on_window_destroy(GtkWidget*, gpointer user_data) {
         self->btn_eq_ = nullptr;
         self->controls_wrap_ = nullptr;
         self->soft_volume_scale_ = nullptr;
+        self->search_controller_->invalidate_ui();
         self->playlist_view_ = nullptr;
         self->playlist_store_ = nullptr;
-        self->playlist_filter_ = nullptr;
-        self->playlist_search_entry_ = nullptr;
-        self->playlist_typeahead_popup_ = nullptr;
-        self->playlist_typeahead_entry_ = nullptr;
         self->playlist_scrolled_ = nullptr;
         self->diagnostics_active_output_value_ = nullptr;
     }
@@ -3969,31 +3434,16 @@ std::unique_ptr<IAudioDecoder> GtkPlayerWindow::create_decoder_for_entry(const P
     const bool resample_needed = (target_rate > 0 && target_rate != source_rate);
     const bool bitdepth_needed = entry.dsd_source ||
                                  (target_bits > 0 && target_bits != source_bits);
-    if (!entry.patch.is_stream && ext == ".flac" && entry.native_decode && !resample_needed && !bitdepth_needed) {
+    if (!patches::blocks_native_flac_decoder(entry) && ext == ".flac" && entry.native_decode && !resample_needed && !bitdepth_needed) {
         return std::unique_ptr<IAudioDecoder>(new FlacStreamDecoder());
     }
-    if (entry.patch.is_stream || StreamAudioDecoder::is_stream_uri(entry.audio_file_path)) {
-        std::unique_ptr<StreamAudioDecoder> decoder;
-        if (resample_needed || bitdepth_needed) {
-            decoder.reset(new StreamAudioDecoder(target_rate, target_bits, resample_quality_, bitdepth_quality_));
-        } else {
-            decoder.reset(new StreamAudioDecoder());
-        }
-        ExternalAudioInfo known;
-        known.format = entry.decoded_format;
-        known.source_format = entry.decoded_format;
-        known.source_format.sample_rate = entry.source_sample_rate > 0 ? entry.source_sample_rate : entry.decoded_format.sample_rate;
-        known.source_format.bits_per_sample = entry.source_bits_per_sample > 0 ? entry.source_bits_per_sample : entry.decoded_format.bits_per_sample;
-        known.total_samples_per_channel = 0;
-        known.source_total_samples_per_channel = 0;
-        known.duration_reliable = false;
-        known.codec_name = entry.codec_name;
-        known.dsd_source = entry.dsd_source;
-        known.dsd_sample_rate = entry.dsd_sample_rate;
-        known.lossless = entry.lossless_source;
-        known.live_format_probed = entry.patch.stream_format_probed;
-        decoder->set_known_info(known);
-        return std::unique_ptr<IAudioDecoder>(decoder.release());
+    if (patches::entry_uses_stream_decoder(entry)) {
+        return patches::create_stream_decoder_for_entry(entry,
+                                                        target_rate,
+                                                        target_bits,
+                                                        resample_needed,
+                                                        bitdepth_needed,
+                                                        {resample_quality_, bitdepth_quality_});
     }
 
     if (ExternalAudioDecoder::looks_supported(entry.audio_file_path)) {
@@ -4260,8 +3710,7 @@ std::size_t GtkPlayerWindow::append_source_placeholders(const std::string& path,
     }
 
     if (StreamAudioDecoder::is_stream_uri(path)) {
-        append_stream_entry(path);
-        return 1;  // stream entries are immediately ready
+        return stream_glue_->append_source_stream_placeholder(*this, path);
     }
 
     if (M3uPlaylistReader::looks_like_playlist_path(path)) {
@@ -4275,8 +3724,10 @@ std::size_t GtkPlayerWindow::append_source_placeholders(const std::string& path,
                 continue;
             }
             if (StreamAudioDecoder::is_stream_uri(item)) {
-                append_stream_entry(item, playlist_entry.title, playlist_entry.artist);
-                ++appended;
+                appended += stream_glue_->append_source_stream_placeholder(*this,
+                                                                         item,
+                                                                         playlist_entry.title,
+                                                                         playlist_entry.artist);
                 continue;
             }
             if (!g_file_test(item.c_str(), G_FILE_TEST_IS_REGULAR)) {
@@ -4305,7 +3756,7 @@ std::size_t GtkPlayerWindow::append_source_placeholders(const std::string& path,
         if (!g_file_test(sheet.audio_file_path.c_str(), G_FILE_TEST_IS_REGULAR)) {
             throw std::runtime_error("CUE audio file is unavailable: " + sheet.audio_file_path);
         }
-        if (!is_supported_media_path(sheet.audio_file_path) ||
+        if (!patches::is_supported_media_path(sheet.audio_file_path) ||
             CueParser::looks_like_cue_path(sheet.audio_file_path) ||
             M3uPlaylistReader::looks_like_playlist_path(sheet.audio_file_path)) {
             throw std::runtime_error("Unsupported CUE audio file type: " + sheet.audio_file_path);
@@ -4335,7 +3786,7 @@ std::size_t GtkPlayerWindow::append_source_placeholders(const std::string& path,
         return sheet.tracks.size();
     }
 
-    if (!is_supported_media_path(path) ||
+    if (!patches::is_supported_media_path(path) ||
         M3uPlaylistReader::looks_like_playlist_path(path) ||
         CueParser::looks_like_cue_path(path)) {
         throw std::runtime_error("Unsupported audio file type: " + path);
@@ -4709,18 +4160,7 @@ std::vector<std::string> GtkPlayerWindow::load_source_paths(const std::vector<st
         if (path.empty()) {
             continue;
         }
-        if (StreamAudioDecoder::is_stream_uri(path)) {
-            const std::size_t before = playlist_.size();
-            try {
-                append_source_placeholders(path, path, &probe_paths);
-            } catch (const std::exception& ex) {
-                const std::string message = std::string("Cannot load stream: ") + path + " (" + ex.what() + ")";
-                if (quiet) Logger::instance().debug(message);
-                else Logger::instance().error(message);
-            }
-            if (playlist_.size() > before) {
-                accepted_sources.push_back(path);
-            }
+        if (StreamPlaylistGlue::try_load_stream_source(*this, path, &accepted_sources, quiet)) {
             continue;
         }
 
@@ -4876,7 +4316,7 @@ void GtkPlayerWindow::start_current_track(bool restart_if_paused) {
 
 void GtkPlayerWindow::stop_playback() {
     cancel_pending_seek();
-    stream_manager_->on_playback_stopped();
+    patches::on_playback_stopped(*stream_manager_);
     track_switch_in_progress_ = false;
     finish_handled_ = false;
     softvol_dragging_ = false;
@@ -4902,49 +4342,14 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
     if (playlist_loading_ || index >= playlist_.size()) {
         return;
     }
-    if (!playlist_[index].patch.is_stream && playlist_[index].metadata_state != MetadataState::Ready) {
-        return;
-    }
-
-    const std::uint64_t probe_generation = stream_manager_->bump_probe_generation();
-
-    const bool reconnecting_same_stream = stream_manager_->should_keep_sidecar_for_play(index, playlist_[index].patch.is_stream);
-    if (!reconnecting_same_stream) {
-        stream_manager_->stop_sidecar();
-    }
-    if (!stream_manager_->is_reconnect_target(index)) {
-        stream_manager_->cancel_reconnect();
-    }
-
-    if (reconnecting_same_stream && start_playback && !skip_engine_stop) {
-        track_switch_in_progress_ = true;
-        finish_handled_ = true;
-        engine_.stop();
-        clear_gapless_chain();
-        current_track_index_ = index;
-        select_playlist_row(current_track_index_);
-        refresh_display();
-
-        struct StreamPlaybackResume {
-            GtkPlayerWindow* self = nullptr;
-            std::size_t index = 0;
-            std::uint64_t offset_samples = 0;
-            bool preserve_paused = false;
-            bool update_mpris_track = true;
-        };
-        auto* resume = new StreamPlaybackResume{this, index, offset_samples, preserve_paused, update_mpris_track};
-        g_idle_add(+[](gpointer user_data) -> gboolean {
-            std::unique_ptr<StreamPlaybackResume> resume(static_cast<StreamPlaybackResume*>(user_data));
-            if (resume->self != nullptr && !resume->self->ui_closing_) {
-                resume->self->play_track_index_at_offset(resume->index,
-                                                         resume->offset_samples,
-                                                         true,
-                                                         resume->preserve_paused,
-                                                         resume->update_mpris_track,
-                                                         true);
-            }
-            return G_SOURCE_REMOVE;
-        }, resume);
+    std::uint64_t probe_generation = 0;
+    if (stream_glue_->begin_play_track(index,
+                                       offset_samples,
+                                       start_playback,
+                                       preserve_paused,
+                                       update_mpris_track,
+                                       skip_engine_stop,
+                                       &probe_generation)) {
         return;
     }
 
@@ -4990,25 +4395,17 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
                 Logger::instance().info("Continuous CUE playback enabled for " + std::to_string(chain_end - index) + " tracks: " + track.audio_file_path);
             }
         } else if (track.patch.is_stream) {
-            if (!playlist_[current_track_index_].patch.stream_format_probed) {
-                begin_async_stream_probe_and_play(index,
-                                                  initial_offset,
-                                                  preserve_paused,
-                                                  update_mpris_track,
-                                                  skip_engine_stop,
-                                                  probe_generation);
+            bool async_started = false;
+            decoder = stream_glue_->open_stream_decoder(index,
+                                                        initial_offset,
+                                                        preserve_paused,
+                                                        update_mpris_track,
+                                                        skip_engine_stop,
+                                                        probe_generation,
+                                                        &async_started);
+            if (async_started) {
                 return;
             }
-            decoder = create_decoder_for_entry(track, false);
-            decoder->open(track.audio_file_path);
-            const AudioFormat stream_format = decoder->format();
-            playlist_[current_track_index_].decoded_format = stream_format;
-            playlist_[current_track_index_].source_sample_rate = stream_format.sample_rate;
-            playlist_[current_track_index_].source_bits_per_sample = stream_format.bits_per_sample;
-            playlist_[current_track_index_].patch.stream_format_probed = true;
-            Logger::instance().info("Streaming playback: " + track.audio_file_path + " (" +
-                                    std::to_string(stream_format.sample_rate) + " Hz)");
-            stream_manager_->start_sidecar(track.audio_file_path);
         } else {
             chain_end = file_chain_end_index(index);
             if (chain_end > index + 1) {
@@ -5051,9 +4448,7 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
         if (preserve_paused) {
             engine_.pause();
         }
-        if (track.patch.is_stream) {
-            stream_manager_->clear_reconnect_after_success();
-        }
+        stream_glue_->on_stream_play_succeeded(index);
         track_switch_in_progress_ = false;
         finish_handled_ = false;
         refresh_display();
@@ -5067,74 +4462,13 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
         track_switch_in_progress_ = false;
         finish_handled_ = false;
         Logger::instance().error(std::string("Failed to play track: ") + ex.what());
-        if (track.patch.is_stream) {
-            stream_manager_->note_broken(track.audio_file_path, ex.what());
-        }
-        GtkWidget* msg = gtk_message_dialog_new(GTK_WINDOW(window_),
-                                                GTK_DIALOG_MODAL,
-                                                GTK_MESSAGE_ERROR,
-                                                GTK_BUTTONS_CLOSE,
-                                                "%s",
-                                                ex.what());
-        gtk_dialog_run(GTK_DIALOG(msg));
-        gtk_widget_destroy(msg);
+        stream_glue_->handle_playback_error(*this, track.patch.is_stream, track.audio_file_path, ex.what());
         notify_mpris_state_changed();
     }
 }
 
 void GtkPlayerWindow::open_file_dialog() {
-    GtkWidget* dialog = gtk_dialog_new_with_buttons("Open audio files",
-                                                    GTK_WINDOW(window_),
-                                                    GTK_DIALOG_MODAL,
-                                                    "_Cancel", GTK_RESPONSE_CANCEL,
-                                                    "_Open", GTK_RESPONSE_ACCEPT,
-                                                    nullptr);
-
-    GtkWidget* chooser = gtk_file_chooser_widget_new(GTK_FILE_CHOOSER_ACTION_OPEN);
-    GtkFileChooser* file_chooser = GTK_FILE_CHOOSER(chooser);
-    gtk_file_chooser_set_select_multiple(file_chooser, TRUE);
-    if (!last_open_directory_.empty()) {
-        gtk_file_chooser_set_current_folder(file_chooser, last_open_directory_.c_str());
-    }
-
-    GtkFileFilter* filter = gtk_file_filter_new();
-    gtk_file_filter_set_name(filter, "Audio, cue, playlist files and folders");
-    gtk_file_filter_add_custom(filter, GTK_FILE_FILTER_FILENAME, file_chooser_open_filter, nullptr, nullptr);
-    gtk_file_chooser_add_filter(file_chooser, filter);
-
-    GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-    gtk_box_pack_start(GTK_BOX(content), chooser, TRUE, TRUE, 0);
-    gtk_window_set_default_size(GTK_WINDOW(dialog), 900, 600);
-    gtk_widget_show_all(dialog);
-
-    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-        char* current_folder = gtk_file_chooser_get_current_folder(file_chooser);
-        if (current_folder != nullptr && *current_folder != '\0') {
-            last_open_directory_ = current_folder;
-            g_free(current_folder);
-        }
-
-        const std::vector<std::string> selected_paths = collect_file_chooser_paths(file_chooser);
-        if (!selected_paths.empty()) {
-            last_open_directory_ = directory_name(selected_paths.front());
-            std::vector<std::string> paths_to_add;
-            paths_to_add.reserve(selected_paths.size());
-            for (const std::string& path : selected_paths) {
-                if (g_file_test(path.c_str(), G_FILE_TEST_IS_DIR)) {
-                    collect_audio_files_recursive(path, &paths_to_add);
-                } else {
-                    paths_to_add.push_back(path);
-                }
-            }
-            prefer_cue_over_audio_files(&paths_to_add);
-            clear_playlist_search();
-            load_source_paths(paths_to_add, true, false, true);
-            save_playlist_session();
-
-        }
-    }
-
-    gtk_widget_destroy(dialog);
+    patches::run_open_audio_dialog(*this);
 }
 
 
@@ -6770,10 +6104,8 @@ void GtkPlayerWindow::refresh_display(bool update_text, bool update_progress, bo
     }
 
     std::string track_text = "Track: --";
-    std::string status_text = status.message.empty() ? "Idle" : status.message;
-    if (!stream_manager_->status_override().empty()) {
-        status_text = stream_manager_->status_override();
-    }
+    std::string status_text = patches::status_text_with_stream_override(
+        *stream_manager_, status.message.empty() ? "Idle" : status.message);
     std::string source_text = "Device: " + current_device_;
     std::string path_text = "Path: --";
 
@@ -6900,25 +6232,21 @@ void GtkPlayerWindow::rebuild_playlist_view() {
         GtkTreeIter iter;
         gtk_list_store_append(playlist_store_, &iter);
         const PlaylistEntry& entry = playlist_[i];
-        const bool stream_broken = entry.patch.is_stream && stream_manager_->is_broken(entry.audio_file_path);
-        const std::string trackno = stream_broken
-            ? ("× " + std::to_string(entry.track_number))
-            : std::to_string(entry.track_number);
+        const patches::PlaylistStreamRowValues row =
+            patches::playlist_stream_row_values(*stream_manager_, entry.patch.is_stream, entry.audio_file_path, entry.track_number);
         const std::string artist = safe_utf8_for_display(entry.performer);
         const std::string title = safe_utf8_for_display(entry.title);
         const std::string source = safe_utf8_for_display(entry.source_label);
         gtk_list_store_set(playlist_store_, &iter,
                            COL_INDEX, static_cast<int>(i),
-                           COL_TRACKNO, trackno.c_str(),
+                           COL_TRACKNO, row.track_number.c_str(),
                            COL_ARTIST, artist.c_str(),
                            COL_TITLE, title.c_str(),
                            COL_SOURCE, source.c_str(),
-                           COL_STREAM_BROKEN, stream_broken ? TRUE : FALSE,
+                           COL_STREAM_BROKEN, row.stream_broken,
                            -1);
     }
-    if (playlist_filter_ != nullptr) {
-        gtk_tree_model_filter_refilter(playlist_filter_);
-    }
+    search_controller_->refilter();
 }
 
 void GtkPlayerWindow::update_playlist_row(std::size_t index) {
@@ -6934,10 +6262,8 @@ void GtkPlayerWindow::update_playlist_row(std::size_t index) {
     }
 
     const PlaylistEntry& entry = playlist_[index];
-    const bool stream_broken = entry.patch.is_stream && stream_manager_->is_broken(entry.audio_file_path);
-    const std::string trackno = stream_broken
-        ? ("× " + std::to_string(entry.track_number))
-        : std::to_string(entry.track_number);
+    const patches::PlaylistStreamRowValues row =
+        patches::playlist_stream_row_values(*stream_manager_, entry.patch.is_stream, entry.audio_file_path, entry.track_number);
 
     const std::string artist = safe_utf8_for_display(entry.performer);
     std::string title = safe_utf8_for_display(entry.title);
@@ -6947,11 +6273,11 @@ void GtkPlayerWindow::update_playlist_row(std::size_t index) {
     const std::string source = safe_utf8_for_display(entry.source_label);
     gtk_list_store_set(playlist_store_, &iter,
                        COL_INDEX, static_cast<int>(index),
-                       COL_TRACKNO, trackno.c_str(),
+                       COL_TRACKNO, row.track_number.c_str(),
                        COL_ARTIST, artist.c_str(),
                        COL_TITLE, title.c_str(),
                        COL_SOURCE, source.c_str(),
-                       COL_STREAM_BROKEN, stream_broken ? TRUE : FALSE,
+                       COL_STREAM_BROKEN, row.stream_broken,
                        -1);
 }
 
@@ -6960,7 +6286,7 @@ void GtkPlayerWindow::select_playlist_row(std::size_t index) {
         return;
     }
     GtkTreePath* path = nullptr;
-    if (!find_playlist_view_path_for_index(GTK_TREE_VIEW(playlist_view_), index, &path) || path == nullptr) {
+    if (!patches::find_playlist_view_path_for_index(GTK_TREE_VIEW(playlist_view_), index, COL_INDEX, &path) || path == nullptr) {
         return;
     }
     GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(playlist_view_));
@@ -6972,38 +6298,7 @@ void GtkPlayerWindow::select_playlist_row(std::size_t index) {
 }
 
 void GtkPlayerWindow::update_playlist_selection_from_ui() {
-    if (playlist_.empty() || playlist_view_ == nullptr) {
-        return;
-    }
-
-    GtkTreeView* view = GTK_TREE_VIEW(playlist_view_);
-    GtkTreeSelection* selection = gtk_tree_view_get_selection(view);
-    GtkTreeModel* model = nullptr;
-    GtkTreeIter iter;
-    if (gtk_tree_selection_get_selected(selection, &model, &iter)) {
-        int row_index = -1;
-        gtk_tree_model_get(model, &iter, COL_INDEX, &row_index, -1);
-        if (row_index >= 0 && static_cast<std::size_t>(row_index) < playlist_.size()) {
-            current_track_index_ = static_cast<std::size_t>(row_index);
-            return;
-        }
-    }
-
-    GtkTreePath* cursor_path = nullptr;
-    GtkTreeViewColumn* cursor_column = nullptr;
-    gtk_tree_view_get_cursor(view, &cursor_path, &cursor_column);
-    if (cursor_path != nullptr) {
-        GtkTreeModel* cursor_model = gtk_tree_view_get_model(view);
-        GtkTreeIter cursor_iter;
-        if (cursor_model != nullptr && gtk_tree_model_get_iter(cursor_model, &cursor_iter, cursor_path)) {
-            int row_index = -1;
-            gtk_tree_model_get(cursor_model, &cursor_iter, COL_INDEX, &row_index, -1);
-            if (row_index >= 0 && static_cast<std::size_t>(row_index) < playlist_.size()) {
-                current_track_index_ = static_cast<std::size_t>(row_index);
-            }
-        }
-        gtk_tree_path_free(cursor_path);
-    }
+    patches::update_current_track_from_playlist_ui(*this, COL_INDEX);
 }
 
 std::string GtkPlayerWindow::format_time(std::uint64_t samples_per_channel, std::uint32_t sample_rate) {
@@ -7019,11 +6314,8 @@ std::string GtkPlayerWindow::format_time(std::uint64_t samples_per_channel, std:
 }
 
 std::string GtkPlayerWindow::display_title_for(const PlaylistEntry& entry) const {
-    if (entry.patch.is_stream && !stream_manager_->now_playing().empty()) {
-        if (!entry.title.empty()) {
-            return entry.title + " — " + stream_manager_->now_playing();
-        }
-        return stream_manager_->now_playing();
+    if (entry.patch.is_stream) {
+        return patches::display_title_for_entry(entry, *stream_manager_);
     }
     if (!entry.performer.empty()) {
         return entry.performer + " - " + entry.title;
@@ -7230,10 +6522,7 @@ void GtkPlayerWindow::save_preferences() const {
 
 void GtkPlayerWindow::setup_mpris() {
     MprisService::Actions actions;
-    actions.play = [this]() {
-        update_playlist_selection_from_ui();
-        mpris_play();
-    };
+    actions.play = [this]() { mpris_play(); };
     actions.pause = [this]() {
         if (playlist_loading_) {
             return;
@@ -7245,7 +6534,6 @@ void GtkPlayerWindow::setup_mpris() {
         }
     };
     actions.play_pause = [this]() {
-        update_playlist_selection_from_ui();
         if (playlist_loading_) {
             return;
         }
@@ -7261,14 +6549,8 @@ void GtkPlayerWindow::setup_mpris() {
         }
     };
     actions.stop = [this]() { if (!playlist_loading_) stop_playback(); };
-    actions.next = [this]() {
-        update_playlist_selection_from_ui();
-        mpris_advance_track(1);
-    };
-    actions.previous = [this]() {
-        update_playlist_selection_from_ui();
-        mpris_advance_track(-1);
-    };
+    actions.next = [this]() { mpris_advance_track(1); };
+    actions.previous = [this]() { mpris_advance_track(-1); };
     actions.seek = [this](std::int64_t offset_usec) { return mpris_seek(offset_usec); };
     actions.set_position = [this](std::int64_t position_usec, const std::string& track_id) {
         return mpris_set_position(position_usec, track_id);
@@ -7294,6 +6576,7 @@ void GtkPlayerWindow::setup_mpris() {
         return build_mpris_state();
     };
 
+    patches::apply_fork_mpris_action_patches(*this, actions);
     mpris_service_ = std::make_unique<MprisService>(std::move(actions));
     mpris_service_->start();
 }
@@ -7457,14 +6740,15 @@ MprisPlayerState GtkPlayerWindow::build_mpris_state() const {
         const std::uint64_t length_samples = track_length_samples(track);
 
         state.has_track = true;
-        state.title = !stream_manager_->now_playing().empty() && track.patch.is_stream ? stream_manager_->now_playing() : track.title;
+        state.title = track.title;
         state.artist = track.performer;
         state.track_number = track.track_number;
-        state.url = track.patch.is_stream ? track.audio_file_path : file_uri_for_path(track.audio_file_path);
-        const std::string cover_path = track.patch.is_stream ? std::string() : cached_cover_art_for(track.audio_file_path);
+        state.url = file_uri_for_path(track.audio_file_path);
+        const std::string cover_path = cached_cover_art_for(track.audio_file_path);
         if (!cover_path.empty()) {
             state.art_url = file_uri_for_path(cover_path);
         }
+        patches::apply_stream_fields_to_mpris_state(state, track, *stream_manager_);
         state.position_usec = samples_to_usec_safe(position_samples, sample_rate);
         state.length_usec = samples_to_usec_safe(length_samples, sample_rate);
         state.can_seek = length_samples > 0;
@@ -7669,662 +6953,11 @@ void GtkPlayerWindow::mpris_raise() {
 }
 
 
-void GtkPlayerWindow::setup_media_keys(GtkApplication* app) {
-    const GActionEntry actions[] = {
-        {"media-play", on_media_play, nullptr, nullptr, nullptr, {0}},
-        {"media-pause", on_media_pause, nullptr, nullptr, nullptr, {0}},
-        {"media-play-pause", on_media_play_pause, nullptr, nullptr, nullptr, {0}},
-        {"media-stop", on_media_stop, nullptr, nullptr, nullptr, {0}},
-        {"media-next", on_media_next, nullptr, nullptr, nullptr, {0}},
-        {"media-previous", on_media_previous, nullptr, nullptr, nullptr, {0}},
-    };
-    g_action_map_add_action_entries(G_ACTION_MAP(app), actions, G_N_ELEMENTS(actions), this);
-
-    static const char* kPlayPauseKeys[] = {"XF86AudioPlay", "XF86AudioPause", nullptr};
-    static const char* kStopKeys[] = {"XF86AudioStop", nullptr};
-    static const char* kNextKeys[] = {"XF86AudioNext", nullptr};
-    static const char* kPreviousKeys[] = {"XF86AudioPrev", nullptr};
-
-    gtk_application_set_accels_for_action(app, "app.media-play-pause", kPlayPauseKeys);
-    gtk_application_set_accels_for_action(app, "app.media-stop", kStopKeys);
-    gtk_application_set_accels_for_action(app, "app.media-next", kNextKeys);
-    gtk_application_set_accels_for_action(app, "app.media-previous", kPreviousKeys);
-}
-
-void GtkPlayerWindow::handle_media_play() {
-    if (playback_available()) {
-        mpris_play();
-    }
-}
-
-void GtkPlayerWindow::handle_media_pause() {
-    if (!playlist_loading_ && engine_.is_playing() && !engine_.is_paused()) {
-        engine_.pause();
-        notify_mpris_state_changed();
-    }
-}
-
-void GtkPlayerWindow::handle_media_stop() {
-    if (!playlist_loading_) {
-        stop_playback();
-    }
-}
-
-void GtkPlayerWindow::handle_media_next() {
-    if (playback_available()) {
-        mpris_advance_track(1);
-    }
-}
-
-void GtkPlayerWindow::handle_media_previous() {
-    if (playback_available()) {
-        mpris_advance_track(-1);
-    }
-}
-
-void GtkPlayerWindow::on_media_play(GSimpleAction*, GVariant*, gpointer user_data) {
-    static_cast<GtkPlayerWindow*>(user_data)->handle_media_play();
-}
-
-void GtkPlayerWindow::on_media_pause(GSimpleAction*, GVariant*, gpointer user_data) {
-    static_cast<GtkPlayerWindow*>(user_data)->handle_media_pause();
-}
-
-void GtkPlayerWindow::on_media_stop(GSimpleAction*, GVariant*, gpointer user_data) {
-    static_cast<GtkPlayerWindow*>(user_data)->handle_media_stop();
-}
-
-void GtkPlayerWindow::on_media_next(GSimpleAction*, GVariant*, gpointer user_data) {
-    static_cast<GtkPlayerWindow*>(user_data)->handle_media_next();
-}
-
-void GtkPlayerWindow::on_media_previous(GSimpleAction*, GVariant*, gpointer user_data) {
-    static_cast<GtkPlayerWindow*>(user_data)->handle_media_previous();
-}
-
-gboolean GtkPlayerWindow::on_playlist_focus_in(GtkWidget*, GdkEventFocus*, gpointer user_data) {
-    auto* self = static_cast<GtkPlayerWindow*>(user_data);
-    if (self == nullptr || self->ui_closing_) {
-        return FALSE;
-    }
-    self->sync_playlist_cursor_to_selection();
-    return FALSE;
-}
-
-void GtkPlayerWindow::on_playlist_search_changed(GtkEditable* editable, gpointer user_data) {
-    auto* self = static_cast<GtkPlayerWindow*>(user_data);
-    const gchar* text = gtk_entry_get_text(GTK_ENTRY(editable));
-    self->playlist_filter_text_ = text != nullptr ? utf8_casefold_copy(text) : std::string();
-    if (self->playlist_filter_ != nullptr) {
-        gtk_tree_model_filter_refilter(self->playlist_filter_);
-    }
-}
-
-gboolean GtkPlayerWindow::on_playlist_filter_visible(GtkTreeModel* model, GtkTreeIter* iter, gpointer user_data) {
-    auto* self = static_cast<GtkPlayerWindow*>(user_data);
-    if (self->playlist_filter_text_.empty()) {
-        return TRUE;
-    }
-    gchar* artist = nullptr;
-    gchar* title = nullptr;
-    gtk_tree_model_get(model, iter, COL_ARTIST, &artist, COL_TITLE, &title, -1);
-    const bool match = utf8_contains_casefold(artist != nullptr ? artist : "", self->playlist_filter_text_) ||
-                       utf8_contains_casefold(title != nullptr ? title : "", self->playlist_filter_text_);
-    g_free(artist);
-    g_free(title);
-    return match ? TRUE : FALSE;
-}
-
-void GtkPlayerWindow::update_playlist_typeahead_popup() {
-    if (playlist_typeahead_popup_ == nullptr || playlist_typeahead_entry_ == nullptr || playlist_scrolled_ == nullptr) {
-        return;
-    }
-    if (playlist_typeahead_text_.empty()) {
-        gtk_widget_hide(playlist_typeahead_popup_);
-        return;
-    }
-
-    gtk_entry_set_text(GTK_ENTRY(playlist_typeahead_entry_), playlist_typeahead_text_.c_str());
-    gtk_widget_show_all(playlist_typeahead_popup_);
-
-    if (!gtk_widget_get_realized(playlist_scrolled_)) {
-        return;
-    }
-
-    GtkAllocation allocation{};
-    gtk_widget_get_allocation(playlist_scrolled_, &allocation);
-
-    gint anchor_x = 0;
-    gint anchor_y = 0;
-    GdkWindow* anchor_window = gtk_widget_get_window(playlist_scrolled_);
-    if (anchor_window == nullptr) {
-        return;
-    }
-    gdk_window_get_origin(anchor_window, &anchor_x, &anchor_y);
-
-    GdkRectangle anchor_rect{};
-    anchor_rect.x = anchor_x;
-    anchor_rect.y = anchor_y;
-    anchor_rect.width = allocation.width;
-    anchor_rect.height = allocation.height;
-
-    if (!gtk_widget_get_realized(playlist_typeahead_popup_)) {
-        gtk_widget_realize(playlist_typeahead_popup_);
-    }
-    GdkWindow* popup_window = gtk_widget_get_window(playlist_typeahead_popup_);
-    if (popup_window == nullptr) {
-        return;
-    }
-
-    gdk_window_move_to_rect(popup_window,
-                          &anchor_rect,
-                          GDK_GRAVITY_SOUTH_EAST,
-                          GDK_GRAVITY_SOUTH_EAST,
-                          static_cast<GdkAnchorHints>(GDK_ANCHOR_SLIDE | GDK_ANCHOR_FLIP_X | GDK_ANCHOR_FLIP_Y),
-                          -4,
-                          -4);
-}
-
-void GtkPlayerWindow::reset_playlist_typeahead() {
-    playlist_typeahead_text_.clear();
-    if (playlist_typeahead_timeout_id_ != 0) {
-        g_source_remove(playlist_typeahead_timeout_id_);
-        playlist_typeahead_timeout_id_ = 0;
-    }
-    update_playlist_typeahead_popup();
-}
-
-gboolean GtkPlayerWindow::on_playlist_typeahead_clear_timeout(gpointer user_data) {
-    auto* self = static_cast<GtkPlayerWindow*>(user_data);
-    if (self == nullptr) {
-        return G_SOURCE_REMOVE;
-    }
-    self->playlist_typeahead_timeout_id_ = 0;
-    self->playlist_typeahead_text_.clear();
-    self->update_playlist_typeahead_popup();
-    return G_SOURCE_REMOVE;
-}
-
-void GtkPlayerWindow::apply_playlist_typeahead_selection() {
-    if (playlist_typeahead_text_.empty() || playlist_view_ == nullptr) {
-        return;
-    }
-
-    const std::string key_folded = utf8_casefold_copy(playlist_typeahead_text_);
-    GtkTreeModel* model = gtk_tree_view_get_model(GTK_TREE_VIEW(playlist_view_));
-    if (model == nullptr) {
-        return;
-    }
-
-    GtkTreeIter iter;
-    if (!gtk_tree_model_get_iter_first(model, &iter)) {
-        return;
-    }
-
-    do {
-        gchar* artist = nullptr;
-        gchar* title = nullptr;
-        gtk_tree_model_get(model, &iter, COL_ARTIST, &artist, COL_TITLE, &title, -1);
-        const bool match = playlist_row_matches_typeahead(artist, title, key_folded);
-        g_free(artist);
-        g_free(title);
-        if (!match) {
-            continue;
-        }
-
-        GtkTreePath* path = gtk_tree_model_get_path(model, &iter);
-        GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(playlist_view_));
-        gtk_tree_selection_unselect_all(selection);
-        gtk_tree_selection_select_path(selection, path);
-        gtk_tree_view_set_cursor(GTK_TREE_VIEW(playlist_view_), path, nullptr, FALSE);
-        gtk_tree_view_scroll_to_cell(GTK_TREE_VIEW(playlist_view_), path, nullptr, TRUE, 0.5f, 0.0f);
-        gtk_tree_path_free(path);
-        return;
-    } while (gtk_tree_model_iter_next(model, &iter));
-}
-
-gboolean GtkPlayerWindow::on_playlist_view_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data) {
-    auto* self = static_cast<GtkPlayerWindow*>(user_data);
-    if (self == nullptr || event == nullptr) {
-        return FALSE;
-    }
-    if (self->handle_media_key(event->keyval)) {
-        return TRUE;
-    }
-    if (gtk_widget_is_focus(self->playlist_search_entry_)) {
-        return FALSE;
-    }
-
-    if (event->keyval == GDK_KEY_Escape) {
-        if (!self->playlist_typeahead_text_.empty()) {
-            self->reset_playlist_typeahead();
-            return TRUE;
-        }
-        return FALSE;
-    }
-
-    if (event->keyval == GDK_KEY_BackSpace) {
-        if (self->playlist_typeahead_text_.empty()) {
-            return FALSE;
-        }
-        const char* text = self->playlist_typeahead_text_.c_str();
-        const char* prev = g_utf8_find_prev_char(text, text + self->playlist_typeahead_text_.size());
-        if (prev != nullptr) {
-            self->playlist_typeahead_text_.resize(static_cast<std::size_t>(prev - text));
-        } else {
-            self->playlist_typeahead_text_.clear();
-        }
-        if (self->playlist_typeahead_timeout_id_ != 0) {
-            g_source_remove(self->playlist_typeahead_timeout_id_);
-        }
-        self->playlist_typeahead_timeout_id_ = g_timeout_add(1500, GtkPlayerWindow::on_playlist_typeahead_clear_timeout, self);
-        self->update_playlist_typeahead_popup();
-        self->apply_playlist_typeahead_selection();
-        return TRUE;
-    }
-
-    if ((event->state & (GDK_CONTROL_MASK | GDK_MOD1_MASK | GDK_SUPER_MASK)) != 0) {
-        return FALSE;
-    }
-
-    guint32 unicode = gdk_keyval_to_unicode(event->keyval);
-    if (unicode == 0 || !g_unichar_isprint(unicode)) {
-        return FALSE;
-    }
-
-    char buffer[8];
-    const gint written = g_unichar_to_utf8(unicode, buffer);
-    if (written <= 0) {
-        return FALSE;
-    }
-    self->playlist_typeahead_text_.append(buffer, static_cast<std::size_t>(written));
-    if (self->playlist_typeahead_timeout_id_ != 0) {
-        g_source_remove(self->playlist_typeahead_timeout_id_);
-    }
-    self->playlist_typeahead_timeout_id_ = g_timeout_add(1500, GtkPlayerWindow::on_playlist_typeahead_clear_timeout, self);
-    self->update_playlist_typeahead_popup();
-    self->apply_playlist_typeahead_selection();
-    (void)widget;
-    return TRUE;
-}
-
-void GtkPlayerWindow::clear_playlist_search() {
-    reset_playlist_typeahead();
-    playlist_filter_text_.clear();
-    if (playlist_search_entry_ != nullptr) {
-        gtk_entry_set_text(GTK_ENTRY(playlist_search_entry_), "");
-    }
-    if (playlist_filter_ != nullptr) {
-        gtk_tree_model_filter_refilter(playlist_filter_);
-    }
-}
-
-std::size_t GtkPlayerWindow::find_playlist_index_by_url(const std::string& url) const {
-    const std::string normalized = normalize_stream_url(url);
-    for (std::size_t i = 0; i < playlist_.size(); ++i) {
-        if (normalize_stream_url(playlist_[i].audio_file_path) == normalized) {
-            return i;
-        }
-    }
-    return static_cast<std::size_t>(-1);
-}
-
-void GtkPlayerWindow::handle_stream_probe_result(StreamPlaybackManager::ProbeResult result) {
-    if (ui_closing_) {
-        return;
-    }
-
-    const std::size_t playlist_index = find_playlist_index_by_url(result.url);
-    const bool connect_failed = !result.probe_ok || !result.info.live_format_probed;
-
-    if (connect_failed) {
-        const std::string error = !result.probe_ok
-            ? (result.error.empty() ? std::string("Stream probe failed") : result.error)
-            : "Stream unavailable";
-        stream_manager_->note_broken(result.url, error);
-        track_switch_in_progress_ = false;
-        finish_handled_ = false;
-        stream_manager_->set_status_override(std::string());
-        Logger::instance().error(std::string("Failed to probe stream: ") + error);
-        GtkWidget* msg = gtk_message_dialog_new(GTK_WINDOW(window_),
-                                                GTK_DIALOG_MODAL,
-                                                GTK_MESSAGE_ERROR,
-                                                GTK_BUTTONS_CLOSE,
-                                                "%s",
-                                                error.c_str());
-        gtk_dialog_run(GTK_DIALOG(msg));
-        gtk_widget_destroy(msg);
-        notify_mpris_state_changed();
-        return;
-    }
-
-    if (playlist_index != static_cast<std::size_t>(-1)) {
-        apply_stream_probe_to_entry(playlist_[playlist_index], result.info);
-    }
-    if (result.info.live_format_probed) {
-        Logger::instance().info("Stream format probed: " + result.url + " -> " +
-                                std::to_string(result.info.source_format.sample_rate) + " Hz / " +
-                                std::to_string(result.info.source_format.bits_per_sample) + "-bit / " +
-                                std::to_string(result.info.source_format.channels) + " ch");
-    }
-
-    if (playlist_index == static_cast<std::size_t>(-1)) {
-        track_switch_in_progress_ = false;
-        finish_handled_ = false;
-        return;
-    }
-
-    stream_manager_->set_status_override(std::string());
-    play_track_index_at_offset(playlist_index,
-                               result.playback.offset_samples,
-                               true,
-                               result.playback.preserve_paused,
-                               result.playback.update_mpris_track,
-                               true);
-}
-
-void GtkPlayerWindow::begin_async_stream_probe_and_play(std::size_t index,
-                                                        std::uint64_t offset_samples,
-                                                        bool preserve_paused,
-                                                        bool update_mpris_track,
-                                                        bool skip_engine_stop,
-                                                        std::uint64_t probe_generation) {
-    if (index >= playlist_.size()) {
-        track_switch_in_progress_ = false;
-        finish_handled_ = false;
-        return;
-    }
-
-    const PlaylistEntry& entry = playlist_[index];
-    const std::uint32_t source_rate = entry.source_sample_rate > 0 ? entry.source_sample_rate : entry.decoded_format.sample_rate;
-    const std::uint16_t source_bits = entry.source_bits_per_sample > 0 ? entry.source_bits_per_sample : entry.decoded_format.bits_per_sample;
-    const std::uint32_t target_rate = target_sample_rate_for(source_rate);
-    const std::uint16_t target_bits = target_bits_for(source_bits);
-    const std::uint32_t forced_rate = (target_rate > 0 && target_rate != source_rate) ? target_rate : 0;
-    const std::uint16_t forced_bits = (target_bits > 0 && target_bits != source_bits) ? target_bits : 0;
-
-    stream_manager_->set_status_override("Probing stream...");
-    refresh_display();
-
-    StreamPlaybackManager::ProbePlaybackRequest request;
-    request.index = index;
-    request.offset_samples = offset_samples;
-    request.preserve_paused = preserve_paused;
-    request.update_mpris_track = update_mpris_track;
-    request.skip_engine_stop = skip_engine_stop;
-    stream_manager_->begin_async_probe(request,
-                                       entry.audio_file_path,
-                                       forced_rate,
-                                       forced_bits,
-                                       probe_generation);
-}
-
-void GtkPlayerWindow::append_stream_entry(const std::string& path,
-                                          const std::string& hint_title,
-                                          const std::string& hint_artist) {
-    PlaylistEntry entry;
-    entry.audio_file_path = path;
-    entry.patch.is_stream = true;
-    entry.track_number = static_cast<int>(playlist_.size() + 1);
-    entry.title = !hint_title.empty() ? hint_title : stream_display_label(path);
-    entry.performer = hint_artist;
-    entry.start_sample = 0;
-    entry.end_sample = 0;
-    entry.source_label = stream_display_label(path);
-    const std::string stream_hint = !hint_title.empty() ? hint_title : path;
-    const std::uint32_t hinted_rate = stream_sample_rate_hint(stream_hint);
-    const std::uint16_t hinted_bits = stream_bits_per_sample_hint(stream_hint);
-    entry.decoded_format.sample_rate = hinted_rate > 0 ? hinted_rate : 44100;
-    entry.decoded_format.channels = 2;
-    entry.decoded_format.bits_per_sample = hinted_bits > 0 ? hinted_bits : 16;
-    entry.source_sample_rate = entry.decoded_format.sample_rate;
-    entry.source_bits_per_sample = entry.decoded_format.bits_per_sample;
-    const std::uint32_t target_rate = target_sample_rate_for(entry.source_sample_rate);
-    const std::uint16_t target_bits = target_bits_for(entry.source_bits_per_sample);
-    entry.resampled = (target_rate > 0 && target_rate != entry.source_sample_rate);
-    entry.resampled_from_rate = entry.resampled ? entry.source_sample_rate : 0;
-    entry.bitdepth_converted = (target_bits > 0 && target_bits != entry.source_bits_per_sample);
-    entry.native_decode = false;
-    entry.processed_by_ffmpeg = true;
-    if (entry.resampled) {
-        entry.decoded_format.sample_rate = target_rate;
-    }
-    if (entry.bitdepth_converted) {
-        entry.decoded_format.bits_per_sample = target_bits;
-    }
-    const std::string stream_hint_lower = [&stream_hint]() {
-        std::string lower = stream_hint;
-        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
-            return static_cast<char>(std::tolower(c));
-        });
-        return lower;
-    }();
-    const bool hinted_flac = stream_hint_lower.find("flac") != std::string::npos;
-    entry.codec_name = hinted_flac ? "flac" : (is_hls_media_uri(path) ? "hls" : "stream");
-    entry.lossless_source = hinted_flac;
-    entry.lossy_source = !hinted_flac;
-    entry.title = safe_utf8_for_display(entry.title);
-    entry.performer = safe_utf8_for_display(entry.performer);
-    entry.source_label = safe_utf8_for_display(entry.source_label);
-    entry.metadata_state = MetadataState::Ready;
-    playlist_.push_back(entry);
-}
-
-void GtkPlayerWindow::apply_stream_probe_to_entry(PlaylistEntry& entry, const ExternalAudioInfo& info) {
-    entry.source_sample_rate = info.source_format.sample_rate > 0 ? info.source_format.sample_rate : info.format.sample_rate;
-    entry.source_bits_per_sample = info.source_format.bits_per_sample > 0 ? info.source_format.bits_per_sample : info.format.bits_per_sample;
-    entry.decoded_format = info.format;
-    if (entry.decoded_format.channels == 0) {
-        entry.decoded_format.channels = 2;
-    }
-    if (!info.codec_name.empty()) {
-        entry.codec_name = info.codec_name;
-    }
-    entry.patch.source_bit_rate = info.bit_rate;
-    entry.lossless_source = info.lossless;
-    entry.lossy_source = !info.lossless;
-    const std::uint32_t target_rate = target_sample_rate_for(entry.source_sample_rate);
-    const std::uint16_t target_bits = target_bits_for(entry.source_bits_per_sample);
-    entry.resampled = (target_rate > 0 && target_rate != entry.source_sample_rate);
-    entry.resampled_from_rate = entry.resampled ? entry.source_sample_rate : 0;
-    entry.bitdepth_converted = (target_bits > 0 && target_bits != entry.source_bits_per_sample);
-    if (entry.resampled) {
-        entry.decoded_format.sample_rate = target_rate;
-    }
-    if (entry.bitdepth_converted) {
-        entry.decoded_format.bits_per_sample = target_bits;
-    }
-    entry.patch.stream_format_probed = true;
-}
-
-void GtkPlayerWindow::refresh_stream_health_rows_for_url(const std::string& url) {
-    if (playlist_store_ == nullptr || playlist_.empty()) {
-        return;
-    }
-
-    const std::string normalized = normalize_stream_url(url);
-    GtkTreeIter iter;
-    gboolean valid = gtk_tree_model_get_iter_first(GTK_TREE_MODEL(playlist_store_), &iter);
-    while (valid) {
-        int index = 0;
-        gtk_tree_model_get(GTK_TREE_MODEL(playlist_store_), &iter, COL_INDEX, &index, -1);
-        if (index >= 0 && static_cast<std::size_t>(index) < playlist_.size()) {
-            const PlaylistEntry& entry = playlist_[static_cast<std::size_t>(index)];
-            if (normalize_stream_url(entry.audio_file_path) == normalized) {
-                const bool stream_broken = entry.patch.is_stream && stream_manager_->is_broken(entry.audio_file_path);
-                const std::string trackno = stream_broken
-                    ? ("× " + std::to_string(entry.track_number))
-                    : std::to_string(entry.track_number);
-                gtk_list_store_set(playlist_store_, &iter,
-                                   COL_TRACKNO, trackno.c_str(),
-                                   COL_STREAM_BROKEN, stream_broken ? TRUE : FALSE,
-                                   -1);
-            }
-        }
-        valid = gtk_tree_model_iter_next(GTK_TREE_MODEL(playlist_store_), &iter);
-    }
-
-    if (playlist_view_ != nullptr) {
-        gtk_widget_queue_draw(playlist_view_);
-    }
-}
-
-void GtkPlayerWindow::sync_playlist_cursor_to_selection() {
-    if (playlist_.empty() || playlist_view_ == nullptr) {
-        return;
-    }
-
-    GtkTreeView* view = GTK_TREE_VIEW(playlist_view_);
-    GtkTreeSelection* selection = gtk_tree_view_get_selection(view);
-    GtkTreeModel* model = nullptr;
-    GtkTreeIter iter;
-    if (!gtk_tree_selection_get_selected(selection, &model, &iter)) {
-        return;
-    }
-
-    GtkTreePath* path = gtk_tree_model_get_path(model, &iter);
-    if (path == nullptr) {
-        return;
-    }
-    gtk_tree_view_set_cursor(view, path, nullptr, FALSE);
-    gtk_tree_path_free(path);
-}
-
-std::size_t GtkPlayerWindow::highlighted_playlist_index() const {
-    if (playlist_.empty()) {
-        return 0;
-    }
-    if (playlist_view_ == nullptr) {
-        return std::min(current_track_index_, playlist_.size() - 1);
-    }
-
-    GtkTreeView* view = GTK_TREE_VIEW(playlist_view_);
-    GtkTreeSelection* selection = gtk_tree_view_get_selection(view);
-    GtkTreeModel* model = nullptr;
-    GtkTreeIter iter;
-    if (gtk_tree_selection_get_selected(selection, &model, &iter)) {
-        int row_index = -1;
-        gtk_tree_model_get(model, &iter, COL_INDEX, &row_index, -1);
-        if (row_index >= 0 && static_cast<std::size_t>(row_index) < playlist_.size()) {
-            return static_cast<std::size_t>(row_index);
-        }
-    }
-
-    return std::min(current_track_index_, playlist_.size() - 1);
-}
-
-std::string GtkPlayerWindow::media_source_summary(const PlaylistEntry& entry) const {
-    std::ostringstream summary;
-    summary << codec_label_for_entry(entry.codec_name, entry.audio_file_path);
-
-    const std::uint32_t rate = entry.source_sample_rate > 0 ? entry.source_sample_rate : entry.decoded_format.sample_rate;
-    const std::uint16_t channels = entry.decoded_format.channels > 0 ? entry.decoded_format.channels : 2;
-    const std::uint16_t bits = entry.source_bits_per_sample > 0 ? entry.source_bits_per_sample : entry.decoded_format.bits_per_sample;
-    const bool format_known = entry.patch.is_stream ? entry.patch.stream_format_probed
-                                                    : entry.metadata_state == MetadataState::Ready;
-
-    if (format_known || rate > 0) {
-        if (rate > 0) {
-            summary << ", " << rate << " Hz";
-        }
-        const std::string layout = channels_layout_label(channels);
-        if (!layout.empty()) {
-            summary << ", " << layout;
-        }
-        if (entry.lossy_source && entry.patch.source_bit_rate >= 1000) {
-            summary << ", " << ((entry.patch.source_bit_rate + 500) / 1000) << " kb/s";
-        } else if (bits > 0 && !entry.lossy_source) {
-            summary << ", " << bits << " bit";
-        }
-    }
-
-    return summary.str();
-}
-
 void GtkPlayerWindow::save_playlist_session() const {
-    std::vector<PlaylistSessionEntryData> entries;
-    entries.reserve(playlist_.size());
-    for (const PlaylistEntry& entry : playlist_) {
-        entries.push_back(session_entry_data_from(entry));
-    }
-    const std::size_t current_index = playlist_.empty() ? 0 : highlighted_playlist_index();
-    session_controller_->save(entries, current_index);
+    patches::save_playlist_session(const_cast<GtkPlayerWindow&>(*this));
 }
 
 bool GtkPlayerWindow::restore_playlist_session() {
-    return session_controller_->restore();
-}
-
-bool GtkPlayerWindow::validate_mpris_open_uri(const std::string& uri, std::string* resolved_location) const {
-    if (uri.compare(0, 7, "file://") == 0) {
-        const std::string path = path_from_mpris_uri(uri);
-        if (path.empty()) {
-            return false;
-        }
-        if (!g_file_test(path.c_str(), G_FILE_TEST_EXISTS) || !g_file_test(path.c_str(), G_FILE_TEST_IS_REGULAR)) {
-            return false;
-        }
-        if (!is_supported_media_path(path)) {
-            return false;
-        }
-        if (resolved_location != nullptr) {
-            *resolved_location = path;
-        }
-        return true;
-    }
-
-    if (is_http_media_uri(uri) || uri.compare(0, 6, "icy://") == 0) {
-        if (resolved_location != nullptr) {
-            *resolved_location = uri;
-        }
-        return true;
-    }
-
-    return false;
-}
-
-void GtkPlayerWindow::handle_media_play_pause() {
-    update_playlist_selection_from_ui();
-    if (engine_.is_playing() && engine_.is_paused()) {
-        engine_.resume();
-    } else if (engine_.is_playing()) {
-        engine_.pause();
-    } else {
-        mpris_play();
-    }
-    notify_mpris_state_changed();
-}
-
-bool GtkPlayerWindow::handle_media_key(guint keyval) {
-    switch (keyval) {
-        case GDK_KEY_AudioPlay:
-        case GDK_KEY_AudioPause:
-            handle_media_play_pause();
-            return true;
-        case GDK_KEY_AudioStop:
-            handle_media_stop();
-            return true;
-        case GDK_KEY_AudioNext:
-            handle_media_next();
-            return true;
-        case GDK_KEY_AudioPrev:
-            handle_media_previous();
-            return true;
-        default:
-            return false;
-    }
-}
-
-gboolean GtkPlayerWindow::on_window_key_press(GtkWidget*, GdkEvent* event, gpointer user_data) {
-    auto* self = static_cast<GtkPlayerWindow*>(user_data);
-    if (self == nullptr || event == nullptr || event->type != GDK_KEY_PRESS) {
-        return FALSE;
-    }
-    const auto* key_event = reinterpret_cast<GdkEventKey*>(event);
-    return self->handle_media_key(key_event->keyval) ? TRUE : FALSE;
-}
-
-void GtkPlayerWindow::on_media_play_pause(GSimpleAction*, GVariant*, gpointer user_data) {
-    static_cast<GtkPlayerWindow*>(user_data)->handle_media_play_pause();
+    return patches::restore_playlist_session(*this);
 }
 } // namespace pcmtp
