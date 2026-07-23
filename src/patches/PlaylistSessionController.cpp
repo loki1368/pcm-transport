@@ -7,7 +7,7 @@
 #include <cstring>
 #include <unistd.h>
 
-#include "pcmtp/decoder/ExternalAudioDecoder.hpp"
+#include "pcmtp/patches/StreamAudioDecoder.hpp"
 #include "pcmtp/util/MediaUri.hpp"
 
 namespace pcmtp {
@@ -127,7 +127,7 @@ PlaylistSessionEntryData PlaylistSessionController::entry_from_track(const Playl
     entry.codec_name = track.codec_name;
     entry.cue_track = track.cue_track;
     entry.cue_album_end_sample = track.cue_album_end_sample;
-    entry.is_stream = track.is_stream || ExternalAudioDecoder::is_stream_uri(track.audio_file_path) ||
+    entry.is_stream = track.is_stream || StreamAudioDecoder::is_stream_uri(track.audio_file_path) ||
                       path_is_remote_session_uri(track.audio_file_path);
     return entry;
 }
@@ -137,7 +137,7 @@ bool PlaylistSessionController::track_restorable(const PlaylistSessionTrack& tra
         return false;
     }
     if (track.is_stream || path_is_remote_session_uri(track.audio_file_path) ||
-        ExternalAudioDecoder::is_stream_uri(track.audio_file_path)) {
+        StreamAudioDecoder::is_stream_uri(track.audio_file_path)) {
         return true;
     }
     return access(track.audio_file_path.c_str(), F_OK) == 0;

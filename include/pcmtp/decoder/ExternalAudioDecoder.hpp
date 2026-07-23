@@ -35,7 +35,11 @@ struct ExternalAudioInfo {
     bool live_format_probed = false;
 };
 
-class ExternalAudioDecoder final : public IAudioDecoder {
+class StreamAudioDecoder;
+
+class ExternalAudioDecoder : public IAudioDecoder {
+    friend class StreamAudioDecoder;
+
 public:
     explicit ExternalAudioDecoder(std::uint32_t forced_output_sample_rate = 0, std::uint16_t forced_output_bits_per_sample = 0, const std::string& resample_quality = "maximum", const std::string& bitdepth_quality = "tpdf_hp");
     ~ExternalAudioDecoder() override;
@@ -52,28 +56,25 @@ public:
     void interrupt() override;
 
     static bool looks_supported(const std::string& path);
-    static bool is_stream_uri(const std::string& path);
     static ExternalAudioInfo probe_metadata(const std::string& path,
                                             std::uint32_t forced_output_sample_rate = 0,
                                             std::uint16_t forced_output_bits_per_sample = 0,
                                             bool background_priority = false,
                                             ManagedSubprocess* probe_process = nullptr);
     static ExternalAudioInfo probe_info(const std::string& path, std::uint32_t forced_output_sample_rate = 0, std::uint16_t forced_output_bits_per_sample = 0);
-    static bool verify_stream_playback(const std::string& path,
-                                       const ExternalAudioInfo& probed_info,
-                                       std::uint32_t forced_output_sample_rate = 0,
-                                       std::uint16_t forced_output_bits_per_sample = 0);
     static GenericTags read_tags(const std::string& path);
+
+protected:
+    virtual std::string decode_command(double seconds) const;
+    virtual ExternalAudioInfo effective_probe_info(const std::string& path) const;
 
 private:
     static std::string to_lower_extension(const std::string& path);
     static std::string shell_escape(const std::string& value);
     static std::string trim_copy(const std::string& value);
-    std::string decode_command(double seconds) const;
     std::size_t bytes_per_sample() const;
     void close_pipe(bool log_stderr, const std::string& context);
     bool start_decode_pipe(double seconds, const std::string& context);
-    ExternalAudioInfo effective_probe_info(const std::string& path) const;
 
     std::uint32_t forced_output_sample_rate_ = 0;
     std::uint16_t forced_output_bits_per_sample_ = 0;

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "pcmtp/patches/StreamAudioDecoder.hpp"
 #include "pcmtp/util/Logger.hpp"
 #include "pcmtp/util/MediaUri.hpp"
 
@@ -290,7 +291,7 @@ void StreamPlaybackManager::probe_worker_loop() {
             StreamPlaybackManager* manager = result->manager;
 
             try {
-                result->info = ExternalAudioDecoder::probe_info(result->url,
+                result->info = StreamAudioDecoder::probe_info(result->url,
                                                                 result->forced_output_sample_rate,
                                                                 result->forced_output_bits_per_sample);
                 result->probe_ok = true;
@@ -306,7 +307,7 @@ void StreamPlaybackManager::probe_worker_loop() {
             }
 
             if (!generation_current && result->probe_ok && result->info.live_format_probed) {
-                if (!ExternalAudioDecoder::verify_stream_playback(result->url,
+                if (!StreamAudioDecoder::verify_stream_playback(result->url,
                                                                   result->info,
                                                                   result->forced_output_sample_rate,
                                                                   result->forced_output_bits_per_sample)) {

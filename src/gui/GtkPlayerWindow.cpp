@@ -37,6 +37,7 @@
 #include "pcmtp/backend/AlsaBufferPolicy.hpp"
 #include "pcmtp/backend/AlsaPcmBackend.hpp"
 #include "pcmtp/decoder/ExternalAudioDecoder.hpp"
+#include "pcmtp/patches/StreamAudioDecoder.hpp"
 #include "pcmtp/decoder/GaplessChainDecoder.hpp"
 #include "pcmtp/decoder/FlacStreamDecoder.hpp"
 #include "pcmtp/decoder/MemoryAudioDecoder.hpp"
@@ -355,7 +356,7 @@ std::string find_cover_art_in_directory(const std::string& audio_file_path) {
 }
 
 bool is_supported_media_path(const std::string& path) {
-    if (ExternalAudioDecoder::is_stream_uri(path)) {
+    if (StreamAudioDecoder::is_stream_uri(path)) {
         return true;
     }
     if (M3uPlaylistReader::looks_like_playlist_path(path) || CueParser::looks_like_cue_path(path)) {
@@ -3971,12 +3972,12 @@ std::unique_ptr<IAudioDecoder> GtkPlayerWindow::create_decoder_for_entry(const P
     if (!entry.is_stream && ext == ".flac" && entry.native_decode && !resample_needed && !bitdepth_needed) {
         return std::unique_ptr<IAudioDecoder>(new FlacStreamDecoder());
     }
-    if (entry.is_stream || ExternalAudioDecoder::is_stream_uri(entry.audio_file_path)) {
-        std::unique_ptr<ExternalAudioDecoder> decoder;
+    if (entry.is_stream || StreamAudioDecoder::is_stream_uri(entry.audio_file_path)) {
+        std::unique_ptr<StreamAudioDecoder> decoder;
         if (resample_needed || bitdepth_needed) {
-            decoder.reset(new ExternalAudioDecoder(target_rate, target_bits, resample_quality_, bitdepth_quality_));
+            decoder.reset(new StreamAudioDecoder(target_rate, target_bits, resample_quality_, bitdepth_quality_));
         } else {
-            decoder.reset(new ExternalAudioDecoder());
+            decoder.reset(new StreamAudioDecoder());
         }
         ExternalAudioInfo known;
         known.format = entry.decoded_format;
@@ -4258,18 +4259,24 @@ std::size_t GtkPlayerWindow::append_source_placeholders(const std::string& path,
         return 0;
     }
 
-    if (ExternalAudioDecoder::is_stream_uri(path)) {
+    if (StreamAudioDecoder::is_stream_uri(path)) {
         append_stream_entry(path);
         return 1;  // stream entries are immediately ready
     }
 
     if (M3uPlaylistReader::looks_like_playlist_path(path)) {
-        const std::vector<std::string> entries = M3uPlaylistReader::read_local_paths(path);
+        const std::vector<M3uPlaylistEntry> entries = M3uPlaylistReader::read_entries(path);
         Logger::instance().info("Importing playlist: " + path + " entries=" + std::to_string(entries.size()));
         std::size_t appended = 0;
-        for (const std::string& item : entries) {
+        for (const M3uPlaylistEntry& playlist_entry : entries) {
+            const std::string& item = playlist_entry.location;
             if (M3uPlaylistReader::looks_like_playlist_path(item)) {
                 Logger::instance().debug("Skipping nested playlist entry: " + item);
+                continue;
+            }
+            if (StreamAudioDecoder::is_stream_uri(item)) {
+                append_stream_entry(item, playlist_entry.title, playlist_entry.artist);
+                ++appended;
                 continue;
             }
             if (!g_file_test(item.c_str(), G_FILE_TEST_IS_REGULAR)) {
@@ -4702,7 +4709,7 @@ std::vector<std::string> GtkPlayerWindow::load_source_paths(const std::vector<st
         if (path.empty()) {
             continue;
         }
-        if (ExternalAudioDecoder::is_stream_uri(path)) {
+        if (StreamAudioDecoder::is_stream_uri(path)) {
             const std::size_t before = playlist_.size();
             try {
                 append_source_placeholders(path, path, &probe_paths);
@@ -7309,7 +7316,7 @@ void GtkPlayerWindow::invalidate_mpris_cover_cache() {
 }
 
 std::string GtkPlayerWindow::cached_cover_art_for(const std::string& audio_file_path) const {
-    if (ExternalAudioDecoder::is_stream_uri(audio_file_path)) {
+    if (StreamAudioDecoder::is_stream_uri(audio_file_path)) {
         return std::string();
     }
     const std::string directory = directory_of_path(audio_file_path);

@@ -106,14 +106,18 @@
 if (is_stream_uri(path)) return std::make_unique<StreamAudioDecoder>(...);
 ```
 
-**Оценка:** апстримный `ExternalAudioDecoder` → diff к `main` близок к нулю.
+**Статус:** реализовано — `StreamAudioDecoder` в `patches/`, stream-логика вынесена из `ExternalAudioDecoder`.
 
 ### Фаза 5 — M3U radio / EXTINF
 
-**Новый модуль:** `M3uRadioPlaylistReader` или расширение в `patches/M3uPlaylistExtensions.cpp`
+**Новый модуль:** `M3uPlaylistExtensions` (`patches/M3uPlaylistExtensions.hpp/.cpp`)
 
-- EXTINF, remote URI, `MediaUri` resolution
-- Базовый `M3uPlaylistReader` в upstream не трогать (или только добавить virtual hook `parse_line`).
+- EXTINF, remote URI fetch (curl), `MediaUri` resolution, remote `.m3u` detection
+- `M3uPlaylistReader::read_entries` → делегирует в extensions
+- `M3uPlaylistReader::read_local_paths` — upstream-стиль (локальные пути, без remote)
+- `GtkPlayerWindow` импортирует плейлисты через `read_entries` (стримы + EXTINF)
+
+**Статус (2026-07-23):** реализовано. `M3uPlaylistReader.cpp` ~180 строк, близко к upstream.
 
 **Оценка:** −150…200 строк из апстримного reader.
 

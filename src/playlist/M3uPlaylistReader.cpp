@@ -1,12 +1,9 @@
 #include "pcmtp/playlist/M3uPlaylistReader.hpp"
 
-#include "pcmtp/util/MediaUri.hpp"
+#include "pcmtp/patches/M3uPlaylistExtensions.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cctype>
-#include <cmath>
-#include <cstdio>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -15,20 +12,6 @@
 
 namespace pcmtp {
 namespace {
-
-std::string lower_extension(const std::string& path) {
-    const std::size_t dot = path.find_last_of('.');
-    if (dot == std::string::npos) {
-        return std::string();
-    }
-    const std::size_t query = path.find('?', dot);
-    const std::size_t end = query == std::string::npos ? path.size() : query;
-    std::string ext = path.substr(dot, end - dot);
-    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    return ext;
-}
 
 std::string directory_name(const std::string& path) {
     const std::size_t pos = path.find_last_of("/\\");
@@ -69,6 +52,12 @@ bool starts_with_ci(const std::string& text, const char* prefix) {
         }
     }
     return true;
+}
+
+bool is_remote_or_stream_uri(const std::string& value) {
+    return starts_with_ci(value, "http://") || starts_with_ci(value, "https://") ||
+           starts_with_ci(value, "ftp://") || starts_with_ci(value, "rtsp://") ||
+           starts_with_ci(value, "rtmp://") || starts_with_ci(value, "icy://");
 }
 
 int hex_value(char ch) {
@@ -127,99 +116,31 @@ std::string resolve_local_entry(const std::string& playlist_path, const std::str
     if (is_absolute_path(entry)) {
         return entry;
     }
-    if (is_remote_media_uri(entry)) {
-        return entry;
-    }
     return directory_name(playlist_path) + "/" + entry;
 }
 
-std::string shell_escape_single_quotes(const std::string& value) {
-    std::string escaped;
-    escaped.reserve(value.size() + 8);
-    escaped.push_back('\'');
-    for (char ch : value) {
-        if (ch == '\'') {
-            escaped += "'\\''";
-        } else {
-            escaped.push_back(ch);
-        }
-    }
-    escaped.push_back('\'');
-    return escaped;
+} // namespace
+
+bool M3uPlaylistReader::looks_like_playlist_path(const std::string& path) {
+    return M3uPlaylistExtensions::looks_like_playlist_path(path);
 }
 
-std::string read_playlist_text(const std::string& path) {
-    if (is_remote_media_uri(path)) {
-        const std::string command = "curl -fsSL --max-time 30 " + shell_escape_single_quotes(path);
-        std::array<char, 4096> buffer{};
-        std::string output;
-        FILE* pipe = popen(command.c_str(), "r");
-        if (pipe == nullptr) {
-            throw std::runtime_error("Cannot fetch remote playlist: " + path);
-        }
-        while (std::size_t bytes = std::fread(buffer.data(), 1, buffer.size(), pipe)) {
-            output.append(buffer.data(), bytes);
-        }
-        const int status = pclose(pipe);
-        if (status != 0 || output.empty()) {
-            throw std::runtime_error("Cannot fetch remote playlist: " + path);
-        }
-        return output;
-    }
+std::vector<M3uPlaylistEntry> M3uPlaylistReader::read_entries(const std::string& path) {
+    return M3uPlaylistExtensions::read_entries(path);
+}
 
+std::vector<std::string> M3uPlaylistReader::read_local_paths(const std::string& path) {
     std::ifstream input(path.c_str(), std::ios::binary);
     if (!input) {
         throw std::runtime_error("Cannot open playlist: " + path);
     }
+
     std::ostringstream ss;
     ss << input.rdbuf();
-    return pcmtp::text::normalize_text_file_bytes(ss.str());
-}
+    const std::string normalized_text = pcmtp::text::normalize_text_file_bytes(ss.str());
 
-bool parse_extinf_line(const std::string& line, int* duration_seconds, std::string* title, std::string* artist) {
-    if (!starts_with_ci(line, "#EXTINF:")) {
-        return false;
-    }
-    const std::string payload = trim_copy(line.substr(8));
-    const std::size_t comma = payload.find(',');
-    if (comma == std::string::npos) {
-        return false;
-    }
-
-    const std::string duration_text = trim_copy(payload.substr(0, comma));
-    std::string info = trim_copy(payload.substr(comma + 1));
-    try {
-        *duration_seconds = static_cast<int>(std::llround(std::stod(duration_text)));
-    } catch (...) {
-        *duration_seconds = -1;
-    }
-
-    const std::size_t separator = info.find(" - ");
-    if (separator != std::string::npos) {
-        *artist = trim_copy(info.substr(0, separator));
-        *title = trim_copy(info.substr(separator + 3));
-    } else {
-        *title = trim_copy(info);
-        artist->clear();
-    }
-    if (artist->empty() && !title->empty() && (*title)[0] == '-') {
-        std::size_t start = 1;
-        while (start < title->size() && std::isspace(static_cast<unsigned char>((*title)[start])) != 0) {
-            ++start;
-        }
-        *title = trim_copy(title->substr(start));
-    }
-    return true;
-}
-
-std::vector<M3uPlaylistEntry> parse_playlist_text(const std::string& playlist_path, const std::string& text) {
-    const std::string normalized = pcmtp::text::normalize_text_file_bytes(text);
-
-    std::vector<M3uPlaylistEntry> entries;
-    M3uPlaylistEntry pending{};
-    bool have_pending = false;
-
-    std::istringstream lines(normalized);
+    std::vector<std::string> paths;
+    std::istringstream lines(normalized_text);
     std::string line;
     while (std::getline(lines, line)) {
         if (!line.empty() && line.back() == '\r') {
@@ -229,63 +150,23 @@ std::vector<M3uPlaylistEntry> parse_playlist_text(const std::string& playlist_pa
         if (line.empty()) {
             continue;
         }
-
         if (!line.empty() && line[0] == '#') {
-            if (starts_with_ci(line, "#EXTINF:")) {
-                have_pending = parse_extinf_line(line, &pending.duration_seconds, &pending.title, &pending.artist);
-            }
             continue;
         }
-
+        if (is_remote_or_stream_uri(line)) {
+            continue;
+        }
         std::string resolved;
         if (starts_with_ci(line, "file://")) {
             if (!local_file_uri_to_path(line, resolved)) {
                 continue;
             }
         } else {
-            resolved = resolve_local_entry(playlist_path, line);
+            resolved = resolve_local_entry(path, line);
         }
-        if (resolved.empty() || resolved == playlist_path) {
-            continue;
+        if (!resolved.empty() && resolved != path) {
+            paths.push_back(resolved);
         }
-
-        M3uPlaylistEntry entry;
-        entry.location = std::move(resolved);
-        if (have_pending) {
-            entry.title = pending.title;
-            entry.artist = pending.artist;
-            entry.duration_seconds = pending.duration_seconds;
-            pending = M3uPlaylistEntry{};
-            have_pending = false;
-        }
-        entries.push_back(std::move(entry));
-    }
-
-    return entries;
-}
-
-} // namespace
-
-bool M3uPlaylistReader::looks_like_playlist_path(const std::string& path) {
-    if (is_hls_media_uri(path) || file_looks_like_hls_playlist(path)) {
-        return false;
-    }
-    if (is_remote_media_uri(path)) {
-        const std::string ext = lower_extension(path);
-        return ext == ".m3u" || ext == ".m3u8";
-    }
-    const std::string ext = lower_extension(path);
-    return ext == ".m3u" || ext == ".m3u8";
-}
-
-std::vector<M3uPlaylistEntry> M3uPlaylistReader::read_entries(const std::string& path) {
-    return parse_playlist_text(path, read_playlist_text(path));
-}
-
-std::vector<std::string> M3uPlaylistReader::read_local_paths(const std::string& path) {
-    std::vector<std::string> paths;
-    for (const M3uPlaylistEntry& entry : read_entries(path)) {
-        paths.push_back(entry.location);
     }
     return paths;
 }

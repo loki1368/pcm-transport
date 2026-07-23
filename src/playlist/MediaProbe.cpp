@@ -5,7 +5,9 @@
 #include <exception>
 #include <memory>
 
+#include "pcmtp/decoder/ExternalAudioDecoder.hpp"
 #include "pcmtp/decoder/FlacStreamDecoder.hpp"
+#include "pcmtp/patches/StreamAudioDecoder.hpp"
 
 namespace pcmtp {
 namespace {
@@ -47,7 +49,9 @@ MediaProbeResult probe_media_file(const std::string& path, ManagedSubprocess* pr
             }
         }
 
-        const ExternalAudioInfo info = ExternalAudioDecoder::probe_metadata(path, 0, 0, probe_process);
+        const ExternalAudioInfo info = StreamAudioDecoder::is_stream_uri(path)
+            ? StreamAudioDecoder::probe_metadata(path, 0, 0, false, probe_process)
+            : ExternalAudioDecoder::probe_metadata(path, 0, 0, false, probe_process);
         result.format = info.format;
         result.total_samples_per_channel = info.total_samples_per_channel;
         result.tags = info.tags;
