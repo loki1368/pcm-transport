@@ -551,6 +551,22 @@ enum PlaylistColumns {
     COL_COUNT
 };
 
+constexpr std::size_t kMetadataProbeWorkerCount = 3;
+constexpr std::size_t kMetadataDisplayRefreshStride = 8;
+
+std::vector<std::string> prioritize_probe_path(std::vector<std::string> paths,
+                                               const std::string& priority_path) {
+    if (priority_path.empty()) {
+        return paths;
+    }
+    const auto it = std::find(paths.begin(), paths.end(), priority_path);
+    if (it != paths.end() && it != paths.begin()) {
+        paths.erase(it);
+        paths.insert(paths.begin(), priority_path);
+    }
+    return paths;
+}
+
 std::string base_name(const std::string& path) {
     const std::size_t pos = path.find_last_of("/\\");
     if (pos == std::string::npos) {
@@ -2757,7 +2773,7 @@ void GtkPlayerWindow::on_pause_clicked(GtkButton*, gpointer user_data) {
 
 void GtkPlayerWindow::on_stop_clicked(GtkButton*, gpointer user_data) {
     auto* self = static_cast<GtkPlayerWindow*>(user_data);
-    if (self->playlist_loading_) {
+    if (!self->playback_available() && !self->engine_.is_playing()) {
         return;
     }
     self->stop_playback();
@@ -3070,7 +3086,7 @@ gboolean GtkPlayerWindow::on_progress_draw(GtkWidget* widget, cairo_t* cr, gpoin
 
 gboolean GtkPlayerWindow::on_progress_button_press(GtkWidget* widget, GdkEventButton* event, gpointer user_data) {
     auto* self = static_cast<GtkPlayerWindow*>(user_data);
-    if (event == nullptr || event->button != 1 || self->playlist_loading_ ||
+    if (event == nullptr || event->button != 1 || !self->current_track_metadata_ready() ||
         self->playlist_.empty() || self->current_track_index_ >= self->playlist_.size()) {
         return FALSE;
     }
@@ -3123,9 +3139,6 @@ gboolean GtkPlayerWindow::on_pending_seek_timer(gpointer user_data) {
 
 void GtkPlayerWindow::on_playlist_row_activated(GtkTreeView*, GtkTreePath* path, GtkTreeViewColumn*, gpointer user_data) {
     auto* self = static_cast<GtkPlayerWindow*>(user_data);
-    if (self->playlist_loading_) {
-        return;
-    }
     const int* indices = gtk_tree_path_get_indices(path);
     if (indices == nullptr) {
         return;
@@ -3778,14 +3791,22 @@ std::size_t GtkPlayerWindow::append_source_placeholders(const std::string& path,
 }
 
 void GtkPlayerWindow::start_metadata_worker() {
-    if (metadata_worker_.joinable()) {
+    if (!metadata_workers_.empty()) {
         return;
     }
-    if (!metadata_probe_process_) {
-        metadata_probe_process_ = std::make_unique<ManagedSubprocess>();
-    }
+
+    const std::size_t worker_count = std::max<std::size_t>(
+        1,
+        std::min<std::size_t>(kMetadataProbeWorkerCount,
+                              static_cast<std::size_t>(std::thread::hardware_concurrency())));
+    metadata_probe_processes_.clear();
+    metadata_probe_processes_.reserve(worker_count);
+    metadata_workers_.reserve(worker_count);
     metadata_worker_stop_ = false;
-    metadata_worker_ = std::thread(&GtkPlayerWindow::metadata_worker_loop, this);
+    for (std::size_t worker_index = 0; worker_index < worker_count; ++worker_index) {
+        metadata_probe_processes_.push_back(std::make_unique<ManagedSubprocess>());
+        metadata_workers_.emplace_back(&GtkPlayerWindow::metadata_worker_loop, this, worker_index);
+    }
 }
 
 void GtkPlayerWindow::stop_metadata_worker() {
@@ -3794,18 +3815,29 @@ void GtkPlayerWindow::stop_metadata_worker() {
         metadata_worker_stop_ = true;
         metadata_jobs_.clear();
     }
-    if (metadata_probe_process_) {
-        metadata_probe_process_->cancel();
+    for (const std::unique_ptr<ManagedSubprocess>& probe_process : metadata_probe_processes_) {
+        if (probe_process) {
+            probe_process->cancel();
+        }
     }
     metadata_worker_cv_.notify_all();
-    if (metadata_worker_.joinable()) {
-        metadata_worker_.join();
+    for (std::thread& worker : metadata_workers_) {
+        if (worker.joinable()) {
+            worker.join();
+        }
     }
+    metadata_workers_.clear();
+    metadata_probe_processes_.clear();
     std::lock_guard<std::mutex> lock(metadata_worker_mutex_);
     metadata_completions_.clear();
 }
 
-void GtkPlayerWindow::metadata_worker_loop() {
+void GtkPlayerWindow::metadata_worker_loop(std::size_t worker_index) {
+    ManagedSubprocess* probe_process = nullptr;
+    if (worker_index < metadata_probe_processes_.size()) {
+        probe_process = metadata_probe_processes_[worker_index].get();
+    }
+
     for (;;) {
         MetadataProbeJob job;
         {
@@ -3823,7 +3855,7 @@ void GtkPlayerWindow::metadata_worker_loop() {
         MetadataProbeCompletion completion;
         completion.generation = job.generation;
         completion.path = job.path;
-        completion.result = probe_media_file(job.path, metadata_probe_process_.get());
+        completion.result = probe_media_file(job.path, probe_process, true);
 
         {
             std::lock_guard<std::mutex> lock(metadata_worker_mutex_);
@@ -3844,7 +3876,7 @@ void GtkPlayerWindow::submit_metadata_jobs(std::uint64_t generation,
             metadata_jobs_.push_back(MetadataProbeJob{generation, path});
         }
     }
-    metadata_worker_cv_.notify_one();
+    metadata_worker_cv_.notify_all();
 }
 
 void GtkPlayerWindow::apply_metadata_probe_result(const std::string& path,
@@ -3955,17 +3987,162 @@ void GtkPlayerWindow::apply_metadata_probe_result(const std::string& path,
     }
 }
 
+bool GtkPlayerWindow::try_fast_playlist_entry_metadata(std::size_t index) {
+    if (index >= playlist_.size()) {
+        return false;
+    }
+
+    const PlaylistEntry& entry = playlist_[index];
+    if (entry.metadata_state == MetadataState::Ready) {
+        return true;
+    }
+    if (entry.metadata_state == MetadataState::Failed) {
+        return false;
+    }
+
+    const std::string& path = entry.audio_file_path;
+    const auto cached = media_probe_cache_.find(path);
+    if (cached != media_probe_cache_.end()) {
+        apply_metadata_probe_result(path, cached->second);
+        return playlist_[index].metadata_state == MetadataState::Ready;
+    }
+
+    MediaProbeResult fast_result;
+    if (try_probe_media_file_fast(path, &fast_result)) {
+        media_probe_cache_[path] = fast_result;
+        apply_metadata_probe_result(path, fast_result);
+    }
+    return playlist_[index].metadata_state == MetadataState::Ready;
+}
+
+bool GtkPlayerWindow::prepare_track_for_playback(std::size_t index) {
+    if (try_fast_playlist_entry_metadata(index)) {
+        return playlist_[index].metadata_state == MetadataState::Ready;
+    }
+    prioritize_metadata_probe(playlist_[index].audio_file_path);
+    return false;
+}
+
+void GtkPlayerWindow::prioritize_metadata_probe(const std::string& path) {
+    if (path.empty()) {
+        return;
+    }
+
+    const auto cached = media_probe_cache_.find(path);
+    if (cached != media_probe_cache_.end()) {
+        apply_metadata_probe_result(path, cached->second);
+        try_start_pending_metadata_play(path);
+        return;
+    }
+
+    bool has_pending_entry = false;
+    for (const PlaylistEntry& entry : playlist_) {
+        if (entry.audio_file_path == path && entry.metadata_state == MetadataState::Pending) {
+            has_pending_entry = true;
+            break;
+        }
+    }
+    if (!has_pending_entry) {
+        try_start_pending_metadata_play(path);
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(metadata_worker_mutex_);
+        for (auto it = metadata_jobs_.begin(); it != metadata_jobs_.end();) {
+            if (it->generation == metadata_generation_ && it->path == path) {
+                it = metadata_jobs_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        metadata_jobs_.push_front(MetadataProbeJob{metadata_generation_, path});
+    }
+    metadata_worker_cv_.notify_all();
+}
+
+void GtkPlayerWindow::schedule_pending_metadata_play(std::size_t index,
+                                                     std::uint64_t offset_samples,
+                                                     bool start_playback,
+                                                     bool preserve_paused,
+                                                     bool update_mpris_track) {
+    if (index >= playlist_.size()) {
+        return;
+    }
+
+    pending_metadata_playback_.active = true;
+    pending_metadata_playback_.index = index;
+    pending_metadata_playback_.offset_samples = offset_samples;
+    pending_metadata_playback_.start_playback = start_playback;
+    pending_metadata_playback_.preserve_paused = preserve_paused;
+    pending_metadata_playback_.update_mpris_track = update_mpris_track;
+    pending_metadata_playback_.waiting_path = playlist_[index].audio_file_path;
+    prioritize_metadata_probe(pending_metadata_playback_.waiting_path);
+    refresh_display(true, false, false);
+}
+
+void GtkPlayerWindow::clear_pending_metadata_play() {
+    pending_metadata_playback_ = PendingMetadataPlayback{};
+}
+
+void GtkPlayerWindow::try_start_pending_metadata_play(const std::string& path) {
+    if (!pending_metadata_playback_.active || pending_metadata_playback_.waiting_path != path) {
+        return;
+    }
+
+    const std::size_t index = pending_metadata_playback_.index;
+    if (index >= playlist_.size()) {
+        clear_pending_metadata_play();
+        return;
+    }
+
+    const MetadataState state = playlist_[index].metadata_state;
+    if (state == MetadataState::Failed) {
+        clear_pending_metadata_play();
+        return;
+    }
+    if (state != MetadataState::Ready) {
+        return;
+    }
+
+    const PendingMetadataPlayback pending = pending_metadata_playback_;
+    clear_pending_metadata_play();
+    play_track_index_at_offset(pending.index,
+                               pending.offset_samples,
+                               pending.start_playback,
+                               pending.preserve_paused,
+                               pending.update_mpris_track);
+}
+
+bool GtkPlayerWindow::current_track_metadata_ready() const {
+    if (playlist_.empty() || current_track_index_ >= playlist_.size()) {
+        return false;
+    }
+    return playlist_[current_track_index_].metadata_state == MetadataState::Ready;
+}
+
+bool GtkPlayerWindow::metadata_loading_progress_visible() const {
+    if (!playlist_loading_ || pending_metadata_playback_.active) {
+        return false;
+    }
+    return !engine_.transport_snapshot().playing;
+}
+
 void GtkPlayerWindow::drain_metadata_probe_results() {
     std::deque<MetadataProbeCompletion> completions;
     {
         std::lock_guard<std::mutex> lock(metadata_worker_mutex_);
+        if (metadata_completions_.empty()) {
+            return;
+        }
         completions.swap(metadata_completions_);
-    }
-    if (!playlist_loading_) {
-        return;
     }
 
     bool changed = false;
+    bool loading_progress_changed = false;
+    if (playlist_store_ != nullptr) {
+        g_object_freeze_notify(G_OBJECT(playlist_store_));
+    }
     for (MetadataProbeCompletion& completion : completions) {
         if (completion.generation != metadata_generation_) {
             continue;
@@ -3977,6 +4154,13 @@ void GtkPlayerWindow::drain_metadata_probe_results() {
             media_probe_cache_[completion.path] = completion.result;
         }
         apply_metadata_probe_result(completion.path, completion.result);
+        try_start_pending_metadata_play(completion.path);
+
+        if (!playlist_loading_) {
+            changed = true;
+            continue;
+        }
+
         ++metadata_completed_files_;
         if (!valid) {
             ++metadata_failed_files_;
@@ -3986,13 +4170,25 @@ void GtkPlayerWindow::drain_metadata_probe_results() {
                                           : std::string(" (") + completion.result.error + ")"));
         }
         changed = true;
+        loading_progress_changed = true;
+    }
+    if (playlist_store_ != nullptr) {
+        g_object_thaw_notify(G_OBJECT(playlist_store_));
     }
 
-    if (changed) {
+    if (playlist_loading_) {
+        if (loading_progress_changed &&
+            (metadata_completed_files_ % kMetadataDisplayRefreshStride == 0 ||
+             metadata_completed_files_ >= metadata_total_files_)) {
+            refresh_display();
+            update_loading_controls();
+        }
+        if (metadata_completed_files_ >= metadata_total_files_) {
+            finish_metadata_load_session();
+        }
+    } else if (changed) {
+        update_loading_controls();
         refresh_display();
-    }
-    if (metadata_completed_files_ >= metadata_total_files_) {
-        finish_metadata_load_session();
     }
 }
 
@@ -4060,7 +4256,7 @@ void GtkPlayerWindow::finish_metadata_load_session() {
 
     refresh_playlist_processing_metadata();
     update_loading_controls();
-    finalize_loaded_playlist();
+    finalize_loaded_playlist(metadata_failed_files_ > 0);
 
     if (!play_after_path.empty()) {
         for (std::size_t index = 0; index < playlist_.size(); ++index) {
@@ -4083,11 +4279,11 @@ void GtkPlayerWindow::update_loading_controls() {
     if (btn_prev_ != nullptr) gtk_widget_set_sensitive(btn_prev_, can_play);
     if (btn_next_ != nullptr) gtk_widget_set_sensitive(btn_next_, can_play);
     if (playlist_view_ != nullptr) gtk_widget_set_sensitive(playlist_view_, TRUE);
-    if (progress_bar_ != nullptr) gtk_widget_set_sensitive(progress_bar_, !playlist_loading_);
+    if (progress_bar_ != nullptr) gtk_widget_set_sensitive(progress_bar_, current_track_metadata_ready());
 }
 
 bool GtkPlayerWindow::playback_available() const {
-    return !playlist_loading_ && !playlist_.empty();
+    return !playlist_.empty();
 }
 
 std::vector<std::string> GtkPlayerWindow::load_source_paths(const std::vector<std::string>& paths,
@@ -4111,14 +4307,19 @@ std::vector<std::string> GtkPlayerWindow::load_source_paths(const std::vector<st
     }
 
     stop_playback();
+    clear_pending_metadata_play();
     {
         std::lock_guard<std::mutex> lock(metadata_worker_mutex_);
         ++metadata_generation_;
         metadata_jobs_.clear();
         metadata_completions_.clear();
     }
-    if (metadata_probe_process_) {
-        metadata_probe_process_->cancel();
+    if (!metadata_probe_processes_.empty()) {
+        for (const std::unique_ptr<ManagedSubprocess>& probe_process : metadata_probe_processes_) {
+            if (probe_process) {
+                probe_process->cancel();
+            }
+        }
     }
 
     if (replace_playlist) {
@@ -4214,19 +4415,26 @@ std::vector<std::string> GtkPlayerWindow::load_source_paths(const std::vector<st
     if (metadata_total_files_ == 0 || metadata_completed_files_ >= metadata_total_files_) {
         finish_metadata_load_session();
     } else {
-        submit_metadata_jobs(metadata_generation_, pending_paths);
+        std::string priority_path;
+        if (!playlist_.empty()) {
+            const std::size_t index = std::min(current_track_index_, playlist_.size() - 1);
+            priority_path = playlist_[index].audio_file_path;
+        }
+        submit_metadata_jobs(metadata_generation_, prioritize_probe_path(pending_paths, priority_path));
     }
     return accepted_sources;
 }
 
-void GtkPlayerWindow::finalize_loaded_playlist() {
+void GtkPlayerWindow::finalize_loaded_playlist(bool rebuild_view) {
     if (playlist_.empty()) {
         current_track_index_ = 0;
     } else if (current_track_index_ >= playlist_.size()) {
         current_track_index_ = 0;
     }
 
-    rebuild_playlist_view();
+    if (rebuild_view) {
+        rebuild_playlist_view();
+    }
     if (!playlist_.empty()) {
         select_playlist_row(current_track_index_);
     }
@@ -4284,6 +4492,7 @@ void GtkPlayerWindow::start_current_track(bool restart_if_paused) {
 }
 
 void GtkPlayerWindow::stop_playback() {
+    clear_pending_metadata_play();
     cancel_pending_seek();
     track_switch_in_progress_ = false;
     finish_handled_ = false;
@@ -4306,10 +4515,22 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
                                                  bool start_playback,
                                                  bool preserve_paused,
                                                  bool update_mpris_track) {
-    if (playlist_loading_ || index >= playlist_.size() ||
-        playlist_[index].metadata_state != MetadataState::Ready) {
+    if (index >= playlist_.size()) {
         return;
     }
+
+    if (!prepare_track_for_playback(index)) {
+        schedule_pending_metadata_play(index,
+                                       offset_samples,
+                                       start_playback,
+                                       preserve_paused,
+                                       update_mpris_track);
+        return;
+    }
+    if (playlist_[index].metadata_state == MetadataState::Failed) {
+        return;
+    }
+    update_loading_controls();
 
     track_switch_in_progress_ = true;
     finish_handled_ = true;
@@ -6147,8 +6368,8 @@ void GtkPlayerWindow::refresh_display(bool update_text, bool update_progress, bo
     if (update_progress) {
         std::string time_text = "00:00 / 00:00";
         display_progress_ratio_ = 0.0;
-        if (!playlist_loading_ && !playlist_.empty() && current_track_index_ < playlist_.size() &&
-            playlist_[current_track_index_].metadata_state == MetadataState::Ready) {
+        if (!metadata_loading_progress_visible() && !playlist_.empty() &&
+            current_track_index_ < playlist_.size() && current_track_metadata_ready()) {
             const PlaylistEntry& track = playlist_[current_track_index_];
             const std::uint64_t track_length = track_length_samples(track);
             const std::uint64_t track_position = current_track_position_from_status(status);
@@ -6188,7 +6409,14 @@ void GtkPlayerWindow::refresh_display(bool update_text, bool update_progress, bo
     std::string source_text = "Device: " + current_device_;
     std::string path_text = "Path: --";
 
-    if (playlist_loading_) {
+    if (pending_metadata_playback_.active) {
+        status_text = "Preparing track for playback...";
+        path_text = "Path: probing metadata";
+        if (!playlist_.empty() && pending_metadata_playback_.index < playlist_.size()) {
+            const PlaylistEntry& pending = playlist_[pending_metadata_playback_.index];
+            track_text = "Track " + std::to_string(pending.track_number) + ": " + display_title_for(pending);
+        }
+    } else if (metadata_loading_progress_visible()) {
         const std::size_t percent = metadata_total_files_ == 0
             ? 100
             : std::min<std::size_t>(100, (metadata_completed_files_ * 100) / metadata_total_files_);
@@ -6199,8 +6427,7 @@ void GtkPlayerWindow::refresh_display(bool update_text, bool update_progress, bo
             const PlaylistEntry& pending = playlist_[current_track_index_];
             track_text = "Track " + std::to_string(pending.track_number) + ": " + display_title_for(pending);
         }
-    } else if (!playlist_.empty() && current_track_index_ < playlist_.size() &&
-               playlist_[current_track_index_].metadata_state == MetadataState::Ready) {
+    } else if (!playlist_.empty() && current_track_index_ < playlist_.size() && current_track_metadata_ready()) {
         const PlaylistEntry& track = playlist_[current_track_index_];
         const std::string ext = lower_extension(track.audio_file_path);
         track_text = "Track " + std::to_string(track.track_number) + ": " + display_title_for(track);
@@ -6295,9 +6522,8 @@ void GtkPlayerWindow::refresh_display(bool update_text, bool update_progress, bo
         update_clip_indicator(false, 0);
     }
 
-    const bool has_track = !playlist_loading_ && !playlist_.empty() &&
-                           current_track_index_ < playlist_.size() &&
-                           playlist_[current_track_index_].metadata_state == MetadataState::Ready;
+    const bool has_track = !metadata_loading_progress_visible() && !pending_metadata_playback_.active &&
+                           current_track_metadata_ready();
     set_widget_opacity_if_changed(badge_lossless_, (has_track && playlist_[current_track_index_].lossless_source) ? 1.0 : 0.0);
     set_widget_opacity_if_changed(badge_redbook_, (has_track && playlist_[current_track_index_].decoded_format.is_red_book()) ? 1.0 : 0.0);
     set_widget_opacity_if_changed(badge_native_, (has_track && playlist_[current_track_index_].native_decode) ? 1.0 : 0.0);
@@ -6329,13 +6555,13 @@ void GtkPlayerWindow::update_playlist_row(std::size_t index) {
     if (playlist_store_ == nullptr || index >= playlist_.size()) {
         return;
     }
+    GtkTreePath* tree_path = gtk_tree_path_new_from_indices(static_cast<int>(index), -1);
     GtkTreeIter iter;
-    if (!gtk_tree_model_iter_nth_child(GTK_TREE_MODEL(playlist_store_),
-                                       &iter,
-                                       nullptr,
-                                       static_cast<int>(index))) {
+    if (!gtk_tree_model_get_iter(GTK_TREE_MODEL(playlist_store_), &iter, tree_path)) {
+        gtk_tree_path_free(tree_path);
         return;
     }
+    gtk_tree_path_free(tree_path);
 
     const PlaylistEntry& entry = playlist_[index];
     const std::string trackno = std::to_string(entry.track_number);
@@ -6597,9 +6823,6 @@ void GtkPlayerWindow::setup_mpris() {
     MprisService::Actions actions;
     actions.play = [this]() { mpris_play(); };
     actions.pause = [this]() {
-        if (playlist_loading_) {
-            return;
-        }
         const PlaybackTransportSnapshot transport = engine_.transport_snapshot();
         if (transport.playing && !transport.paused) {
             engine_.pause();
@@ -6607,9 +6830,6 @@ void GtkPlayerWindow::setup_mpris() {
         }
     };
     actions.play_pause = [this]() {
-        if (playlist_loading_) {
-            return;
-        }
         const PlaybackTransportSnapshot transport = engine_.transport_snapshot();
         if (transport.playing && transport.paused) {
             engine_.resume();
@@ -6621,7 +6841,7 @@ void GtkPlayerWindow::setup_mpris() {
             mpris_play();
         }
     };
-    actions.stop = [this]() { if (!playlist_loading_) stop_playback(); };
+    actions.stop = [this]() { stop_playback(); };
     actions.next = [this]() { mpris_advance_track(1); };
     actions.previous = [this]() { mpris_advance_track(-1); };
     actions.seek = [this](std::int64_t offset_usec) { return mpris_seek(offset_usec); };
@@ -6683,7 +6903,7 @@ std::string GtkPlayerWindow::cached_cover_art_for(const std::string& audio_file_
 }
 
 std::string GtkPlayerWindow::current_mpris_track_id() const {
-    if (playlist_loading_ || playlist_.empty() || current_track_index_ >= playlist_.size()) {
+    if (!current_track_metadata_ready()) {
         return "/org/mpris/MediaPlayer2/TrackList/NoTrack";
     }
     const std::uint64_t id = mpris_track_epoch_ > 0 ? mpris_track_epoch_ : (current_track_index_ + 1);
@@ -6797,9 +7017,7 @@ MprisPlayerState GtkPlayerWindow::build_mpris_state() const {
         state.position_usec = 0;
     }
 
-    if (!playlist_loading_ && transport_active && !playlist_.empty() &&
-        current_track_index_ < playlist_.size() &&
-        playlist_[current_track_index_].metadata_state == MetadataState::Ready) {
+    if (transport_active && current_track_metadata_ready()) {
         const PlaylistEntry& track = playlist_[current_track_index_];
         const std::uint32_t sample_rate = track.decoded_format.sample_rate > 0
             ? track.decoded_format.sample_rate
@@ -6868,7 +7086,7 @@ bool GtkPlayerWindow::mpris_open_uri(const std::string& uri) {
 }
 
 std::int64_t GtkPlayerWindow::current_mpris_track_position_usec() const {
-    if (playlist_loading_ || playlist_.empty() || current_track_index_ >= playlist_.size()) {
+    if (!current_track_metadata_ready()) {
         return -1;
     }
 
@@ -6887,7 +7105,7 @@ std::int64_t GtkPlayerWindow::current_mpris_track_position_usec() const {
 }
 
 std::int64_t GtkPlayerWindow::current_mpris_track_length_usec() const {
-    if (playlist_loading_ || playlist_.empty() || current_track_index_ >= playlist_.size()) {
+    if (!current_track_metadata_ready()) {
         return -1;
     }
 
@@ -6899,7 +7117,7 @@ std::int64_t GtkPlayerWindow::current_mpris_track_length_usec() const {
 }
 
 std::int64_t GtkPlayerWindow::mpris_seek(std::int64_t offset_usec) {
-    if (playlist_loading_ || playlist_.empty() || current_track_index_ >= playlist_.size()) {
+    if (!current_track_metadata_ready()) {
         return -1;
     }
 
@@ -6936,7 +7154,7 @@ std::int64_t GtkPlayerWindow::mpris_seek(std::int64_t offset_usec) {
 }
 
 std::int64_t GtkPlayerWindow::mpris_set_position(std::int64_t position_usec, const std::string& track_id) {
-    if (playlist_loading_ || playlist_.empty() || current_track_index_ >= playlist_.size()) {
+    if (!current_track_metadata_ready()) {
         return -1;
     }
 
@@ -7069,16 +7287,14 @@ void GtkPlayerWindow::handle_media_play() {
 }
 
 void GtkPlayerWindow::handle_media_pause() {
-    if (!playlist_loading_ && engine_.is_playing() && !engine_.is_paused()) {
+    if (engine_.is_playing() && !engine_.is_paused()) {
         engine_.pause();
         notify_mpris_state_changed();
     }
 }
 
 void GtkPlayerWindow::handle_media_stop() {
-    if (!playlist_loading_) {
-        stop_playback();
-    }
+    stop_playback();
 }
 
 void GtkPlayerWindow::handle_media_next() {

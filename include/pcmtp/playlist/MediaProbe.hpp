@@ -3,12 +3,10 @@
 #include <cstdint>
 #include <string>
 
-#include "pcmtp/core/PcmTypes.hpp"
 #include "pcmtp/decoder/ExternalAudioDecoder.hpp"
+#include "pcmtp/util/ManagedSubprocess.hpp"
 
 namespace pcmtp {
-
-class ManagedSubprocess;
 
 struct MediaProbeResult {
     bool success = false;
@@ -23,6 +21,10 @@ struct MediaProbeResult {
     std::uint32_t dsd_sample_rate = 0;
 };
 
-MediaProbeResult probe_media_file(const std::string& path, ManagedSubprocess* probe_process = nullptr);
+MediaProbeResult probe_media_file(const std::string& path,
+                                  ManagedSubprocess* probe_process = nullptr,
+                                  bool background_priority = false);
+
+bool try_probe_media_file_fast(const std::string& path, MediaProbeResult* out_result);
 
 } // namespace pcmtp
