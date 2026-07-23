@@ -2650,7 +2650,7 @@ PlaylistSessionEntryData GtkPlayerWindow::session_entry_data_from(const GtkPlaye
     data.codec_name = entry.codec_name;
     data.cue_track = entry.cue_track;
     data.cue_album_end_sample = entry.cue_album_end_sample;
-    data.is_stream = entry.is_stream;
+    data.is_stream = entry.patch.is_stream;
     return data;
 }
 
@@ -2678,7 +2678,7 @@ GtkPlayerWindow::PlaylistEntry GtkPlayerWindow::playlist_entry_from(const Playli
     entry.codec_name = data.codec_name;
     entry.cue_track = data.cue_track;
     entry.cue_album_end_sample = data.cue_album_end_sample;
-    entry.is_stream = data.is_stream;
+    entry.patch.is_stream = data.is_stream;
     entry.metadata_state = MetadataState::Ready;
     return entry;
 }
@@ -3125,7 +3125,7 @@ gboolean GtkPlayerWindow::on_timer_tick(gpointer user_data) {
     self->update_gapless_chain_track_from_status(status);
     if (!self->playlist_.empty() && self->current_track_index_ < self->playlist_.size()) {
         const PlaylistEntry& current = self->playlist_[self->current_track_index_];
-        if (current.is_stream) {
+        if (current.patch.is_stream) {
             self->stream_manager_->update_from_playback(current.audio_file_path, status.playing, status.paused);
         } else {
             self->stream_manager_->reset_health_tracking();
@@ -3161,7 +3161,7 @@ gboolean GtkPlayerWindow::on_timer_tick(gpointer user_data) {
                 should_advance = true;
             }
 
-            if (finished_index < self->playlist_.size() && self->playlist_[finished_index].is_stream) {
+            if (finished_index < self->playlist_.size() && self->playlist_[finished_index].patch.is_stream) {
                 should_advance = false;
                 const std::string& stream_url = self->playlist_[finished_index].audio_file_path;
                 if (self->stream_manager_->reconnect_attempts() < kMaxStreamReconnectAttempts) {
@@ -3969,10 +3969,10 @@ std::unique_ptr<IAudioDecoder> GtkPlayerWindow::create_decoder_for_entry(const P
     const bool resample_needed = (target_rate > 0 && target_rate != source_rate);
     const bool bitdepth_needed = entry.dsd_source ||
                                  (target_bits > 0 && target_bits != source_bits);
-    if (!entry.is_stream && ext == ".flac" && entry.native_decode && !resample_needed && !bitdepth_needed) {
+    if (!entry.patch.is_stream && ext == ".flac" && entry.native_decode && !resample_needed && !bitdepth_needed) {
         return std::unique_ptr<IAudioDecoder>(new FlacStreamDecoder());
     }
-    if (entry.is_stream || StreamAudioDecoder::is_stream_uri(entry.audio_file_path)) {
+    if (entry.patch.is_stream || StreamAudioDecoder::is_stream_uri(entry.audio_file_path)) {
         std::unique_ptr<StreamAudioDecoder> decoder;
         if (resample_needed || bitdepth_needed) {
             decoder.reset(new StreamAudioDecoder(target_rate, target_bits, resample_quality_, bitdepth_quality_));
@@ -3991,7 +3991,7 @@ std::unique_ptr<IAudioDecoder> GtkPlayerWindow::create_decoder_for_entry(const P
         known.dsd_source = entry.dsd_source;
         known.dsd_sample_rate = entry.dsd_sample_rate;
         known.lossless = entry.lossless_source;
-        known.live_format_probed = entry.stream_format_probed;
+        known.live_format_probed = entry.patch.stream_format_probed;
         decoder->set_known_info(known);
         return std::unique_ptr<IAudioDecoder>(decoder.release());
     }
@@ -4902,13 +4902,13 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
     if (playlist_loading_ || index >= playlist_.size()) {
         return;
     }
-    if (!playlist_[index].is_stream && playlist_[index].metadata_state != MetadataState::Ready) {
+    if (!playlist_[index].patch.is_stream && playlist_[index].metadata_state != MetadataState::Ready) {
         return;
     }
 
     const std::uint64_t probe_generation = stream_manager_->bump_probe_generation();
 
-    const bool reconnecting_same_stream = stream_manager_->should_keep_sidecar_for_play(index, playlist_[index].is_stream);
+    const bool reconnecting_same_stream = stream_manager_->should_keep_sidecar_for_play(index, playlist_[index].patch.is_stream);
     if (!reconnecting_same_stream) {
         stream_manager_->stop_sidecar();
     }
@@ -4989,8 +4989,8 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
             if (chain_end > index + 1) {
                 Logger::instance().info("Continuous CUE playback enabled for " + std::to_string(chain_end - index) + " tracks: " + track.audio_file_path);
             }
-        } else if (track.is_stream) {
-            if (!playlist_[current_track_index_].stream_format_probed) {
+        } else if (track.patch.is_stream) {
+            if (!playlist_[current_track_index_].patch.stream_format_probed) {
                 begin_async_stream_probe_and_play(index,
                                                   initial_offset,
                                                   preserve_paused,
@@ -5005,7 +5005,7 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
             playlist_[current_track_index_].decoded_format = stream_format;
             playlist_[current_track_index_].source_sample_rate = stream_format.sample_rate;
             playlist_[current_track_index_].source_bits_per_sample = stream_format.bits_per_sample;
-            playlist_[current_track_index_].stream_format_probed = true;
+            playlist_[current_track_index_].patch.stream_format_probed = true;
             Logger::instance().info("Streaming playback: " + track.audio_file_path + " (" +
                                     std::to_string(stream_format.sample_rate) + " Hz)");
             stream_manager_->start_sidecar(track.audio_file_path);
@@ -5051,7 +5051,7 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
         if (preserve_paused) {
             engine_.pause();
         }
-        if (track.is_stream) {
+        if (track.patch.is_stream) {
             stream_manager_->clear_reconnect_after_success();
         }
         track_switch_in_progress_ = false;
@@ -5067,7 +5067,7 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
         track_switch_in_progress_ = false;
         finish_handled_ = false;
         Logger::instance().error(std::string("Failed to play track: ") + ex.what());
-        if (track.is_stream) {
+        if (track.patch.is_stream) {
             stream_manager_->note_broken(track.audio_file_path, ex.what());
         }
         GtkWidget* msg = gtk_message_dialog_new(GTK_WINDOW(window_),
@@ -6900,7 +6900,7 @@ void GtkPlayerWindow::rebuild_playlist_view() {
         GtkTreeIter iter;
         gtk_list_store_append(playlist_store_, &iter);
         const PlaylistEntry& entry = playlist_[i];
-        const bool stream_broken = entry.is_stream && stream_manager_->is_broken(entry.audio_file_path);
+        const bool stream_broken = entry.patch.is_stream && stream_manager_->is_broken(entry.audio_file_path);
         const std::string trackno = stream_broken
             ? ("× " + std::to_string(entry.track_number))
             : std::to_string(entry.track_number);
@@ -6934,7 +6934,7 @@ void GtkPlayerWindow::update_playlist_row(std::size_t index) {
     }
 
     const PlaylistEntry& entry = playlist_[index];
-    const bool stream_broken = entry.is_stream && stream_manager_->is_broken(entry.audio_file_path);
+    const bool stream_broken = entry.patch.is_stream && stream_manager_->is_broken(entry.audio_file_path);
     const std::string trackno = stream_broken
         ? ("× " + std::to_string(entry.track_number))
         : std::to_string(entry.track_number);
@@ -7019,7 +7019,7 @@ std::string GtkPlayerWindow::format_time(std::uint64_t samples_per_channel, std:
 }
 
 std::string GtkPlayerWindow::display_title_for(const PlaylistEntry& entry) const {
-    if (entry.is_stream && !stream_manager_->now_playing().empty()) {
+    if (entry.patch.is_stream && !stream_manager_->now_playing().empty()) {
         if (!entry.title.empty()) {
             return entry.title + " — " + stream_manager_->now_playing();
         }
@@ -7457,11 +7457,11 @@ MprisPlayerState GtkPlayerWindow::build_mpris_state() const {
         const std::uint64_t length_samples = track_length_samples(track);
 
         state.has_track = true;
-        state.title = !stream_manager_->now_playing().empty() && track.is_stream ? stream_manager_->now_playing() : track.title;
+        state.title = !stream_manager_->now_playing().empty() && track.patch.is_stream ? stream_manager_->now_playing() : track.title;
         state.artist = track.performer;
         state.track_number = track.track_number;
-        state.url = track.is_stream ? track.audio_file_path : file_uri_for_path(track.audio_file_path);
-        const std::string cover_path = track.is_stream ? std::string() : cached_cover_art_for(track.audio_file_path);
+        state.url = track.patch.is_stream ? track.audio_file_path : file_uri_for_path(track.audio_file_path);
+        const std::string cover_path = track.patch.is_stream ? std::string() : cached_cover_art_for(track.audio_file_path);
         if (!cover_path.empty()) {
             state.art_url = file_uri_for_path(cover_path);
         }
@@ -8064,7 +8064,7 @@ void GtkPlayerWindow::append_stream_entry(const std::string& path,
                                           const std::string& hint_artist) {
     PlaylistEntry entry;
     entry.audio_file_path = path;
-    entry.is_stream = true;
+    entry.patch.is_stream = true;
     entry.track_number = static_cast<int>(playlist_.size() + 1);
     entry.title = !hint_title.empty() ? hint_title : stream_display_label(path);
     entry.performer = hint_artist;
@@ -8120,7 +8120,7 @@ void GtkPlayerWindow::apply_stream_probe_to_entry(PlaylistEntry& entry, const Ex
     if (!info.codec_name.empty()) {
         entry.codec_name = info.codec_name;
     }
-    entry.source_bit_rate = info.bit_rate;
+    entry.patch.source_bit_rate = info.bit_rate;
     entry.lossless_source = info.lossless;
     entry.lossy_source = !info.lossless;
     const std::uint32_t target_rate = target_sample_rate_for(entry.source_sample_rate);
@@ -8134,7 +8134,7 @@ void GtkPlayerWindow::apply_stream_probe_to_entry(PlaylistEntry& entry, const Ex
     if (entry.bitdepth_converted) {
         entry.decoded_format.bits_per_sample = target_bits;
     }
-    entry.stream_format_probed = true;
+    entry.patch.stream_format_probed = true;
 }
 
 void GtkPlayerWindow::refresh_stream_health_rows_for_url(const std::string& url) {
@@ -8151,7 +8151,7 @@ void GtkPlayerWindow::refresh_stream_health_rows_for_url(const std::string& url)
         if (index >= 0 && static_cast<std::size_t>(index) < playlist_.size()) {
             const PlaylistEntry& entry = playlist_[static_cast<std::size_t>(index)];
             if (normalize_stream_url(entry.audio_file_path) == normalized) {
-                const bool stream_broken = entry.is_stream && stream_manager_->is_broken(entry.audio_file_path);
+                const bool stream_broken = entry.patch.is_stream && stream_manager_->is_broken(entry.audio_file_path);
                 const std::string trackno = stream_broken
                     ? ("× " + std::to_string(entry.track_number))
                     : std::to_string(entry.track_number);
@@ -8220,7 +8220,8 @@ std::string GtkPlayerWindow::media_source_summary(const PlaylistEntry& entry) co
     const std::uint32_t rate = entry.source_sample_rate > 0 ? entry.source_sample_rate : entry.decoded_format.sample_rate;
     const std::uint16_t channels = entry.decoded_format.channels > 0 ? entry.decoded_format.channels : 2;
     const std::uint16_t bits = entry.source_bits_per_sample > 0 ? entry.source_bits_per_sample : entry.decoded_format.bits_per_sample;
-    const bool format_known = entry.is_stream ? entry.stream_format_probed : entry.metadata_probed;
+    const bool format_known = entry.patch.is_stream ? entry.patch.stream_format_probed
+                                                    : entry.metadata_state == MetadataState::Ready;
 
     if (format_known || rate > 0) {
         if (rate > 0) {
@@ -8230,8 +8231,8 @@ std::string GtkPlayerWindow::media_source_summary(const PlaylistEntry& entry) co
         if (!layout.empty()) {
             summary << ", " << layout;
         }
-        if (entry.lossy_source && entry.source_bit_rate >= 1000) {
-            summary << ", " << ((entry.source_bit_rate + 500) / 1000) << " kb/s";
+        if (entry.lossy_source && entry.patch.source_bit_rate >= 1000) {
+            summary << ", " << ((entry.patch.source_bit_rate + 500) / 1000) << " kb/s";
         } else if (bits > 0 && !entry.lossy_source) {
             summary << ", " << bits << " bit";
         }

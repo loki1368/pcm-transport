@@ -123,28 +123,23 @@ if (is_stream_uri(path)) return std::make_unique<StreamAudioDecoder>(...);
 
 ### Фаза 6 — модель плейлиста
 
-Заменить раздувание `PlaylistEntry` композицией:
+`PatchTrackExtensions` (`patches/PatchTrackExtensions.hpp`) — композиция в `GtkPlayerWindow::PlaylistEntry`:
+
 ```cpp
-struct PlaylistEntry { /* upstream core */ };
-struct PatchTrackExtensions {
-    bool is_stream = false;
-    bool stream_format_probed = false;
-    std::uint32_t source_bit_rate = 0;
-    // ...
-};
-// или std::variant<FileTrack, StreamTrack, CueTrack>
+struct PlaylistEntry { /* upstream core fields */ };
+PatchTrackExtensions patch{};  // is_stream, stream_format_probed, source_bit_rate
 ```
 
-Цель: при merge upstream структура трека не конфликтует каждый раз.
+**Статус (2026-07-23):** реализовано. Форковые поля вынесены в `entry.patch.*`.
 
-### Фаза 7 — опциональная static lib
+### Фаза 7 — static lib
 
-```
-add_library(pcm_transport_patches STATIC src/patches/...)
+```cmake
+add_library(pcm_transport_patches STATIC ...)
 target_link_libraries(pcm_transport PRIVATE pcm_transport_patches)
 ```
 
-`CMakeLists.txt` upstream: +2 строки. Все патчи линкуются одним блоком.
+**Статус (2026-07-23):** реализовано. Все `src/patches/*.cpp` линкуются через `pcm_transport_patches`.
 
 ---
 
@@ -164,9 +159,10 @@ target_link_libraries(pcm_transport PRIVATE pcm_transport_patches)
 ## Метрики готовности (Definition of Done для рефакторинга)
 
 - [ ] `git diff main...my_patches -- GtkPlayerWindow.cpp` < 400 строк изменений.
-- [ ] Все stream/session/mpris-специфичные unit-зоны в `src/patches/`.
-- [ ] Документирован ритуал merge upstream (см. выше).
-- [ ] Cursor rule `.cursor/rules/fork-patch-workflow.mdc` соблюдается в новых PR/коммитах.
+- [x] Все stream/session/mpris-специфичные unit-зоны в `src/patches/`.
+- [x] Документирован ритуал merge upstream (см. выше).
+- [x] Cursor rule `.cursor/rules/fork-patch-workflow.mdc` соблюдается в новых PR/коммитах.
+- [x] `pcm_transport_patches` static lib собирает все патчи.
 
 ---
 

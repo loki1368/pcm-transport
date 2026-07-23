@@ -20,6 +20,7 @@
 #include "pcmtp/cue/CueParser.hpp"
 #include "pcmtp/decoder/ExternalAudioDecoder.hpp"
 #include "pcmtp/patches/PlaylistSessionController.hpp"
+#include "pcmtp/patches/PatchTrackExtensions.hpp"
 #include "pcmtp/patches/StreamPlaybackManager.hpp"
 #include "pcmtp/decoder/GaplessChainDecoder.hpp"
 #include "pcmtp/dsp/AlsaControlBridge.hpp"
@@ -79,7 +80,6 @@ private:
         AudioFormat decoded_format{};
         std::uint32_t source_sample_rate = 0;
         std::uint16_t source_bits_per_sample = 0;
-        std::uint32_t source_bit_rate = 0;
         bool native_source_available = false;
         bool native_decode = false;
         bool lossless_source = false;
@@ -92,14 +92,12 @@ private:
         bool dsd_source = false;
         std::uint32_t dsd_sample_rate = 0;
         bool cue_track = false;
-        bool is_stream = false;
-        bool stream_format_probed = false;
+        PatchTrackExtensions patch{};
         std::uint64_t cue_album_end_sample = 0;
         std::uint64_t source_cue_album_end_sample = 0;
         std::shared_ptr<PcmBuffer> normalized_pcm;
         AudioFormat normalized_format{};
         bool normalization_matches_current = false;
-        bool metadata_probed = true;
     };
 
     struct MetadataProbeJob {

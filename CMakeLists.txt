@@ -48,6 +48,24 @@ add_custom_command(
 
 set_source_files_properties(${PCM_TRANSPORT_RESOURCE_SOURCE} PROPERTIES GENERATED TRUE)
 
+set(PCM_TRANSPORT_PATCH_SOURCES
+    src/patches/M3uPlaylistExtensions.cpp
+    src/patches/PlaylistSessionController.cpp
+    src/patches/StreamAudioDecoder.cpp
+    src/patches/StreamPlaybackManager.cpp
+    src/patches/StreamPlaylistUtils.cpp
+)
+
+add_library(pcm_transport_patches STATIC ${PCM_TRANSPORT_PATCH_SOURCES})
+target_include_directories(pcm_transport_patches PUBLIC include)
+target_include_directories(pcm_transport_patches PRIVATE
+    ${GTK3_INCLUDE_DIRS}
+)
+target_compile_options(pcm_transport_patches PRIVATE
+    ${GTK3_CFLAGS_OTHER}
+    -Wall -Wextra -Wpedantic
+)
+
 add_executable(pcm_transport
     src/main.cpp
     src/app/Application.cpp
@@ -67,11 +85,6 @@ add_executable(pcm_transport
     src/decoder/MemoryAudioDecoder.cpp
     src/core/TransportFifo.cpp
     src/gui/GtkPlayerWindow.cpp
-    src/patches/PlaylistSessionController.cpp
-    src/patches/StreamAudioDecoder.cpp
-    src/patches/StreamPlaybackManager.cpp
-    src/patches/StreamPlaylistUtils.cpp
-    src/patches/M3uPlaylistExtensions.cpp
     src/session/PlaylistSession.cpp
     src/mpris/MprisService.cpp
     src/hardware/CardProfileRegistry.cpp
@@ -104,6 +117,7 @@ target_link_directories(pcm_transport PRIVATE
 )
 
 target_link_libraries(pcm_transport PRIVATE
+    pcm_transport_patches
     ${ALSA_LIBRARIES}
     ${FLAC_LIBRARIES}
     ${GTK3_LIBRARIES}
