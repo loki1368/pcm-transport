@@ -108,12 +108,19 @@ private:
 
     struct PendingMetadataPlayback {
         bool active = false;
+        std::uint64_t generation = 0;
         std::size_t index = 0;
         std::uint64_t offset_samples = 0;
         bool start_playback = true;
         bool preserve_paused = false;
         bool update_mpris_track = true;
         std::string waiting_path;
+    };
+
+    enum class MetadataProbePathState {
+        Queued,
+        InFlight,
+        Completed
     };
 
     static void on_activate(GtkApplication* app, gpointer user_data);
@@ -159,21 +166,30 @@ private:
     void start_metadata_worker();
     void stop_metadata_worker();
     void metadata_worker_loop(std::size_t worker_index);
-    void submit_metadata_jobs(std::uint64_t generation, const std::vector<std::string>& paths);
+    void enqueue_initial_metadata_probes(const std::vector<std::string>& paths);
+    void enqueue_metadata_probe(const std::string& path, bool move_to_front);
     void drain_metadata_probe_results();
-    void apply_metadata_probe_result(const std::string& path, const MediaProbeResult& result);
+    void apply_metadata_probe_result(std::uint64_t generation,
+                                    const std::string& path,
+                                    const MediaProbeResult& result);
+    bool complete_metadata_probe_path(std::uint64_t generation,
+                                    const std::string& path,
+                                    const MediaProbeResult& result);
     bool try_fast_playlist_entry_metadata(std::size_t index);
     bool prepare_track_for_playback(std::size_t index);
     void prioritize_metadata_probe(const std::string& path);
-    void schedule_pending_metadata_play(std::size_t index,
-                                        std::uint64_t offset_samples,
-                                        bool start_playback,
-                                        bool preserve_paused,
-                                        bool update_mpris_track);
+    void set_pending_metadata_playback(std::size_t index,
+                                       std::uint64_t offset_samples,
+                                       bool start_playback,
+                                       bool preserve_paused,
+                                       bool update_mpris_track);
     void clear_pending_metadata_play();
+    void advance_pending_metadata_playback(int direction);
     void try_start_pending_metadata_play(const std::string& path);
+    bool pending_metadata_playback_valid() const;
     bool metadata_loading_progress_visible() const;
     bool current_track_metadata_ready() const;
+    void maybe_finish_metadata_load_session();
     void finish_metadata_load_session();
     void update_loading_controls();
     bool playback_available() const;
@@ -366,6 +382,7 @@ private:
     std::string play_after_metadata_path_;
     std::uint64_t play_after_metadata_generation_ = 0;
     PendingMetadataPlayback pending_metadata_playback_;
+    std::unordered_map<std::string, MetadataProbePathState> metadata_probe_path_states_;
     std::unordered_map<std::string, MediaProbeResult> media_probe_cache_;
     bool restore_last_sources_enabled_ = false;
     std::vector<std::string> last_opened_sources_;

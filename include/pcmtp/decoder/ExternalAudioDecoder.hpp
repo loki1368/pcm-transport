@@ -51,7 +51,6 @@ public:
     static ExternalAudioInfo probe_metadata(const std::string& path,
                                             std::uint32_t forced_output_sample_rate = 0,
                                             std::uint16_t forced_output_bits_per_sample = 0,
-                                            bool background_priority = false,
                                             ManagedSubprocess* probe_process = nullptr);
     static bool try_probe_wav_metadata_fast(const std::string& path, ExternalAudioInfo* out_info);
     static ExternalAudioInfo probe_info(const std::string& path, std::uint32_t forced_output_sample_rate = 0, std::uint16_t forced_output_bits_per_sample = 0);

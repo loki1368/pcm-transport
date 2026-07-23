@@ -22,8 +22,7 @@ struct MediaProbeResult {
 };
 
 MediaProbeResult probe_media_file(const std::string& path,
-                                  ManagedSubprocess* probe_process = nullptr,
-                                  bool background_priority = false);
+                                  ManagedSubprocess* probe_process = nullptr);
 
 bool try_probe_media_file_fast(const std::string& path, MediaProbeResult* out_result);
 

@@ -39,8 +39,7 @@ void fill_result_from_external_info(const ExternalAudioInfo& info, MediaProbeRes
 } // namespace
 
 MediaProbeResult probe_media_file(const std::string& path,
-                                  ManagedSubprocess* probe_process,
-                                  bool background_priority) {
+                                  ManagedSubprocess* probe_process) {
     MediaProbeResult result;
     try {
         const std::string extension = lower_extension(path);
@@ -60,8 +59,7 @@ MediaProbeResult probe_media_file(const std::string& path,
             }
         }
 
-        const ExternalAudioInfo info = ExternalAudioDecoder::probe_metadata(
-            path, 0, 0, background_priority, probe_process);
+        const ExternalAudioInfo info = ExternalAudioDecoder::probe_metadata(path, 0, 0, probe_process);
         fill_result_from_external_info(info, &result);
         if (result.codec_name.empty() || result.format.sample_rate == 0 ||
             result.format.channels == 0) {

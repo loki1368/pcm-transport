@@ -80,29 +80,12 @@ struct CommandCaptureResult {
     bool timed_out = false;
 };
 
-std::vector<std::string> with_low_priority_prefix(const std::vector<std::string>& arguments) {
-    if (arguments.empty()) {
-        return arguments;
-    }
-    if (access("/usr/bin/ionice", X_OK) == 0 || access("/bin/ionice", X_OK) == 0) {
-        std::vector<std::string> prefixed = {"nice", "-n", "19", "ionice", "-c3"};
-        prefixed.insert(prefixed.end(), arguments.begin(), arguments.end());
-        return prefixed;
-    }
-    std::vector<std::string> prefixed = {"nice", "-n", "19"};
-    prefixed.insert(prefixed.end(), arguments.begin(), arguments.end());
-    return prefixed;
-}
-
 CommandCaptureResult run_command_capture(const std::vector<std::string>& arguments,
-                                         bool background_priority,
                                          ManagedSubprocess* managed_process) {
     constexpr auto kProbeTimeout = std::chrono::seconds(30);
     ManagedSubprocess local_process;
     ManagedSubprocess* process = managed_process != nullptr ? managed_process : &local_process;
-    const std::vector<std::string>& launch_arguments =
-        background_priority ? with_low_priority_prefix(arguments) : arguments;
-    const ManagedSubprocessResult managed_result = process->run(launch_arguments, kProbeTimeout);
+    const ManagedSubprocessResult managed_result = process->run(arguments, kProbeTimeout);
 
     CommandCaptureResult result;
     result.stdout_text = managed_result.stdout_text;
@@ -294,14 +277,13 @@ bool probe_adts_aac_fast(const std::string& path, ExternalAudioInfo& info) {
 
 bool probe_aac_frame_count_ffprobe(const std::string& path,
                                    ExternalAudioInfo& info,
-                                   bool background_priority,
                                    ManagedSubprocess* probe_process) {
     const std::vector<std::string> arguments = {
         "ffprobe", "-v", "error", "-count_frames", "-select_streams", "a:0",
         "-show_entries", "stream=nb_read_frames,sample_rate,channels",
         "-of", "default=nokey=0:noprint_wrappers=1", path
     };
-    const CommandCaptureResult result = run_command_capture(arguments, background_priority, probe_process);
+    const CommandCaptureResult result = run_command_capture(arguments, probe_process);
     if (result.status != 0 || result.stdout_text.empty()) {
         return false;
     }
@@ -344,7 +326,6 @@ bool probe_aac_frame_count_ffprobe(const std::string& path,
 
 bool probe_m4a_packet_duration_ffprobe(const std::string& path,
                                         ExternalAudioInfo& info,
-                                        bool background_priority,
                                         ManagedSubprocess* probe_process) {
     if (info.format.sample_rate == 0) {
         return false;
@@ -354,7 +335,7 @@ bool probe_m4a_packet_duration_ffprobe(const std::string& path,
         "-show_packets", "-show_entries", "packet=duration_time,duration",
         "-of", "default=nokey=0:noprint_wrappers=1", path
     };
-    const CommandCaptureResult result = run_command_capture(arguments, background_priority, probe_process);
+    const CommandCaptureResult result = run_command_capture(arguments, probe_process);
     if (result.status != 0 || result.stdout_text.empty()) {
         return false;
     }
@@ -557,7 +538,6 @@ std::size_t ExternalAudioDecoder::bytes_per_sample() const {
 ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path,
                                                         std::uint32_t forced_output_sample_rate,
                                                         std::uint16_t forced_output_bits_per_sample,
-                                                        bool background_priority,
                                                         ManagedSubprocess* probe_process) {
     if (!looks_supported(path)) {
         throw std::runtime_error("ExternalAudioDecoder does not support this file type");
@@ -584,7 +564,7 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path,
             path
         };
         Logger::instance().debug("ExternalAudioDecoder unified probe: " + path);
-        const CommandCaptureResult probe = run_command_capture(probe_arguments, background_priority, probe_process);
+        const CommandCaptureResult probe = run_command_capture(probe_arguments, probe_process);
         if (probe.cancelled) {
             throw std::runtime_error("metadata probe cancelled");
         }
@@ -717,7 +697,7 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path,
 
     if ((ext == ".m4a" || ext == ".m4r") && info.codec_name == "alac" && info.total_samples_per_channel == 0) {
         ExternalAudioInfo m4a_info = info;
-        if (probe_m4a_packet_duration_ffprobe(path, m4a_info, background_priority, probe_process)) {
+        if (probe_m4a_packet_duration_ffprobe(path, m4a_info, probe_process)) {
             m4a_info.tags = info.tags;
             info = m4a_info;
         } else {
@@ -728,7 +708,7 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path,
 
     if (ext == ".aac") {
         ExternalAudioInfo aac_info = info;
-        if (probe_adts_aac_fast(path, aac_info) || probe_aac_frame_count_ffprobe(path, aac_info, background_priority, probe_process)) {
+        if (probe_adts_aac_fast(path, aac_info) || probe_aac_frame_count_ffprobe(path, aac_info, probe_process)) {
             aac_info.tags = info.tags;
             info = aac_info;
         } else {
