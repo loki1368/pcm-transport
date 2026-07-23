@@ -512,6 +512,44 @@ enum PlaylistColumns {
 
 constexpr std::size_t kBulkPlaylistImportThreshold = 8;
 
+constexpr int kPlaylistTrackColumnWidth = 52;
+constexpr int kPlaylistArtistColumnMinWidth = 72;
+constexpr int kPlaylistArtistColumnMaxWidth = 180;
+constexpr int kPlaylistTitleColumnMinWidth = 96;
+constexpr int kPlaylistSourceColumnMinWidth = 56;
+constexpr int kPlaylistSourceColumnDefaultWidth = 120;
+constexpr int kPlaylistSourceColumnMaxWidth = 320;
+
+void configure_playlist_text_renderer(GtkCellRenderer* renderer) {
+    g_object_set(renderer, "xpad", 6, "ypad", 2, "ellipsize", PANGO_ELLIPSIZE_END, nullptr);
+}
+
+void configure_playlist_view_columns(GtkTreeViewColumn* col_track,
+                                     GtkTreeViewColumn* col_artist,
+                                     GtkTreeViewColumn* col_title,
+                                     GtkTreeViewColumn* col_source) {
+    gtk_tree_view_column_set_sizing(col_track, GTK_TREE_VIEW_COLUMN_FIXED);
+    gtk_tree_view_column_set_fixed_width(col_track, kPlaylistTrackColumnWidth);
+    gtk_tree_view_column_set_resizable(col_track, TRUE);
+    gtk_tree_view_column_set_min_width(col_track, 40);
+
+    gtk_tree_view_column_set_min_width(col_artist, kPlaylistArtistColumnMinWidth);
+    gtk_tree_view_column_set_max_width(col_artist, kPlaylistArtistColumnMaxWidth);
+    gtk_tree_view_column_set_resizable(col_artist, TRUE);
+    gtk_tree_view_column_set_expand(col_artist, FALSE);
+
+    gtk_tree_view_column_set_min_width(col_title, kPlaylistTitleColumnMinWidth);
+    gtk_tree_view_column_set_resizable(col_title, TRUE);
+    gtk_tree_view_column_set_expand(col_title, TRUE);
+
+    gtk_tree_view_column_set_sizing(col_source, GTK_TREE_VIEW_COLUMN_FIXED);
+    gtk_tree_view_column_set_fixed_width(col_source, kPlaylistSourceColumnDefaultWidth);
+    gtk_tree_view_column_set_min_width(col_source, kPlaylistSourceColumnMinWidth);
+    gtk_tree_view_column_set_max_width(col_source, kPlaylistSourceColumnMaxWidth);
+    gtk_tree_view_column_set_resizable(col_source, TRUE);
+    gtk_tree_view_column_set_expand(col_source, FALSE);
+}
+
 GtkWidget* create_symbolic_button(const char* primary_icon,
                                   const char* fallback_icon,
                                   const char* fallback_label) {
@@ -2531,29 +2569,25 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     gtk_widget_add_events(playlist_view_, GDK_KEY_PRESS_MASK);
 
     GtkCellRenderer* renderer = gtk_cell_renderer_text_new();
-    g_object_set(renderer, "xpad", 6, "ypad", 2, nullptr);
+    configure_playlist_text_renderer(renderer);
     GtkTreeViewColumn* col_track = gtk_tree_view_column_new_with_attributes("#", renderer, "text", COL_TRACKNO, nullptr);
-    gtk_tree_view_column_set_resizable(col_track, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(playlist_view_), col_track);
 
     renderer = gtk_cell_renderer_text_new();
-    g_object_set(renderer, "xpad", 6, "ypad", 2, nullptr);
+    configure_playlist_text_renderer(renderer);
     GtkTreeViewColumn* col_artist = gtk_tree_view_column_new_with_attributes("Artist", renderer, "text", COL_ARTIST, nullptr);
-    gtk_tree_view_column_set_resizable(col_artist, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(playlist_view_), col_artist);
 
     renderer = gtk_cell_renderer_text_new();
-    g_object_set(renderer, "xpad", 6, "ypad", 2, nullptr);
+    configure_playlist_text_renderer(renderer);
     GtkTreeViewColumn* col_title = gtk_tree_view_column_new_with_attributes("Title", renderer, "text", COL_TITLE, nullptr);
-    gtk_tree_view_column_set_expand(col_title, TRUE);
-    gtk_tree_view_column_set_resizable(col_title, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(playlist_view_), col_title);
 
     renderer = gtk_cell_renderer_text_new();
-    g_object_set(renderer, "xpad", 6, "ypad", 2, nullptr);
+    configure_playlist_text_renderer(renderer);
     GtkTreeViewColumn* col_source = gtk_tree_view_column_new_with_attributes("Source", renderer, "text", COL_SOURCE, nullptr);
-    gtk_tree_view_column_set_resizable(col_source, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(playlist_view_), col_source);
+    configure_playlist_view_columns(col_track, col_artist, col_title, col_source);
 
     patches::install_playlist_stream_styling(GTK_TREE_VIEW(playlist_view_),
                                              col_track,
