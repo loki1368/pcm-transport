@@ -67,6 +67,9 @@ add_executable(pcm_transport
     src/decoder/MemoryAudioDecoder.cpp
     src/core/TransportFifo.cpp
     src/gui/GtkPlayerWindow.cpp
+    src/patches/PlaylistSessionController.cpp
+    src/patches/StreamPlaybackManager.cpp
+    src/patches/StreamPlaylistUtils.cpp
     src/session/PlaylistSession.cpp
     src/mpris/MprisService.cpp
     src/hardware/CardProfileRegistry.cpp

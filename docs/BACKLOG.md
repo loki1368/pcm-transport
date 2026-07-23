@@ -40,10 +40,10 @@
 
 ### Фаза 0 — правила для нового кода (сразу, без большого рефакторинга)
 
-- [ ] Завести каталоги `include/pcmtp/patches/` и `src/patches/`.
-- [ ] Любая новая фича — новые `.hpp`/`.cpp` в `patches/`, не раздувание `GtkPlayerWindow`.
-- [ ] В апстримных файлах — только: include, поле-менеджер, 1–3 вызова в lifecycle (init/play/stop/shutdown).
-- [ ] Документировать glue в комментарии `// PATCH: <feature>` для быстрого поиска при merge.
+- [x] Завести каталоги `include/pcmtp/patches/` и `src/patches/`.
+- [x] Любая новая фича — новые `.hpp`/`.cpp` в `patches/`, не раздувание `GtkPlayerWindow`.
+- [x] В апстримных файлах — только: include, поле-менеджер, 1–3 вызова в lifecycle (init/play/stop/shutdown).
+- [x] Документировать glue в комментарии `// PATCH: <feature>` для быстрого поиска при merge.
 
 ### Фаза 1 — вынести стримы из GtkPlayerWindow (высокий приоритет)
 
@@ -58,7 +58,7 @@
 
 **Glue в GtkPlayerWindow:** поле `stream_manager_`, вызовы из `play_track_index_at_offset`, `stop_playback`, timer tick.
 
-**Оценка:** −800…1000 строк из `GtkPlayerWindow.cpp`.
+**Статус (2026-07-23):** реализовано. Дополнительно: `StreamPlaylistUtils` (метки/эвристики из M3U).
 
 ### Фаза 2 — сессия плейлиста
 
@@ -71,7 +71,7 @@
 
 `PlaylistSession` (уже отдельный) остаётся как storage; контроллер — оркестрация.
 
-**Оценка:** −350…450 строк.
+**Статус (2026-07-23):** реализовано. `PlaylistSessionEntryData` — DTO для glue с `GtkPlayerWindow::PlaylistEntry`.
 
 ### Фаза 3 — MPRIS: минимальные патчи (пересмотрено 2026-07-23)
 
@@ -82,7 +82,7 @@
 | Патч | Где |
 |------|-----|
 | `update_playlist_selection_from_ui()` в play/next/prev | `setup_mpris` |
-| ICY title в `build_mpris_state` | `stream_now_playing_` |
+| ICY title в `build_mpris_state` | `stream_manager_->now_playing()` |
 | URL/cover для стримов | `build_mpris_state` |
 | `validate_mpris_open_uri` + http/icy | `mpris_open_uri` |
 | Media keys (`handle_media_key`) | `GtkPlayerWindow` |

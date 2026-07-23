@@ -1,4 +1,7 @@
 #include "pcmtp/gui/GtkPlayerWindow.hpp"
+#include "pcmtp/patches/PlaylistSessionController.hpp"
+#include "pcmtp/patches/StreamPlaybackManager.hpp"
+#include "pcmtp/patches/StreamPlaylistUtils.hpp"
 #include <climits>
 #include <cmath>
 
@@ -52,12 +55,6 @@ namespace pcmtp {
 namespace {
 
 constexpr int kMaxStreamReconnectAttempts = 5;
-constexpr int kStreamReconnectDelaysSec[] = {3, 5, 8, 12, 20};
-
-struct StreamMetadataUpdate {
-    GtkPlayerWindow* self = nullptr;
-    std::string title;
-};
 
 constexpr int kClipIndicatorHoldMs = 700;
 constexpr gint kDialogOuterMargin = 14;
@@ -496,43 +493,6 @@ std::vector<std::string> collect_file_chooser_paths(GtkFileChooser* chooser) {
     return paths;
 }
 
-std::string stream_display_label(const std::string& url) {
-    if (url.empty()) return "Stream";
-    const std::size_t scheme = url.find("://");
-    std::size_t start = scheme == std::string::npos ? 0 : scheme + 3;
-    while (start < url.size() && url[start] == '/') ++start;
-    std::size_t end = url.find('/', start);
-    if (end == std::string::npos) end = url.size();
-    const std::size_t query = url.find('?', start);
-    if (query != std::string::npos && query < end) end = query;
-    if (end <= start) return url;
-    return url.substr(start, end - start);
-}
-
-std::uint32_t stream_sample_rate_hint(const std::string& text) {
-    std::string lower = text;
-    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    struct RateHint { const char* token; std::uint32_t rate; };
-    static const RateHint hints[] = {
-        {"192 khz", 192000}, {"192khz", 192000}, {"176.4 khz", 176400}, {"176.4khz", 176400},
-        {"96 khz", 96000}, {"96khz", 96000}, {"88.2 khz", 88200}, {"88.2khz", 88200},
-        {"48 khz", 48000}, {"48khz", 48000}, {"44.1 khz", 44100}, {"44.1khz", 44100},
-    };
-    for (const RateHint& hint : hints) {
-        if (lower.find(hint.token) != std::string::npos) return hint.rate;
-    }
-    return 0;
-}
-
-std::uint16_t stream_bits_per_sample_hint(const std::string& text) {
-    std::string lower = text;
-    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    if (lower.find("24-bit") != std::string::npos || lower.find("24 bit") != std::string::npos) return 24;
-    if (lower.find("32-bit") != std::string::npos || lower.find("32 bit") != std::string::npos) return 32;
-    if (lower.find("flac") != std::string::npos) return 16;
-    return 0;
-}
-
 bool extension_is_lossless(const std::string& extension) {
     return extension == ".flac" || extension == ".wav" || extension == ".wave" ||
            extension == ".bwf" || extension == ".aiff" || extension == ".aif" ||
@@ -675,7 +635,6 @@ void update_log_path_tooltip(GtkWidget* entry) {
 }
 
 
-constexpr int kStreamHealthOkSeconds = 10;
 
 std::string utf8_casefold_copy(const std::string& text) {
     gchar* folded = g_utf8_casefold(text.c_str(), -1);
@@ -1293,30 +1252,6 @@ std::string channels_layout_label(std::uint16_t channels) {
     }
     return {};
 }
-
-bool session_path_is_remote_uri(const std::string& path) {
-    auto starts_with_ci = [](const std::string& text, const char* prefix) -> bool {
-        const std::size_t len = std::strlen(prefix);
-        if (text.size() < len) {
-            return false;
-        }
-        for (std::size_t i = 0; i < len; ++i) {
-            if (std::tolower(static_cast<unsigned char>(text[i])) !=
-                std::tolower(static_cast<unsigned char>(prefix[i]))) {
-                return false;
-            }
-        }
-        return true;
-    };
-    return starts_with_ci(path, "http://") || starts_with_ci(path, "https://") ||
-           starts_with_ci(path, "ftp://") || starts_with_ci(path, "rtsp://") ||
-           starts_with_ci(path, "rtmp://") || starts_with_ci(path, "icy://");
-}
-
-struct RestorePlaylistFocusData {
-    GtkPlayerWindow* window = nullptr;
-    std::size_t index = 0;
-};
 
 
 std::string safe_utf8_for_display(const std::string& text_value) {
@@ -2640,10 +2575,157 @@ void add_pcm_message_content(GtkWidget* content,
 
 } // namespace
 
+struct GtkPlayerWindow::StreamDelegate final : StreamPlaybackManager::Delegate {
+    GtkPlayerWindow* self = nullptr;
+
+    explicit StreamDelegate(GtkPlayerWindow* window) : self(window) {}
+
+    bool ui_closing() const override {
+        return self == nullptr || self->ui_closing_;
+    }
+
+    void on_now_playing_changed(const std::string& title) override {
+        (void)title;
+        if (self == nullptr || self->ui_closing_) {
+            return;
+        }
+        if (!self->playlist_.empty() && self->current_track_index_ < self->playlist_.size()) {
+            self->update_playlist_row(self->current_track_index_);
+        }
+        self->refresh_display();
+        self->notify_mpris_state_changed();
+    }
+
+    void on_status_override_changed() override {
+        if (self != nullptr && !self->ui_closing_) {
+            self->refresh_display();
+        }
+    }
+
+    void on_stream_health_changed(const std::string& url) override {
+        if (self != nullptr && !self->ui_closing_) {
+            self->refresh_stream_health_rows_for_url(url);
+        }
+    }
+
+    void on_probe_finished(StreamPlaybackManager::ProbeResult result) override {
+        if (self != nullptr) {
+            self->handle_stream_probe_result(std::move(result));
+        }
+    }
+
+    void on_reconnect_requested(std::size_t index) override {
+        if (self != nullptr && !self->ui_closing_) {
+            self->play_track_index(index);
+        }
+    }
+
+    std::size_t find_playlist_index_by_url(const std::string& url) const override {
+        return self != nullptr ? self->find_playlist_index_by_url(url) : static_cast<std::size_t>(-1);
+    }
+};
+
+PlaylistSessionEntryData GtkPlayerWindow::session_entry_data_from(const GtkPlayerWindow::PlaylistEntry& entry) {
+    PlaylistSessionEntryData data;
+    data.audio_file_path = entry.audio_file_path;
+    data.track_number = entry.track_number;
+    data.title = entry.title;
+    data.performer = entry.performer;
+    data.start_sample = entry.start_sample;
+    data.end_sample = entry.end_sample;
+    data.source_label = entry.source_label;
+    data.decoded_sample_rate = entry.decoded_format.sample_rate;
+    data.decoded_channels = entry.decoded_format.channels;
+    data.decoded_bits_per_sample = entry.decoded_format.bits_per_sample;
+    data.source_sample_rate = entry.source_sample_rate;
+    data.source_bits_per_sample = entry.source_bits_per_sample;
+    data.native_decode = entry.native_decode;
+    data.lossless_source = entry.lossless_source;
+    data.lossy_source = entry.lossy_source;
+    data.resampled = entry.resampled;
+    data.resampled_from_rate = entry.resampled_from_rate;
+    data.bitdepth_converted = entry.bitdepth_converted;
+    data.processed_by_ffmpeg = entry.processed_by_ffmpeg;
+    data.codec_name = entry.codec_name;
+    data.cue_track = entry.cue_track;
+    data.cue_album_end_sample = entry.cue_album_end_sample;
+    data.is_stream = entry.is_stream;
+    return data;
+}
+
+GtkPlayerWindow::PlaylistEntry GtkPlayerWindow::playlist_entry_from(const PlaylistSessionEntryData& data) {
+    GtkPlayerWindow::PlaylistEntry entry;
+    entry.audio_file_path = data.audio_file_path;
+    entry.track_number = data.track_number;
+    entry.title = data.title;
+    entry.performer = data.performer;
+    entry.start_sample = data.start_sample;
+    entry.end_sample = data.end_sample;
+    entry.source_label = data.source_label;
+    entry.decoded_format.sample_rate = data.decoded_sample_rate;
+    entry.decoded_format.channels = data.decoded_channels;
+    entry.decoded_format.bits_per_sample = data.decoded_bits_per_sample;
+    entry.source_sample_rate = data.source_sample_rate;
+    entry.source_bits_per_sample = data.source_bits_per_sample;
+    entry.native_decode = data.native_decode;
+    entry.lossless_source = data.lossless_source;
+    entry.lossy_source = data.lossy_source;
+    entry.resampled = data.resampled;
+    entry.resampled_from_rate = data.resampled_from_rate;
+    entry.bitdepth_converted = data.bitdepth_converted;
+    entry.processed_by_ffmpeg = data.processed_by_ffmpeg;
+    entry.codec_name = data.codec_name;
+    entry.cue_track = data.cue_track;
+    entry.cue_album_end_sample = data.cue_album_end_sample;
+    entry.is_stream = data.is_stream;
+    entry.metadata_state = MetadataState::Ready;
+    return entry;
+}
+
+struct GtkPlayerWindow::SessionDelegate final : PlaylistSessionController::Delegate {
+    GtkPlayerWindow* self = nullptr;
+
+    explicit SessionDelegate(GtkPlayerWindow* window) : self(window) {}
+
+    bool ui_closing() const override {
+        return self == nullptr || self->ui_closing_;
+    }
+
+    void apply_restored_session(const PlaylistSessionRestoreResult& result) override {
+        if (self == nullptr || self->ui_closing_) {
+            return;
+        }
+        self->playlist_.clear();
+        self->playlist_.reserve(result.entries.size());
+        for (const PlaylistSessionEntryData& data : result.entries) {
+            self->playlist_.push_back(playlist_entry_from(data));
+        }
+        self->current_track_index_ = result.current_index;
+        self->rebuild_playlist_view();
+        self->select_playlist_row(self->current_track_index_);
+        self->track_switch_in_progress_ = false;
+        self->finish_handled_ = true;
+        self->refresh_display();
+        self->mark_mpris_track_changed();
+    }
+
+    void finalize_focus_restore(std::size_t index) override {
+        if (self == nullptr || self->ui_closing_ || self->playlist_.empty()) {
+            return;
+        }
+        self->select_playlist_row(std::min(index, self->playlist_.size() - 1));
+        gtk_widget_grab_focus(self->playlist_view_);
+    }
+};
+
 GtkPlayerWindow::GtkPlayerWindow(std::size_t transport_buffer_ms)
     : transport_buffer_ms_(transport_buffer_ms),
       engine_(transport_buffer_ms),
-      log_path_("pcm_transport.log") {
+      log_path_("pcm_transport.log"),
+      stream_delegate_(std::make_unique<StreamDelegate>(this)),
+      stream_manager_(std::make_unique<StreamPlaybackManager>(*stream_delegate_)),
+      session_delegate_(std::make_unique<SessionDelegate>(this)),
+      session_controller_(std::make_unique<PlaylistSessionController>(*session_delegate_)) {
     reset_dsd_pcm_defaults();
     load_preferences();
     repeat_enabled_ = false;
@@ -2655,10 +2737,13 @@ GtkPlayerWindow::GtkPlayerWindow(std::size_t transport_buffer_ms)
     engine_.set_deep_bass_enabled(deep_bass_enabled_);
     engine_.set_deep_bass_preset(deep_bass_internal_from_ui(deep_bass_preset_));
     start_metadata_worker();
+    stream_manager_->load_health_registry();
 }
 
 GtkPlayerWindow::~GtkPlayerWindow() {
     ui_closing_ = true;
+    save_playlist_session();
+    stream_manager_->shutdown();
     stop_ui_updates();
     cancel_pending_seek();
     stop_metadata_worker();
@@ -3037,26 +3122,18 @@ gboolean GtkPlayerWindow::on_timer_tick(gpointer user_data) {
 
     const PlaybackStatusSnapshot status = self->engine_.snapshot();
     self->update_gapless_chain_track_from_status(status);
-    self->update_stream_health_from_playback(status);
-    if (self->stream_reconnect_pending_ &&
-        std::chrono::steady_clock::now() >= self->stream_reconnect_due_) {
-        self->stream_reconnect_pending_ = false;
-        const std::size_t index = self->stream_reconnect_target_index_;
-        if (index < self->playlist_.size() && self->playlist_[index].is_stream) {
-            struct StreamReconnectRequest {
-                GtkPlayerWindow* self = nullptr;
-                std::size_t index = 0;
-            };
-            auto* request = new StreamReconnectRequest{self, index};
-            g_idle_add(+[](gpointer user_data) -> gboolean {
-                std::unique_ptr<StreamReconnectRequest> request(static_cast<StreamReconnectRequest*>(user_data));
-                if (request->self != nullptr && !request->self->ui_closing_) {
-                    request->self->play_track_index(request->index);
-                }
-                return G_SOURCE_REMOVE;
-            }, request);
+    if (!self->playlist_.empty() && self->current_track_index_ < self->playlist_.size()) {
+        const PlaylistEntry& current = self->playlist_[self->current_track_index_];
+        if (current.is_stream) {
+            self->stream_manager_->update_from_playback(current.audio_file_path, status.playing, status.paused);
+        } else {
+            self->stream_manager_->reset_health_tracking();
         }
+    } else {
+        self->stream_manager_->reset_health_tracking();
     }
+
+    self->stream_manager_->tick_reconnect(std::chrono::steady_clock::now());
 
     bool transport_finished = !self->track_switch_in_progress_ && status.finished && !status.playing;
     if (!transport_finished && !self->track_switch_in_progress_ && !self->playlist_.empty() && self->current_track_index_ < self->playlist_.size()) {
@@ -3085,13 +3162,14 @@ gboolean GtkPlayerWindow::on_timer_tick(gpointer user_data) {
 
             if (finished_index < self->playlist_.size() && self->playlist_[finished_index].is_stream) {
                 should_advance = false;
-                if (self->stream_reconnect_attempts_ < kMaxStreamReconnectAttempts) {
-                    self->schedule_stream_reconnect(finished_index);
+                const std::string& stream_url = self->playlist_[finished_index].audio_file_path;
+                if (self->stream_manager_->reconnect_attempts() < kMaxStreamReconnectAttempts) {
+                    self->stream_manager_->note_broken(stream_url, "Stream unavailable");
+                    self->stream_manager_->schedule_reconnect(finished_index, "Reconnecting...");
                 } else {
-                    self->stream_status_override_ = "Stream unavailable";
-                    self->stream_reconnect_attempts_ = 0;
-                    self->stream_reconnect_target_index_ = static_cast<std::size_t>(-1);
-                    self->note_stream_broken(self->playlist_[finished_index].audio_file_path, "Stream unavailable");
+                    self->stream_manager_->set_status_override("Stream unavailable");
+                    self->stream_manager_->cancel_reconnect();
+                    self->stream_manager_->note_broken(stream_url, "Stream unavailable");
                 }
             }
 
@@ -3132,8 +3210,6 @@ void GtkPlayerWindow::on_window_destroy(GtkWidget*, gpointer user_data) {
         self->ui_closing_ = true;
         self->stop_ui_updates();
         self->cancel_pending_seek();
-        self->stop_stream_sidecar();
-        self->shutdown_stream_probe_worker();
         self->window_ = nullptr;
         self->display_track_ = nullptr;
         self->display_time_ = nullptr;
@@ -4793,13 +4869,7 @@ void GtkPlayerWindow::start_current_track(bool restart_if_paused) {
 
 void GtkPlayerWindow::stop_playback() {
     cancel_pending_seek();
-    stop_stream_sidecar();
-    cancel_stream_reconnect();
-    reset_stream_health_tracking();
-    {
-        std::lock_guard<std::mutex> lock(stream_probe_mutex_);
-        ++stream_probe_generation_;
-    }
+    stream_manager_->on_playback_stopped();
     track_switch_in_progress_ = false;
     finish_handled_ = false;
     softvol_dragging_ = false;
@@ -4829,21 +4899,14 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
         return;
     }
 
-    std::uint64_t probe_generation = 0;
-    {
-        std::lock_guard<std::mutex> lock(stream_probe_mutex_);
-        ++stream_probe_generation_;
-        probe_generation = stream_probe_generation_;
-    }
+    const std::uint64_t probe_generation = stream_manager_->bump_probe_generation();
 
-    const bool reconnecting_same_stream = stream_reconnect_target_index_ == index &&
-                                          index < playlist_.size() &&
-                                          playlist_[index].is_stream;
+    const bool reconnecting_same_stream = stream_manager_->should_keep_sidecar_for_play(index, playlist_[index].is_stream);
     if (!reconnecting_same_stream) {
-        stop_stream_sidecar();
+        stream_manager_->stop_sidecar();
     }
-    if (stream_reconnect_target_index_ != index) {
-        cancel_stream_reconnect();
+    if (!stream_manager_->is_reconnect_target(index)) {
+        stream_manager_->cancel_reconnect();
     }
 
     if (reconnecting_same_stream && start_playback && !skip_engine_stop) {
@@ -4938,7 +5001,7 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
             playlist_[current_track_index_].stream_format_probed = true;
             Logger::instance().info("Streaming playback: " + track.audio_file_path + " (" +
                                     std::to_string(stream_format.sample_rate) + " Hz)");
-            start_stream_sidecar(track.audio_file_path);
+            stream_manager_->start_sidecar(track.audio_file_path);
         } else {
             chain_end = file_chain_end_index(index);
             if (chain_end > index + 1) {
@@ -4982,8 +5045,7 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
             engine_.pause();
         }
         if (track.is_stream) {
-            cancel_stream_reconnect();
-            stream_status_override_.clear();
+            stream_manager_->clear_reconnect_after_success();
         }
         track_switch_in_progress_ = false;
         finish_handled_ = false;
@@ -4999,7 +5061,7 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
         finish_handled_ = false;
         Logger::instance().error(std::string("Failed to play track: ") + ex.what());
         if (track.is_stream) {
-            note_stream_broken(track.audio_file_path, ex.what());
+            stream_manager_->note_broken(track.audio_file_path, ex.what());
         }
         GtkWidget* msg = gtk_message_dialog_new(GTK_WINDOW(window_),
                                                 GTK_DIALOG_MODAL,
@@ -6702,6 +6764,9 @@ void GtkPlayerWindow::refresh_display(bool update_text, bool update_progress, bo
 
     std::string track_text = "Track: --";
     std::string status_text = status.message.empty() ? "Idle" : status.message;
+    if (!stream_manager_->status_override().empty()) {
+        status_text = stream_manager_->status_override();
+    }
     std::string source_text = "Device: " + current_device_;
     std::string path_text = "Path: --";
 
@@ -6828,7 +6893,7 @@ void GtkPlayerWindow::rebuild_playlist_view() {
         GtkTreeIter iter;
         gtk_list_store_append(playlist_store_, &iter);
         const PlaylistEntry& entry = playlist_[i];
-        const bool stream_broken = entry.is_stream && stream_health_.is_broken(entry.audio_file_path);
+        const bool stream_broken = entry.is_stream && stream_manager_->is_broken(entry.audio_file_path);
         const std::string trackno = stream_broken
             ? ("× " + std::to_string(entry.track_number))
             : std::to_string(entry.track_number);
@@ -6862,7 +6927,7 @@ void GtkPlayerWindow::update_playlist_row(std::size_t index) {
     }
 
     const PlaylistEntry& entry = playlist_[index];
-    const bool stream_broken = entry.is_stream && stream_health_.is_broken(entry.audio_file_path);
+    const bool stream_broken = entry.is_stream && stream_manager_->is_broken(entry.audio_file_path);
     const std::string trackno = stream_broken
         ? ("× " + std::to_string(entry.track_number))
         : std::to_string(entry.track_number);
@@ -6947,11 +7012,11 @@ std::string GtkPlayerWindow::format_time(std::uint64_t samples_per_channel, std:
 }
 
 std::string GtkPlayerWindow::display_title_for(const PlaylistEntry& entry) const {
-    if (entry.is_stream && !stream_now_playing_.empty()) {
+    if (entry.is_stream && !stream_manager_->now_playing().empty()) {
         if (!entry.title.empty()) {
-            return entry.title + " — " + stream_now_playing_;
+            return entry.title + " — " + stream_manager_->now_playing();
         }
-        return stream_now_playing_;
+        return stream_manager_->now_playing();
     }
     if (!entry.performer.empty()) {
         return entry.performer + " - " + entry.title;
@@ -7385,7 +7450,7 @@ MprisPlayerState GtkPlayerWindow::build_mpris_state() const {
         const std::uint64_t length_samples = track_length_samples(track);
 
         state.has_track = true;
-        state.title = !stream_now_playing_.empty() && track.is_stream ? stream_now_playing_ : track.title;
+        state.title = !stream_manager_->now_playing().empty() && track.is_stream ? stream_manager_->now_playing() : track.title;
         state.artist = track.performer;
         state.track_number = track.track_number;
         state.url = track.is_stream ? track.audio_file_path : file_uri_for_path(track.audio_file_path);
@@ -7887,144 +7952,104 @@ void GtkPlayerWindow::clear_playlist_search() {
     }
 }
 
-gboolean GtkPlayerWindow::on_stream_metadata_idle(gpointer user_data) {
-    std::unique_ptr<StreamMetadataUpdate> update(static_cast<StreamMetadataUpdate*>(user_data));
-    if (update != nullptr && update->self != nullptr && !update->self->ui_closing_) {
-        update->self->apply_stream_metadata(update->title);
-    }
-    return G_SOURCE_REMOVE;
-}
-
-void GtkPlayerWindow::apply_stream_metadata(const std::string& title) {
-    if (title.empty() || title == stream_now_playing_) {
-        return;
-    }
-    stream_now_playing_ = title;
-    if (!playlist_.empty() && current_track_index_ < playlist_.size()) {
-        update_playlist_row(current_track_index_);
-    }
-    refresh_display();
-    notify_mpris_state_changed();
-}
-
-void GtkPlayerWindow::start_stream_sidecar(const std::string& stream_url) {
-    if (stream_sidecar_ != nullptr && stream_sidecar_url_ == stream_url) {
-        return;
-    }
-
-    stop_stream_sidecar(false);
-    stream_now_playing_.clear();
-    stream_sidecar_url_ = stream_url;
-    stream_sidecar_ = std::make_unique<StreamSidecar>();
-    GtkPlayerWindow* self = this;
-    stream_sidecar_->start(stream_url, [self](const std::string& title) {
-        if (self == nullptr || self->ui_closing_) {
-            return;
+std::size_t GtkPlayerWindow::find_playlist_index_by_url(const std::string& url) const {
+    const std::string normalized = normalize_stream_url(url);
+    for (std::size_t i = 0; i < playlist_.size(); ++i) {
+        if (normalize_stream_url(playlist_[i].audio_file_path) == normalized) {
+            return i;
         }
-        auto* update = new StreamMetadataUpdate{self, title};
-        g_idle_add(&GtkPlayerWindow::on_stream_metadata_idle, update);
-    });
-}
-
-void GtkPlayerWindow::stop_stream_sidecar(bool wait_for_exit) {
-    if (stream_sidecar_ == nullptr) {
-        stream_now_playing_.clear();
-        stream_sidecar_url_.clear();
-        return;
     }
-
-    std::unique_ptr<StreamSidecar> sidecar = std::move(stream_sidecar_);
-    stream_sidecar_url_.clear();
-    stream_now_playing_.clear();
-    if (wait_for_exit) {
-        sidecar->stop();
-        return;
-    }
-
-    std::thread([sidecar = std::move(sidecar)]() mutable {
-        sidecar->stop();
-    }).detach();
+    return static_cast<std::size_t>(-1);
 }
 
-void GtkPlayerWindow::cancel_stream_reconnect() {
-    stream_reconnect_pending_ = false;
-    stream_reconnect_target_index_ = static_cast<std::size_t>(-1);
-    stream_reconnect_attempts_ = 0;
-    stream_status_override_.clear();
-}
-
-void GtkPlayerWindow::note_stream_broken(const std::string& url, const std::string& error) {
-    stream_health_.mark_broken(url, error);
+void GtkPlayerWindow::handle_stream_probe_result(StreamPlaybackManager::ProbeResult result) {
     if (ui_closing_) {
         return;
     }
-    refresh_stream_health_rows_for_url(url);
+
+    const std::size_t playlist_index = find_playlist_index_by_url(result.url);
+    const bool connect_failed = !result.probe_ok || !result.info.live_format_probed;
+
+    if (connect_failed) {
+        const std::string error = !result.probe_ok
+            ? (result.error.empty() ? std::string("Stream probe failed") : result.error)
+            : "Stream unavailable";
+        stream_manager_->note_broken(result.url, error);
+        track_switch_in_progress_ = false;
+        finish_handled_ = false;
+        stream_manager_->set_status_override(std::string());
+        Logger::instance().error(std::string("Failed to probe stream: ") + error);
+        GtkWidget* msg = gtk_message_dialog_new(GTK_WINDOW(window_),
+                                                GTK_DIALOG_MODAL,
+                                                GTK_MESSAGE_ERROR,
+                                                GTK_BUTTONS_CLOSE,
+                                                "%s",
+                                                error.c_str());
+        gtk_dialog_run(GTK_DIALOG(msg));
+        gtk_widget_destroy(msg);
+        notify_mpris_state_changed();
+        return;
+    }
+
+    if (playlist_index != static_cast<std::size_t>(-1)) {
+        apply_stream_probe_to_entry(playlist_[playlist_index], result.info);
+    }
+    if (result.info.live_format_probed) {
+        Logger::instance().info("Stream format probed: " + result.url + " -> " +
+                                std::to_string(result.info.source_format.sample_rate) + " Hz / " +
+                                std::to_string(result.info.source_format.bits_per_sample) + "-bit / " +
+                                std::to_string(result.info.source_format.channels) + " ch");
+    }
+
+    if (playlist_index == static_cast<std::size_t>(-1)) {
+        track_switch_in_progress_ = false;
+        finish_handled_ = false;
+        return;
+    }
+
+    stream_manager_->set_status_override(std::string());
+    play_track_index_at_offset(playlist_index,
+                               result.playback.offset_samples,
+                               true,
+                               result.playback.preserve_paused,
+                               result.playback.update_mpris_track,
+                               true);
 }
 
-void GtkPlayerWindow::reset_stream_health_tracking() {
-    stream_health_track_url_.clear();
-    stream_health_playing_ = false;
-}
-
-void GtkPlayerWindow::update_stream_health_from_playback(const PlaybackStatusSnapshot& status) {
-    if (playlist_.empty() || current_track_index_ >= playlist_.size()) {
-        reset_stream_health_tracking();
+void GtkPlayerWindow::begin_async_stream_probe_and_play(std::size_t index,
+                                                        std::uint64_t offset_samples,
+                                                        bool preserve_paused,
+                                                        bool update_mpris_track,
+                                                        bool skip_engine_stop,
+                                                        std::uint64_t probe_generation) {
+    if (index >= playlist_.size()) {
+        track_switch_in_progress_ = false;
+        finish_handled_ = false;
         return;
     }
 
-    const PlaylistEntry& track = playlist_[current_track_index_];
-    if (!track.is_stream) {
-        reset_stream_health_tracking();
-        return;
-    }
+    const PlaylistEntry& entry = playlist_[index];
+    const std::uint32_t source_rate = entry.source_sample_rate > 0 ? entry.source_sample_rate : entry.decoded_format.sample_rate;
+    const std::uint16_t source_bits = entry.source_bits_per_sample > 0 ? entry.source_bits_per_sample : entry.decoded_format.bits_per_sample;
+    const std::uint32_t target_rate = target_sample_rate_for(source_rate);
+    const std::uint16_t target_bits = target_bits_for(source_bits);
+    const std::uint32_t forced_rate = (target_rate > 0 && target_rate != source_rate) ? target_rate : 0;
+    const std::uint16_t forced_bits = (target_bits > 0 && target_bits != source_bits) ? target_bits : 0;
 
-    const std::string& url = track.audio_file_path;
-    if (url != stream_health_track_url_) {
-        stream_health_track_url_ = url;
-        stream_health_playing_ = false;
-    }
-
-    if (status.playing && !status.paused) {
-        if (!stream_health_playing_) {
-            stream_health_playing_ = true;
-            stream_health_playing_since_ = std::chrono::steady_clock::now();
-            return;
-        }
-
-        const auto elapsed = std::chrono::steady_clock::now() - stream_health_playing_since_;
-        if (elapsed >= std::chrono::seconds(kStreamHealthOkSeconds)) {
-            if (stream_health_.mark_ok(url)) {
-                refresh_stream_health_rows_for_url(url);
-            }
-            stream_health_playing_ = false;
-        }
-    } else {
-        stream_health_playing_ = false;
-    }
-}
-
-void GtkPlayerWindow::schedule_stream_reconnect(std::size_t index) {
-    if (index >= playlist_.size() || !playlist_[index].is_stream) {
-        return;
-    }
-
-    const std::string& url = playlist_[index].audio_file_path;
-    const std::string error = stream_status_override_.empty() ? "Stream unavailable" : stream_status_override_;
-    note_stream_broken(url, error);
-
-    if (stream_reconnect_attempts_ >= kMaxStreamReconnectAttempts) {
-        stream_status_override_ = "Stream unavailable";
-        return;
-    }
-
-    const int delay_index = std::min(stream_reconnect_attempts_,
-                                     static_cast<int>(sizeof(kStreamReconnectDelaysSec) / sizeof(kStreamReconnectDelaysSec[0])) - 1);
-    stream_reconnect_target_index_ = index;
-    stream_reconnect_pending_ = true;
-    stream_reconnect_due_ = std::chrono::steady_clock::now() + std::chrono::seconds(kStreamReconnectDelaysSec[delay_index]);
-    stream_status_override_ = "Reconnecting...";
-    ++stream_reconnect_attempts_;
+    stream_manager_->set_status_override("Probing stream...");
     refresh_display();
+
+    StreamPlaybackManager::ProbePlaybackRequest request;
+    request.index = index;
+    request.offset_samples = offset_samples;
+    request.preserve_paused = preserve_paused;
+    request.update_mpris_track = update_mpris_track;
+    request.skip_engine_stop = skip_engine_stop;
+    stream_manager_->begin_async_probe(request,
+                                       entry.audio_file_path,
+                                       forced_rate,
+                                       forced_bits,
+                                       probe_generation);
 }
 
 void GtkPlayerWindow::append_stream_entry(const std::string& path,
@@ -8105,234 +8130,6 @@ void GtkPlayerWindow::apply_stream_probe_to_entry(PlaylistEntry& entry, const Ex
     entry.stream_format_probed = true;
 }
 
-bool GtkPlayerWindow::stream_probe_is_current(std::uint64_t generation) const {
-    std::lock_guard<std::mutex> lock(stream_probe_mutex_);
-    return generation == stream_probe_generation_;
-}
-
-std::size_t GtkPlayerWindow::find_playlist_index_by_url(const std::string& url) const {
-    const std::string normalized = normalize_stream_url(url);
-    for (std::size_t i = 0; i < playlist_.size(); ++i) {
-        if (normalize_stream_url(playlist_[i].audio_file_path) == normalized) {
-            return i;
-        }
-    }
-    return static_cast<std::size_t>(-1);
-}
-
-void GtkPlayerWindow::mark_stream_broken_from_probe(const std::string& url, const std::string& error) {
-    stream_health_.mark_broken(url, error);
-    if (ui_closing_) {
-        return;
-    }
-    refresh_stream_health_rows_for_url(url);
-}
-
-void GtkPlayerWindow::ensure_stream_probe_worker() {
-    std::lock_guard<std::mutex> lock(stream_probe_mutex_);
-    if (stream_probe_thread_.joinable()) {
-        return;
-    }
-    stream_probe_shutdown_ = false;
-    stream_probe_thread_ = std::thread(&GtkPlayerWindow::stream_probe_worker_loop, this);
-}
-
-void GtkPlayerWindow::enqueue_stream_probe(std::size_t index,
-                                           std::uint64_t offset_samples,
-                                           bool preserve_paused,
-                                           bool update_mpris_track,
-                                           bool skip_engine_stop,
-                                           std::uint64_t probe_generation,
-                                           const std::string& url,
-                                           std::uint32_t forced_output_sample_rate,
-                                           std::uint16_t forced_output_bits_per_sample) {
-    ensure_stream_probe_worker();
-
-    StreamProbeTask task;
-    task.self = this;
-    task.generation = probe_generation;
-    task.index = index;
-    task.offset_samples = offset_samples;
-    task.preserve_paused = preserve_paused;
-    task.update_mpris_track = update_mpris_track;
-    task.skip_engine_stop = skip_engine_stop;
-    task.url = url;
-    task.forced_output_sample_rate = forced_output_sample_rate;
-    task.forced_output_bits_per_sample = forced_output_bits_per_sample;
-
-    {
-        std::lock_guard<std::mutex> lock(stream_probe_mutex_);
-        const auto stale = std::remove_if(stream_probe_queue_.begin(),
-                                          stream_probe_queue_.end(),
-                                          [&](const StreamProbeTask& pending) { return pending.url == task.url; });
-        stream_probe_queue_.erase(stale, stream_probe_queue_.end());
-        stream_probe_queue_.push_front(std::move(task));
-    }
-    stream_probe_cv_.notify_one();
-}
-
-void GtkPlayerWindow::stream_probe_worker_loop() {
-    for (;;) {
-        StreamProbeTask task;
-        {
-            std::unique_lock<std::mutex> lock(stream_probe_mutex_);
-            stream_probe_cv_.wait(lock, [this]() {
-                return stream_probe_shutdown_ || !stream_probe_queue_.empty();
-            });
-            if (stream_probe_shutdown_ && stream_probe_queue_.empty()) {
-                return;
-            }
-            task = std::move(stream_probe_queue_.front());
-            stream_probe_queue_.pop_front();
-        }
-
-        std::thread([task = std::move(task)]() mutable {
-            auto* result = new StreamProbeResult;
-            static_cast<StreamProbeTask&>(*result) = std::move(task);
-            const std::uint64_t generation = result->generation;
-            GtkPlayerWindow* self = result->self;
-
-            try {
-                result->info = ExternalAudioDecoder::probe_info(result->url,
-                                                                result->forced_output_sample_rate,
-                                                                result->forced_output_bits_per_sample);
-                result->probe_ok = true;
-            } catch (const std::exception& ex) {
-                result->error = ex.what();
-            } catch (...) {
-                result->error = "Stream probe failed";
-            }
-
-            if (self != nullptr && !self->stream_probe_is_current(generation) &&
-                result->probe_ok && result->info.live_format_probed) {
-                if (!ExternalAudioDecoder::verify_stream_playback(result->url,
-                                                                  result->info,
-                                                                  result->forced_output_sample_rate,
-                                                                  result->forced_output_bits_per_sample)) {
-                    result->info.live_format_probed = false;
-                }
-            }
-
-            g_idle_add(&GtkPlayerWindow::on_stream_probe_idle, result);
-        }).detach();
-    }
-}
-
-void GtkPlayerWindow::shutdown_stream_probe_worker() {
-    {
-        std::lock_guard<std::mutex> lock(stream_probe_mutex_);
-        stream_probe_shutdown_ = true;
-    }
-    stream_probe_cv_.notify_all();
-    if (stream_probe_thread_.joinable()) {
-        stream_probe_thread_.join();
-    }
-    {
-        std::lock_guard<std::mutex> lock(stream_probe_mutex_);
-        stream_probe_queue_.clear();
-    }
-}
-
-void GtkPlayerWindow::begin_async_stream_probe_and_play(std::size_t index,
-                                                        std::uint64_t offset_samples,
-                                                        bool preserve_paused,
-                                                        bool update_mpris_track,
-                                                        bool skip_engine_stop,
-                                                        std::uint64_t probe_generation) {
-    if (index >= playlist_.size()) {
-        track_switch_in_progress_ = false;
-        finish_handled_ = false;
-        return;
-    }
-
-    const PlaylistEntry& entry = playlist_[index];
-    const std::uint32_t source_rate = entry.source_sample_rate > 0 ? entry.source_sample_rate : entry.decoded_format.sample_rate;
-    const std::uint16_t source_bits = entry.source_bits_per_sample > 0 ? entry.source_bits_per_sample : entry.decoded_format.bits_per_sample;
-    const std::uint32_t target_rate = target_sample_rate_for(source_rate);
-    const std::uint16_t target_bits = target_bits_for(source_bits);
-    const std::uint32_t forced_rate = (target_rate > 0 && target_rate != source_rate) ? target_rate : 0;
-    const std::uint16_t forced_bits = (target_bits > 0 && target_bits != source_bits) ? target_bits : 0;
-
-    stream_status_override_ = "Probing stream...";
-    refresh_display();
-
-    enqueue_stream_probe(index,
-                         offset_samples,
-                         preserve_paused,
-                         update_mpris_track,
-                         skip_engine_stop,
-                         probe_generation,
-                         entry.audio_file_path,
-                         forced_rate,
-                         forced_bits);
-}
-
-gboolean GtkPlayerWindow::on_stream_probe_idle(gpointer user_data) {
-    std::unique_ptr<StreamProbeResult> request(static_cast<StreamProbeResult*>(user_data));
-    GtkPlayerWindow* self = request->self;
-    if (self == nullptr || self->ui_closing_) {
-        return G_SOURCE_REMOVE;
-    }
-
-    const bool stale = !self->stream_probe_is_current(request->generation);
-    const std::size_t playlist_index = self->find_playlist_index_by_url(request->url);
-    const bool connect_failed = !request->probe_ok || !request->info.live_format_probed;
-
-    if (connect_failed) {
-        const std::string error = !request->probe_ok
-            ? (request->error.empty() ? std::string("Stream probe failed") : request->error)
-            : "Stream unavailable";
-        self->mark_stream_broken_from_probe(request->url, error);
-
-        if (stale) {
-            return G_SOURCE_REMOVE;
-        }
-
-        self->track_switch_in_progress_ = false;
-        self->finish_handled_ = false;
-        self->stream_status_override_.clear();
-        Logger::instance().error(std::string("Failed to probe stream: ") + error);
-        GtkWidget* msg = gtk_message_dialog_new(GTK_WINDOW(self->window_),
-                                                GTK_DIALOG_MODAL,
-                                                GTK_MESSAGE_ERROR,
-                                                GTK_BUTTONS_CLOSE,
-                                                "%s",
-                                                error.c_str());
-        gtk_dialog_run(GTK_DIALOG(msg));
-        gtk_widget_destroy(msg);
-        self->notify_mpris_state_changed();
-        return G_SOURCE_REMOVE;
-    }
-
-    if (playlist_index != static_cast<std::size_t>(-1)) {
-        self->apply_stream_probe_to_entry(self->playlist_[playlist_index], request->info);
-    }
-    if (request->info.live_format_probed) {
-        Logger::instance().info("Stream format probed: " + request->url + " -> " +
-                                std::to_string(request->info.source_format.sample_rate) + " Hz / " +
-                                std::to_string(request->info.source_format.bits_per_sample) + "-bit / " +
-                                std::to_string(request->info.source_format.channels) + " ch");
-    }
-
-    if (stale) {
-        return G_SOURCE_REMOVE;
-    }
-    if (playlist_index == static_cast<std::size_t>(-1)) {
-        self->track_switch_in_progress_ = false;
-        self->finish_handled_ = false;
-        return G_SOURCE_REMOVE;
-    }
-
-    self->stream_status_override_.clear();
-    self->play_track_index_at_offset(playlist_index,
-                                     request->offset_samples,
-                                     true,
-                                     request->preserve_paused,
-                                     request->update_mpris_track,
-                                     true);
-    return G_SOURCE_REMOVE;
-}
-
 void GtkPlayerWindow::refresh_stream_health_rows_for_url(const std::string& url) {
     if (playlist_store_ == nullptr || playlist_.empty()) {
         return;
@@ -8347,7 +8144,7 @@ void GtkPlayerWindow::refresh_stream_health_rows_for_url(const std::string& url)
         if (index >= 0 && static_cast<std::size_t>(index) < playlist_.size()) {
             const PlaylistEntry& entry = playlist_[static_cast<std::size_t>(index)];
             if (normalize_stream_url(entry.audio_file_path) == normalized) {
-                const bool stream_broken = entry.is_stream && stream_health_.is_broken(entry.audio_file_path);
+                const bool stream_broken = entry.is_stream && stream_manager_->is_broken(entry.audio_file_path);
                 const std::string trackno = stream_broken
                     ? ("× " + std::to_string(entry.track_number))
                     : std::to_string(entry.track_number);
@@ -8436,157 +8233,18 @@ std::string GtkPlayerWindow::media_source_summary(const PlaylistEntry& entry) co
     return summary.str();
 }
 
-PlaylistSessionTrack GtkPlayerWindow::session_track_from_entry(const PlaylistEntry& entry) {
-    PlaylistSessionTrack track;
-    track.audio_file_path = entry.audio_file_path;
-    track.track_number = entry.track_number;
-    track.title = entry.title;
-    track.performer = entry.performer;
-    track.start_sample = entry.start_sample;
-    track.end_sample = entry.end_sample;
-    track.source_label = entry.source_label;
-    track.decoded_sample_rate = entry.decoded_format.sample_rate;
-    track.decoded_channels = entry.decoded_format.channels;
-    track.decoded_bits_per_sample = entry.decoded_format.bits_per_sample;
-    track.source_sample_rate = entry.source_sample_rate;
-    track.source_bits_per_sample = entry.source_bits_per_sample;
-    track.native_decode = entry.native_decode;
-    track.lossless_source = entry.lossless_source;
-    track.lossy_source = entry.lossy_source;
-    track.resampled = entry.resampled;
-    track.resampled_from_rate = entry.resampled_from_rate;
-    track.bitdepth_converted = entry.bitdepth_converted;
-    track.processed_by_ffmpeg = entry.processed_by_ffmpeg;
-    track.codec_name = entry.codec_name;
-    track.cue_track = entry.cue_track;
-    track.cue_album_end_sample = entry.cue_album_end_sample;
-    track.is_stream = entry.is_stream || session_path_is_remote_uri(entry.audio_file_path);
-    return track;
-}
-
-GtkPlayerWindow::PlaylistEntry GtkPlayerWindow::entry_from_session_track(const PlaylistSessionTrack& track) {
-    PlaylistEntry entry;
-    entry.audio_file_path = track.audio_file_path;
-    entry.track_number = track.track_number;
-    entry.title = track.title;
-    entry.performer = track.performer;
-    entry.start_sample = track.start_sample;
-    entry.end_sample = track.end_sample;
-    entry.source_label = track.source_label;
-    entry.decoded_format.sample_rate = track.decoded_sample_rate;
-    entry.decoded_format.channels = track.decoded_channels;
-    entry.decoded_format.bits_per_sample = track.decoded_bits_per_sample;
-    entry.source_sample_rate = track.source_sample_rate;
-    entry.source_bits_per_sample = track.source_bits_per_sample;
-    entry.native_decode = track.native_decode;
-    entry.lossless_source = track.lossless_source;
-    entry.lossy_source = track.lossy_source;
-    entry.resampled = track.resampled;
-    entry.resampled_from_rate = track.resampled_from_rate;
-    entry.bitdepth_converted = track.bitdepth_converted;
-    entry.processed_by_ffmpeg = track.processed_by_ffmpeg;
-    entry.codec_name = track.codec_name;
-    entry.cue_track = track.cue_track;
-    entry.cue_album_end_sample = track.cue_album_end_sample;
-    entry.is_stream = track.is_stream ||
-                      ExternalAudioDecoder::is_stream_uri(track.audio_file_path) ||
-                      is_remote_media_uri(track.audio_file_path);
-    return entry;
-}
-
-bool GtkPlayerWindow::session_track_restorable(const PlaylistSessionTrack& track) {
-    if (track.audio_file_path.empty()) {
-        return false;
-    }
-    if (track.is_stream ||
-        session_path_is_remote_uri(track.audio_file_path) ||
-        ExternalAudioDecoder::is_stream_uri(track.audio_file_path) ||
-        is_remote_media_uri(track.audio_file_path)) {
-        return true;
-    }
-    return access(track.audio_file_path.c_str(), F_OK) == 0;
-}
-
 void GtkPlayerWindow::save_playlist_session() const {
-    PlaylistSessionSnapshot snapshot;
-    snapshot.tracks.reserve(playlist_.size());
+    std::vector<PlaylistSessionEntryData> entries;
+    entries.reserve(playlist_.size());
     for (const PlaylistEntry& entry : playlist_) {
-        snapshot.tracks.push_back(session_track_from_entry(entry));
+        entries.push_back(session_entry_data_from(entry));
     }
-    if (!playlist_.empty()) {
-        snapshot.current_track_index = highlighted_playlist_index();
-    }
-    PlaylistSession().save(snapshot);
+    const std::size_t current_index = playlist_.empty() ? 0 : highlighted_playlist_index();
+    session_controller_->save(entries, current_index);
 }
 
 bool GtkPlayerWindow::restore_playlist_session() {
-    PlaylistSessionSnapshot snapshot;
-    if (!PlaylistSession().load(snapshot)) {
-        return false;
-    }
-
-    std::vector<PlaylistEntry> restored;
-    restored.reserve(snapshot.tracks.size());
-    for (const PlaylistSessionTrack& track : snapshot.tracks) {
-        if (!session_track_restorable(track)) {
-            continue;
-        }
-        restored.push_back(entry_from_session_track(track));
-    }
-    if (restored.empty()) {
-        return false;
-    }
-
-    std::size_t restored_index = 0;
-    if (!snapshot.tracks.empty()) {
-        const std::size_t saved_index = std::min(snapshot.current_track_index, snapshot.tracks.size() - 1);
-        const PlaylistSessionTrack& target = snapshot.tracks[saved_index];
-        bool found = false;
-        for (std::size_t i = 0; i < restored.size(); ++i) {
-            const PlaylistEntry& entry = restored[i];
-            if (entry.audio_file_path == target.audio_file_path &&
-                entry.start_sample == target.start_sample &&
-                entry.cue_track == target.cue_track &&
-                entry.track_number == target.track_number) {
-                restored_index = i;
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            restored_index = std::min(snapshot.current_track_index, restored.size() - 1);
-        }
-    }
-
-    playlist_ = std::move(restored);
-    current_track_index_ = restored_index;
-    rebuild_playlist_view();
-    select_playlist_row(current_track_index_);
-    track_switch_in_progress_ = false;
-    finish_handled_ = true;
-    refresh_display();
-    mark_mpris_track_changed();
-
-    auto* focus_data = new RestorePlaylistFocusData{this, current_track_index_};
-    g_idle_add(GtkPlayerWindow::on_restore_playlist_focus_idle, focus_data);
-    return true;
-}
-
-gboolean GtkPlayerWindow::on_restore_playlist_focus_idle(gpointer user_data) {
-    auto* data = static_cast<RestorePlaylistFocusData*>(user_data);
-    if (data != nullptr && data->window != nullptr) {
-        data->window->finalize_restored_playlist_selection(data->index);
-    }
-    delete data;
-    return G_SOURCE_REMOVE;
-}
-
-void GtkPlayerWindow::finalize_restored_playlist_selection(std::size_t index) {
-    if (ui_closing_ || playlist_.empty()) {
-        return;
-    }
-    select_playlist_row(std::min(index, playlist_.size() - 1));
-    gtk_widget_grab_focus(playlist_view_);
+    return session_controller_->restore();
 }
 
 bool GtkPlayerWindow::validate_mpris_open_uri(const std::string& uri, std::string* resolved_location) const {
