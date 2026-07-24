@@ -2,6 +2,7 @@
 
 #include <gtk/gtk.h>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -9,9 +10,9 @@
 #include <memory>
 #include <optional>
 #include <mutex>
+#include <thread>
 #include <cstdint>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -19,6 +20,9 @@
 #include "pcmtp/core/PlaybackEngine.hpp"
 #include "pcmtp/cue/CueParser.hpp"
 #include "pcmtp/decoder/ExternalAudioDecoder.hpp"
+#include "pcmtp/patches/PatchTrackExtensions.hpp"
+#include "pcmtp/patches/StreamPlaybackManager.hpp"
+#include "pcmtp/patches/StreamPlaylistGlue.hpp"
 #include "pcmtp/decoder/GaplessChainDecoder.hpp"
 #include "pcmtp/dsp/AlsaControlBridge.hpp"
 #include "pcmtp/hardware/CardProfileRegistry.hpp"
@@ -28,7 +32,39 @@
 
 namespace pcmtp {
 
+class GtkPlayerWindow;
+class StreamPlaylistGlue;
+
+namespace patches {
+void handle_media_play(GtkPlayerWindow* window);
+void handle_media_pause(GtkPlayerWindow* window);
+void handle_media_stop(GtkPlayerWindow* window);
+void handle_media_next(GtkPlayerWindow* window);
+void handle_media_previous(GtkPlayerWindow* window);
+void handle_media_play_pause(GtkPlayerWindow* window);
+bool handle_media_key(GtkPlayerWindow* window, guint keyval);
+void run_open_audio_dialog(GtkPlayerWindow& window);
+void update_current_track_from_playlist_ui(GtkPlayerWindow& window, int index_column);
+void apply_fork_mpris_action_patches(GtkPlayerWindow& window, MprisService::Actions& actions);
+gboolean on_playlist_focus_in(GtkWidget* widget, GdkEventFocus* event, gpointer user_data);
+gboolean on_playlist_view_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data);
+} // namespace patches
+
 class GtkPlayerWindow {
+    friend class StreamPlaylistGlue;
+    friend void patches::handle_media_play(GtkPlayerWindow* window);
+    friend void patches::handle_media_pause(GtkPlayerWindow* window);
+    friend void patches::handle_media_stop(GtkPlayerWindow* window);
+    friend void patches::handle_media_next(GtkPlayerWindow* window);
+    friend void patches::handle_media_previous(GtkPlayerWindow* window);
+    friend void patches::handle_media_play_pause(GtkPlayerWindow* window);
+    friend bool patches::handle_media_key(GtkPlayerWindow* window, guint keyval);
+    friend void patches::run_open_audio_dialog(GtkPlayerWindow& window);
+    friend void patches::update_current_track_from_playlist_ui(GtkPlayerWindow& window, int index_column);
+    friend void patches::apply_fork_mpris_action_patches(GtkPlayerWindow& window, MprisService::Actions& actions);
+    friend gboolean patches::on_playlist_focus_in(GtkWidget* widget, GdkEventFocus* event, gpointer user_data);
+    friend gboolean patches::on_playlist_view_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data);
+
 public:
     struct ResampleRule {
         std::uint32_t from_rate = 0;
@@ -51,7 +87,6 @@ public:
 
     void show();
 
-private:
     enum class MetadataState {
         Pending,
         Ready,
@@ -89,12 +124,17 @@ private:
         bool dsd_source = false;
         std::uint32_t dsd_sample_rate = 0;
         bool cue_track = false;
+        PatchTrackExtensions patch{};
         std::uint64_t cue_album_end_sample = 0;
         std::uint64_t source_cue_album_end_sample = 0;
         std::shared_ptr<PcmBuffer> normalized_pcm;
         AudioFormat normalized_format{};
         bool normalization_matches_current = false;
     };
+
+private:
+    void initialize_patch_subsystems();
+    void finish_initialization_after_patch_subsystems();
 
     struct MetadataProbeJob {
         std::uint64_t generation = 0;
@@ -153,11 +193,6 @@ private:
                                           GtkTreePath* path,
                                           GtkTreeViewColumn* column,
                                           gpointer user_data);
-    static void on_media_play(GSimpleAction* action, GVariant* parameter, gpointer user_data);
-    static void on_media_pause(GSimpleAction* action, GVariant* parameter, gpointer user_data);
-    static void on_media_stop(GSimpleAction* action, GVariant* parameter, gpointer user_data);
-    static void on_media_next(GSimpleAction* action, GVariant* parameter, gpointer user_data);
-    static void on_media_previous(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static gboolean on_restore_last_sources_idle(gpointer user_data);
 
     void build_ui(GtkApplication* app);
@@ -200,6 +235,10 @@ private:
                                                const std::string& play_after_load_path = std::string());
     void finalize_loaded_playlist(bool rebuild_view = true);
     void schedule_last_sources_restore();
+    void append_media_to_playlist(const std::string& path,
+                                  const std::string& hint_title = std::string(),
+                                  const std::string& hint_artist = std::string(),
+                                  bool defer_metadata_probe = false);
     void start_current_track(bool restart_if_paused = true);
     void halt_active_transport(bool clear_pending_state);
     void remap_playlist_indices_after_failed_removal(
@@ -210,7 +249,9 @@ private:
                                     std::uint64_t offset_samples,
                                     bool start_playback = true,
                                     bool preserve_paused = false,
-                                    bool update_mpris_track = true);
+                                    bool update_mpris_track = true,
+                                    bool skip_engine_stop = false);
+    std::size_t find_playlist_index_by_url(const std::string& url) const;
     void open_file_dialog();
     void open_settings_dialog();
     void open_about_dialog();
@@ -227,7 +268,9 @@ private:
     void rebuild_playlist_view();
     void update_playlist_row(std::size_t index);
     void select_playlist_row(std::size_t index);
+    void sync_playlist_cursor_to_selection();
     void update_playlist_selection_from_ui();
+    std::size_t highlighted_playlist_index() const;
 
     std::unique_ptr<IAudioDecoder> create_decoder_for_entry(const PlaylistEntry& entry, bool for_normalization) const;
     GaplessTrackSpec gapless_spec_for_entry(const PlaylistEntry& entry) const;
@@ -265,6 +308,8 @@ private:
     void handle_media_stop();
     void handle_media_next();
     void handle_media_previous();
+    bool handle_media_key(guint keyval);
+    void handle_media_play_pause();
     void notify_mpris_state_changed();
     void mark_mpris_track_changed();
     void invalidate_mpris_cover_cache();
@@ -274,7 +319,7 @@ private:
     void mpris_play();
     void mpris_advance_track(int direction);
     bool mpris_open_uri(const std::string& uri);
-    bool validate_mpris_file_uri(const std::string& uri, std::string* local_path) const;
+    bool validate_mpris_open_uri(const std::string& uri, std::string* resolved_location) const;
     std::int64_t mpris_seek(std::int64_t offset_usec);
     std::int64_t mpris_set_position(std::int64_t position_usec, const std::string& track_id);
     std::int64_t current_mpris_track_length_usec() const;
@@ -287,7 +332,8 @@ private:
     void mpris_raise();
 
     static std::string format_time(std::uint64_t samples_per_channel, std::uint32_t sample_rate = 44100);
-    static std::string display_title_for(const PlaylistEntry& entry);
+    std::string display_title_for(const PlaylistEntry& entry) const;
+    std::string media_source_summary(const PlaylistEntry& entry) const;
 
     const std::size_t transport_buffer_ms_;
     GtkApplication* app_ = nullptr;
@@ -326,6 +372,7 @@ private:
     GtkWidget* soft_volume_scale_ = nullptr;
     bool softvol_dragging_ = false;
     GtkListStore* playlist_store_ = nullptr;
+    GtkWidget* playlist_scrolled_ = nullptr;
     GtkWidget* playlist_view_ = nullptr;
     GtkWidget* diagnostics_active_output_value_ = nullptr;
 
@@ -409,6 +456,12 @@ private:
     mutable std::string mpris_cover_cache_art_path_;
     mutable bool mpris_cover_cache_valid_ = false;
     std::unique_ptr<MprisService> mpris_service_;
+    struct StreamDelegate;
+    std::unique_ptr<StreamDelegate> stream_delegate_;
+    std::unique_ptr<StreamPlaybackManager> stream_manager_;
+    struct StreamGlueDelegate;
+    std::unique_ptr<StreamGlueDelegate> stream_glue_delegate_;
+    std::unique_ptr<StreamPlaylistGlue> stream_glue_;
 };
 
 } // namespace pcmtp

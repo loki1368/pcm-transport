@@ -5,6 +5,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -13,11 +14,14 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <signal.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
 
 #include "pcmtp/util/Logger.hpp"
 #include "pcmtp/util/ManagedSubprocess.hpp"
+#include "pcmtp/util/MediaUri.hpp"
 #include "pcmtp/util/TextEncoding.hpp"
 
 namespace pcmtp {
@@ -80,12 +84,29 @@ struct CommandCaptureResult {
     bool timed_out = false;
 };
 
+std::vector<std::string> with_low_priority_prefix(const std::vector<std::string>& arguments) {
+    if (arguments.empty()) {
+        return arguments;
+    }
+    if (access("/usr/bin/ionice", X_OK) == 0 || access("/bin/ionice", X_OK) == 0) {
+        std::vector<std::string> prefixed = {"nice", "-n", "19", "ionice", "-c3"};
+        prefixed.insert(prefixed.end(), arguments.begin(), arguments.end());
+        return prefixed;
+    }
+    std::vector<std::string> prefixed = {"nice", "-n", "19"};
+    prefixed.insert(prefixed.end(), arguments.begin(), arguments.end());
+    return prefixed;
+}
+
 CommandCaptureResult run_command_capture(const std::vector<std::string>& arguments,
+                                         bool background_priority,
                                          ManagedSubprocess* managed_process) {
     constexpr auto kProbeTimeout = std::chrono::seconds(30);
     ManagedSubprocess local_process;
     ManagedSubprocess* process = managed_process != nullptr ? managed_process : &local_process;
-    const ManagedSubprocessResult managed_result = process->run(arguments, kProbeTimeout);
+    const std::vector<std::string>& launch_arguments =
+        (background_priority && managed_process == nullptr) ? with_low_priority_prefix(arguments) : arguments;
+    const ManagedSubprocessResult managed_result = process->run(launch_arguments, kProbeTimeout);
 
     CommandCaptureResult result;
     result.stdout_text = managed_result.stdout_text;
@@ -94,6 +115,76 @@ CommandCaptureResult run_command_capture(const std::vector<std::string>& argumen
     result.cancelled = managed_result.cancelled;
     result.timed_out = managed_result.timed_out;
     return result;
+}
+
+struct DecodePipeProcess {
+    FILE* pipe = nullptr;
+    pid_t pid = 0;
+};
+
+void kill_subprocess_tree(pid_t pid) {
+    if (pid <= 0) {
+        return;
+    }
+    const pid_t pgid = getpgid(pid);
+    if (pgid > 0) {
+        kill(-pgid, SIGKILL);
+    } else {
+        kill(pid, SIGKILL);
+    }
+}
+
+DecodePipeProcess start_shell_pipeline(const std::string& shell_command) {
+    DecodePipeProcess result;
+    int stdout_pipe[2];
+    if (pipe(stdout_pipe) != 0) {
+        return result;
+    }
+
+    const pid_t pid = fork();
+    if (pid < 0) {
+        close(stdout_pipe[0]);
+        close(stdout_pipe[1]);
+        return result;
+    }
+    if (pid == 0) {
+        close(stdout_pipe[0]);
+        setpgid(0, 0);
+        if (dup2(stdout_pipe[1], STDOUT_FILENO) < 0) {
+            _exit(127);
+        }
+        close(stdout_pipe[1]);
+        execl("/bin/sh", "sh", "-c", shell_command.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
+
+    close(stdout_pipe[1]);
+    result.pipe = fdopen(stdout_pipe[0], "r");
+    result.pid = pid;
+    if (result.pipe == nullptr) {
+        kill(pid, SIGKILL);
+        waitpid(pid, nullptr, 0);
+        result.pid = 0;
+    }
+    return result;
+}
+
+void terminate_decode_pipe(DecodePipeProcess& proc, bool wait_for_exit) {
+    if (proc.pid > 0) {
+        kill_subprocess_tree(proc.pid);
+    }
+    if (proc.pipe != nullptr) {
+        fclose(proc.pipe);
+        proc.pipe = nullptr;
+    }
+    if (proc.pid > 0 && wait_for_exit) {
+        int status = 0;
+        const pid_t reaped = waitpid(proc.pid, &status, 0);
+        if (reaped < 0 && errno != ECHILD) {
+            Logger::instance().debug(std::string("waitpid failed: ") + std::strerror(errno));
+        }
+        proc.pid = 0;
+    }
 }
 
 bool starts_with(const std::string& text, const char* prefix) {
@@ -277,13 +368,14 @@ bool probe_adts_aac_fast(const std::string& path, ExternalAudioInfo& info) {
 
 bool probe_aac_frame_count_ffprobe(const std::string& path,
                                    ExternalAudioInfo& info,
+                                   bool background_priority,
                                    ManagedSubprocess* probe_process) {
     const std::vector<std::string> arguments = {
         "ffprobe", "-v", "error", "-count_frames", "-select_streams", "a:0",
         "-show_entries", "stream=nb_read_frames,sample_rate,channels",
         "-of", "default=nokey=0:noprint_wrappers=1", path
     };
-    const CommandCaptureResult result = run_command_capture(arguments, probe_process);
+    const CommandCaptureResult result = run_command_capture(arguments, background_priority, probe_process);
     if (result.status != 0 || result.stdout_text.empty()) {
         return false;
     }
@@ -326,6 +418,7 @@ bool probe_aac_frame_count_ffprobe(const std::string& path,
 
 bool probe_m4a_packet_duration_ffprobe(const std::string& path,
                                         ExternalAudioInfo& info,
+                                        bool background_priority,
                                         ManagedSubprocess* probe_process) {
     if (info.format.sample_rate == 0) {
         return false;
@@ -335,7 +428,7 @@ bool probe_m4a_packet_duration_ffprobe(const std::string& path,
         "-show_packets", "-show_entries", "packet=duration_time,duration",
         "-of", "default=nokey=0:noprint_wrappers=1", path
     };
-    const CommandCaptureResult result = run_command_capture(arguments, probe_process);
+    const CommandCaptureResult result = run_command_capture(arguments, background_priority, probe_process);
     if (result.status != 0 || result.stdout_text.empty()) {
         return false;
     }
@@ -503,6 +596,9 @@ std::string ExternalAudioDecoder::to_lower_extension(const std::string& path) {
 }
 
 bool ExternalAudioDecoder::looks_supported(const std::string& path) {
+    if (is_remote_media_uri(path)) {
+        return true;
+    }
     static const std::array<const char*, 39> exts = {{".mp3", ".mp2", ".m4a", ".m4r", ".aac", ".ac3", ".dts", ".ogg", ".oga", ".opus", ".spx", ".wav", ".wave", ".w64", ".bwf", ".au", ".snd", ".caf", ".voc", ".ra", ".ape", ".wv", ".flac", ".aiff", ".aif", ".tak", ".tta", ".wma", ".asf", ".xwma", ".wmv", ".oma", ".aa3", ".at3", ".mpc", ".mp+", ".mpp", ".dsf", ".dff"}};
     const std::string ext = to_lower_extension(path);
     for (const char* item : exts) {
@@ -538,6 +634,7 @@ std::size_t ExternalAudioDecoder::bytes_per_sample() const {
 ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path,
                                                         std::uint32_t forced_output_sample_rate,
                                                         std::uint16_t forced_output_bits_per_sample,
+                                                        bool background_priority,
                                                         ManagedSubprocess* probe_process) {
     if (!looks_supported(path)) {
         throw std::runtime_error("ExternalAudioDecoder does not support this file type");
@@ -564,7 +661,7 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path,
             path
         };
         Logger::instance().debug("ExternalAudioDecoder unified probe: " + path);
-        const CommandCaptureResult probe = run_command_capture(probe_arguments, probe_process);
+        const CommandCaptureResult probe = run_command_capture(probe_arguments, background_priority, probe_process);
         if (probe.cancelled) {
             throw std::runtime_error("metadata probe cancelled");
         }
@@ -697,7 +794,7 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path,
 
     if ((ext == ".m4a" || ext == ".m4r") && info.codec_name == "alac" && info.total_samples_per_channel == 0) {
         ExternalAudioInfo m4a_info = info;
-        if (probe_m4a_packet_duration_ffprobe(path, m4a_info, probe_process)) {
+        if (probe_m4a_packet_duration_ffprobe(path, m4a_info, background_priority, probe_process)) {
             m4a_info.tags = info.tags;
             info = m4a_info;
         } else {
@@ -708,7 +805,7 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path,
 
     if (ext == ".aac") {
         ExternalAudioInfo aac_info = info;
-        if (probe_adts_aac_fast(path, aac_info) || probe_aac_frame_count_ffprobe(path, aac_info, probe_process)) {
+        if (probe_adts_aac_fast(path, aac_info) || probe_aac_frame_count_ffprobe(path, aac_info, background_priority, probe_process)) {
             aac_info.tags = info.tags;
             info = aac_info;
         } else {
@@ -841,17 +938,20 @@ std::string ExternalAudioDecoder::decode_command(double seconds) const {
 }
 
 void ExternalAudioDecoder::close_pipe(bool log_stderr, const std::string& context) {
-    if (pipe_ != nullptr) {
-        const int status = pclose(pipe_);
+    interrupt_requested_ = true;
+    if (pipe_ != nullptr || child_pid_ > 0) {
+        DecodePipeProcess proc{pipe_, child_pid_};
         pipe_ = nullptr;
-        if (log_stderr && status != 0) {
+        child_pid_ = 0;
+        if (log_stderr) {
             const std::string stderr_text = read_text_file_limited(stderr_path_);
             if (!stderr_text.empty()) {
-                Logger::instance().error("ffmpeg exited with non-zero status" + (context.empty() ? std::string() : (" during " + context)) + ":\n" + stderr_text);
-            } else {
+                Logger::instance().error("ffmpeg stderr" + (context.empty() ? std::string() : (" during " + context)) + ":\n" + stderr_text);
+            } else if (proc.pipe != nullptr) {
                 Logger::instance().error("ffmpeg exited with non-zero status" + (context.empty() ? std::string() : (" during " + context)));
             }
         }
+        terminate_decode_pipe(proc, true);
     }
     remove_file_quiet(stderr_path_);
     stderr_path_.clear();
@@ -859,6 +959,7 @@ void ExternalAudioDecoder::close_pipe(bool log_stderr, const std::string& contex
 
 bool ExternalAudioDecoder::start_decode_pipe(double seconds, const std::string& context) {
     close_pipe(false, std::string());
+    interrupt_requested_ = false;
     stderr_path_ = make_temp_stderr_path("pcm_transport_ffmpeg");
     std::string command = decode_command(seconds);
     if (!stderr_path_.empty()) {
@@ -867,14 +968,23 @@ bool ExternalAudioDecoder::start_decode_pipe(double seconds, const std::string& 
         command += " 2>/dev/null";
     }
     Logger::instance().debug("ExternalAudioDecoder starting ffmpeg decode" + (context.empty() ? std::string() : (" (" + context + ")")) + " for: " + path_);
-    pipe_ = popen(command.c_str(), "r");
-    if (pipe_ == nullptr) {
+    const DecodePipeProcess proc = start_shell_pipeline(command);
+    if (proc.pipe == nullptr || proc.pid <= 0) {
         Logger::instance().error("Cannot start ffmpeg decoder for: " + path_);
         remove_file_quiet(stderr_path_);
         stderr_path_.clear();
         return false;
     }
+    pipe_ = proc.pipe;
+    child_pid_ = proc.pid;
     return true;
+}
+
+void ExternalAudioDecoder::interrupt() {
+    interrupt_requested_ = true;
+    if (child_pid_ > 0) {
+        kill_subprocess_tree(child_pid_);
+    }
 }
 
 void ExternalAudioDecoder::set_known_info(const ExternalAudioInfo& info) {
@@ -928,7 +1038,7 @@ const AudioFormat& ExternalAudioDecoder::format() const {
 }
 
 std::size_t ExternalAudioDecoder::read_samples(PcmSample* destination, std::size_t max_samples) {
-    if (!opened_ || pipe_ == nullptr) {
+    if (!opened_ || pipe_ == nullptr || interrupt_requested_) {
         throw std::runtime_error("Decoder not opened");
     }
 

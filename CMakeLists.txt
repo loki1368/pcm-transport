@@ -11,6 +11,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(ALSA REQUIRED alsa)
 pkg_check_modules(FLAC REQUIRED flac)
 pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
+find_package(OpenSSL REQUIRED)
 
 find_program(GLIB_COMPILE_RESOURCES_EXECUTABLE
     NAMES glib-compile-resources
@@ -47,12 +48,42 @@ add_custom_command(
 
 set_source_files_properties(${PCM_TRANSPORT_RESOURCE_SOURCE} PROPERTIES GENERATED TRUE)
 
+set(PCM_TRANSPORT_PATCH_SOURCES
+    src/patches/GtkPlayerFileChooserPatches.cpp
+    src/patches/GtkPlayerMediaKeys.cpp
+    src/patches/GtkPlayerWindowDelegates.cpp
+    src/patches/M3uPlaylistExtensions.cpp
+    src/patches/MprisStreamPatches.cpp
+    src/patches/PlaylistSelectionPatches.cpp
+    src/patches/PlaylistStreamViewPatches.cpp
+    src/patches/StreamAudioDecoder.cpp
+    src/patches/StreamDecoderFactory.cpp
+    src/patches/StreamPlaybackHooks.cpp
+    src/patches/StreamPlaybackManager.cpp
+    src/patches/StreamPlaylistGlue.cpp
+    src/patches/StreamPlaylistUtils.cpp
+)
+
+add_library(pcm_transport_patches STATIC ${PCM_TRANSPORT_PATCH_SOURCES})
+target_include_directories(pcm_transport_patches PUBLIC include)
+target_include_directories(pcm_transport_patches PRIVATE
+    ${GTK3_INCLUDE_DIRS}
+)
+target_compile_options(pcm_transport_patches PRIVATE
+    ${GTK3_CFLAGS_OTHER}
+    -Wall -Wextra -Wpedantic
+)
+
 add_executable(pcm_transport
     src/main.cpp
     src/app/Application.cpp
     src/backend/AlsaPcmBackend.cpp
     src/core/PlaybackEngine.cpp
     src/cue/CueParser.cpp
+    src/util/MediaUri.cpp
+    src/stream/IcyMetadataClient.cpp
+    src/stream/StreamSidecar.cpp
+    src/stream/StreamHealthRegistry.cpp
     src/playlist/M3uPlaylistReader.cpp
     src/playlist/MediaProbe.cpp
     src/decoder/FlacStreamDecoder.cpp
@@ -93,9 +124,12 @@ target_link_directories(pcm_transport PRIVATE
 )
 
 target_link_libraries(pcm_transport PRIVATE
+    pcm_transport_patches
     ${ALSA_LIBRARIES}
     ${FLAC_LIBRARIES}
     ${GTK3_LIBRARIES}
+    OpenSSL::SSL
+    OpenSSL::Crypto
     pthread
 )
 

@@ -110,6 +110,9 @@ void PlaybackEngine::stop() {
     stop_requested_ = true;
     pause_requested_ = false;
     pause_cv_.notify_all();
+    if (decoder_) {
+        decoder_->interrupt();
+    }
     join_threads();
     playback_thread_tid_.store(0, std::memory_order_relaxed);
     {
@@ -714,7 +717,15 @@ void PlaybackEngine::playback_loop() {
             snapshot_.finished = !stop_requested_ && last_error_.empty();
             snapshot_.playing = false;
             snapshot_.paused = false;
-            snapshot_.message = last_error_.empty() ? "Stopped" : last_error_;
+            if (!last_error_.empty()) {
+                snapshot_.message = last_error_;
+            } else if (!stop_requested_ &&
+                       decoder_->total_samples_per_channel() == 0 &&
+                       played_samples_per_channel <= initial_samples_per_channel_) {
+                snapshot_.message = "Stream unavailable";
+            } else {
+                snapshot_.message = "Stopped";
+            }
             snapshot_.peak_level = 0.0f;
             snapshot_.clip_detected = false;
             snapshot_.clipped_samples = 0;
@@ -745,6 +756,10 @@ void PlaybackEngine::set_error(const std::string& message) {
     stop_requested_ = true;
     pause_cv_.notify_all();
 }
-void PlaybackEngine::join_threads() { if (playback_thread_.joinable()) playback_thread_.join(); }
+void PlaybackEngine::join_threads() {
+    if (playback_thread_.joinable()) {
+        playback_thread_.join();
+    }
+}
 
 } // namespace pcmtp

@@ -1,5 +1,7 @@
 #include "pcmtp/playlist/M3uPlaylistReader.hpp"
 
+#include "pcmtp/patches/M3uPlaylistExtensions.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -11,20 +13,14 @@
 namespace pcmtp {
 namespace {
 
-std::string lower_extension(const std::string& path) {
-    const std::size_t dot = path.find_last_of('.');
-    if (dot == std::string::npos) return std::string();
-    std::string ext = path.substr(dot);
-    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    return ext;
-}
-
 std::string directory_name(const std::string& path) {
     const std::size_t pos = path.find_last_of("/\\");
-    if (pos == std::string::npos) return ".";
-    if (pos == 0) return path.substr(0, 1);
+    if (pos == std::string::npos) {
+        return ".";
+    }
+    if (pos == 0) {
+        return path.substr(0, 1);
+    }
     return path.substr(0, pos);
 }
 
@@ -47,8 +43,11 @@ std::string trim_copy(const std::string& value) {
 bool starts_with_ci(const std::string& text, const char* prefix) {
     std::size_t i = 0;
     for (; prefix[i] != '\0'; ++i) {
-        if (i >= text.size()) return false;
-        if (std::tolower(static_cast<unsigned char>(text[i])) != std::tolower(static_cast<unsigned char>(prefix[i]))) {
+        if (i >= text.size()) {
+            return false;
+        }
+        if (std::tolower(static_cast<unsigned char>(text[i])) !=
+            std::tolower(static_cast<unsigned char>(prefix[i]))) {
             return false;
         }
     }
@@ -62,9 +61,15 @@ bool is_remote_or_stream_uri(const std::string& value) {
 }
 
 int hex_value(char ch) {
-    if (ch >= '0' && ch <= '9') return ch - '0';
-    if (ch >= 'a' && ch <= 'f') return 10 + ch - 'a';
-    if (ch >= 'A' && ch <= 'F') return 10 + ch - 'A';
+    if (ch >= '0' && ch <= '9') {
+        return ch - '0';
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return 10 + ch - 'a';
+    }
+    if (ch >= 'A' && ch <= 'F') {
+        return 10 + ch - 'A';
+    }
     return -1;
 }
 
@@ -117,8 +122,11 @@ std::string resolve_local_entry(const std::string& playlist_path, const std::str
 } // namespace
 
 bool M3uPlaylistReader::looks_like_playlist_path(const std::string& path) {
-    const std::string ext = lower_extension(path);
-    return ext == ".m3u" || ext == ".m3u8";
+    return M3uPlaylistExtensions::looks_like_playlist_path(path);
+}
+
+std::vector<M3uPlaylistEntry> M3uPlaylistReader::read_entries(const std::string& path) {
+    return M3uPlaylistExtensions::read_entries(path);
 }
 
 std::vector<std::string> M3uPlaylistReader::read_local_paths(const std::string& path) {
