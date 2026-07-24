@@ -36,7 +36,10 @@ void install_playlist_stream_styling(GtkTreeView* view,
                                      int col_trackno_id,
                                      int col_artist_id,
                                      int col_title_id,
-                                     int col_source_id);
+                                     int col_source_id,
+                                     const std::size_t* playing_index);
+
+void refresh_playlist_row_styles(GtkWidget* playlist_view);
 
 } // namespace patches
 } // namespace pcmtp

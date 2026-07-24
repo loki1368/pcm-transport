@@ -25,6 +25,22 @@ std::string escape_pango_markup_text(const std::string& text) {
     return out;
 }
 
+constexpr const char* kPlaylistPlayingIndexKey = "pcmtp-playing-index";
+
+bool playlist_row_is_playing(GtkTreeView* view, GtkTreeModel* model, GtkTreeIter* iter) {
+    if (view == nullptr) {
+        return false;
+    }
+    const auto* playing_index = static_cast<const std::size_t*>(
+        g_object_get_data(G_OBJECT(view), kPlaylistPlayingIndexKey));
+    if (playing_index == nullptr) {
+        return false;
+    }
+    int row_index = -1;
+    gtk_tree_model_get(model, iter, 0, &row_index, -1);
+    return row_index >= 0 && static_cast<std::size_t>(row_index) == *playing_index;
+}
+
 void on_playlist_row_cell_data(GtkTreeViewColumn* column,
                                GtkCellRenderer* cell,
                                GtkTreeModel* model,
@@ -46,6 +62,7 @@ void on_playlist_row_cell_data(GtkTreeViewColumn* column,
     const GdkRGBA normal_selected_bg = {0.435f, 0.467f, 0.502f, 1.0f};
     const GdkRGBA normal_selected_fg = {1.0f, 1.0f, 1.0f, 1.0f};
     const char* broken_color = selected ? "#ff9a9a" : "#c44";
+    const bool playing = playlist_row_is_playing(view, model, iter);
 
     gchar* text = nullptr;
     if (model_column >= 0) {
@@ -54,8 +71,11 @@ void on_playlist_row_cell_data(GtkTreeViewColumn* column,
     const std::string cell_text = text != nullptr ? text : std::string();
 
     if (broken) {
-        const std::string markup = std::string("<span foreground='") + broken_color + "'>" +
-                                   escape_pango_markup_text(cell_text) + "</span>";
+        std::string span_attrs = std::string("foreground='") + broken_color + "'";
+        if (playing) {
+            span_attrs += " weight='bold'";
+        }
+        const std::string markup = "<span " + span_attrs + ">" + escape_pango_markup_text(cell_text) + "</span>";
         g_object_set(G_OBJECT(cell),
                        "markup", markup.c_str(),
                        "foreground-set", FALSE,
@@ -73,7 +93,8 @@ void on_playlist_row_cell_data(GtkTreeViewColumn* column,
                        "foreground-set", TRUE,
                        "cell-background-rgba", &normal_selected_bg,
                        "cell-background-set", TRUE,
-                       "weight-set", FALSE,
+                       "weight", playing ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL,
+                       "weight-set", TRUE,
                        nullptr);
     } else {
         g_object_set(G_OBJECT(cell),
@@ -81,7 +102,8 @@ void on_playlist_row_cell_data(GtkTreeViewColumn* column,
                        "text", cell_text.c_str(),
                        "foreground-set", FALSE,
                        "cell-background-set", FALSE,
-                       "weight-set", FALSE,
+                       "weight", playing ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL,
+                       "weight-set", TRUE,
                        nullptr);
     }
 
@@ -146,7 +168,11 @@ void install_playlist_stream_styling(GtkTreeView* view,
                                      int col_trackno_id,
                                      int col_artist_id,
                                      int col_title_id,
-                                     int col_source_id) {
+                                     int col_source_id,
+                                     const std::size_t* playing_index) {
+    if (view != nullptr && playing_index != nullptr) {
+        g_object_set_data(G_OBJECT(view), kPlaylistPlayingIndexKey, const_cast<std::size_t*>(playing_index));
+    }
     set_playlist_column_cell_styler(col_track, col_trackno_id);
     set_playlist_column_cell_styler(col_artist, col_artist_id);
     set_playlist_column_cell_styler(col_title, col_title_id);
@@ -154,6 +180,12 @@ void install_playlist_stream_styling(GtkTreeView* view,
 
     GtkTreeSelection* playlist_selection = gtk_tree_view_get_selection(view);
     g_signal_connect(playlist_selection, "changed", G_CALLBACK(on_playlist_selection_changed), nullptr);
+}
+
+void refresh_playlist_row_styles(GtkWidget* playlist_view) {
+    if (playlist_view != nullptr) {
+        gtk_widget_queue_draw(playlist_view);
+    }
 }
 
 PlaylistStreamRowValues playlist_stream_row_values(const StreamPlaybackManager& manager,

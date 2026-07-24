@@ -2613,7 +2613,8 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
                                              COL_TRACKNO,
                                              COL_ARTIST,
                                              COL_TITLE,
-                                             COL_SOURCE);
+                                             COL_SOURCE,
+                                             &current_track_index_);
 
     g_signal_connect(playlist_view_, "key-press-event", G_CALLBACK(patches::on_playlist_view_key_press), this);
 
@@ -3446,6 +3447,7 @@ void GtkPlayerWindow::update_gapless_chain_track_from_status(const PlaybackStatu
     if (active != current_track_index_ && active < playlist_.size()) {
         current_track_index_ = active;
         select_playlist_row(current_track_index_);
+        patches::refresh_playlist_row_styles(playlist_view_);
         mark_mpris_track_changed();
     }
 }
@@ -4888,11 +4890,15 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
     }
     clear_gapless_chain();
 
+    const std::size_t previous_playing_index = current_track_index_;
     current_track_index_ = index;
     const PlaylistEntry track = playlist_[current_track_index_];
     const std::uint64_t track_length = track_length_samples(track);
     const std::uint64_t initial_offset = std::min<std::uint64_t>(offset_samples, track_length);
     select_playlist_row(current_track_index_);
+    if (previous_playing_index != current_track_index_) {
+        patches::refresh_playlist_row_styles(playlist_view_);
+    }
 
     if (!start_playback) {
         track_switch_in_progress_ = false;

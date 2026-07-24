@@ -1,3 +1,4 @@
+#include "pcmtp/patches/PlaylistStreamViewPatches.hpp"
 #include "pcmtp/patches/StreamPlaylistGlue.hpp"
 
 #include <gtk/gtk.h>
@@ -261,6 +262,7 @@ bool StreamPlaylistGlue::prepare_play_track_preamble(std::size_t index,
     host.clear_gapless_chain();
     host.current_track_index_ = index;
     host.select_playlist_row(host.current_track_index_);
+    patches::refresh_playlist_row_styles(host.playlist_view_);
     delegate_.refresh_display();
 
     struct StreamPlaybackResume {

@@ -5,6 +5,7 @@
 #include "pcmtp/gui/GtkPlayerWindow.hpp"
 #include "pcmtp/patches/PlaylistSessionController.hpp"
 #include "pcmtp/patches/PlaylistSelectionPatches.hpp"
+#include "pcmtp/patches/PlaylistStreamViewPatches.hpp"
 #include "pcmtp/patches/GtkPlayerMediaKeys.hpp"
 
 namespace pcmtp::patches {
@@ -30,7 +31,11 @@ void update_current_track_from_playlist_ui(GtkPlayerWindow& window, int index_co
         int row_index = -1;
         gtk_tree_model_get(model, &iter, index_column, &row_index, -1);
         if (row_index >= 0 && static_cast<std::size_t>(row_index) < window.playlist_.size()) {
+            const std::size_t previous_index = window.current_track_index_;
             window.current_track_index_ = static_cast<std::size_t>(row_index);
+            if (previous_index != window.current_track_index_) {
+                refresh_playlist_row_styles(window.playlist_view_);
+            }
             if (window.pending_metadata_playback_valid()) {
                 window.set_pending_metadata_playback(window.current_track_index_,
                                                      window.pending_metadata_playback_.offset_samples,
@@ -52,7 +57,11 @@ void update_current_track_from_playlist_ui(GtkPlayerWindow& window, int index_co
             int row_index = -1;
             gtk_tree_model_get(cursor_model, &cursor_iter, index_column, &row_index, -1);
             if (row_index >= 0 && static_cast<std::size_t>(row_index) < window.playlist_.size()) {
+                const std::size_t previous_index = window.current_track_index_;
                 window.current_track_index_ = static_cast<std::size_t>(row_index);
+                if (previous_index != window.current_track_index_) {
+                    refresh_playlist_row_styles(window.playlist_view_);
+                }
                 if (window.pending_metadata_playback_valid()) {
                     window.set_pending_metadata_playback(window.current_track_index_,
                                                          window.pending_metadata_playback_.offset_samples,
