@@ -97,10 +97,13 @@ void StreamPlaylistGlue::handle_stream_probe_result(StreamPlaybackManager::Probe
             ? (result.error.empty() ? std::string("Stream probe failed") : result.error)
             : "Stream unavailable";
         delegate_.stream_manager().note_broken(result.url, error);
+        Logger::instance().error(std::string("Failed to probe stream: ") + error);
+        if (result.stale) {
+            return;
+        }
         delegate_.track_switch_in_progress() = false;
         delegate_.finish_handled() = false;
         delegate_.stream_manager().set_status_override(std::string());
-        Logger::instance().error(std::string("Failed to probe stream: ") + error);
         GtkWidget* msg = gtk_message_dialog_new(GTK_WINDOW(host.window_),
                                                 GTK_DIALOG_MODAL,
                                                 GTK_MESSAGE_ERROR,
@@ -145,6 +148,10 @@ void StreamPlaylistGlue::handle_stream_probe_result(StreamPlaybackManager::Probe
                                 std::to_string(result.info.source_format.sample_rate) + " Hz / " +
                                 std::to_string(result.info.source_format.bits_per_sample) + "-bit / " +
                                 std::to_string(result.info.source_format.channels) + " ch");
+    }
+
+    if (result.stale) {
+        return;
     }
 
     if (playlist_index == static_cast<std::size_t>(-1)) {
