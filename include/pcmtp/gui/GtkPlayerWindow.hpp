@@ -24,11 +24,24 @@
 #include "pcmtp/hardware/CardProfileRegistry.hpp"
 #include "pcmtp/mpris/MprisService.hpp"
 #include "pcmtp/playlist/MediaProbe.hpp"
+#include "pcmtp/patches/PlaylistSearchController.hpp"
 #include "pcmtp/util/ManagedSubprocess.hpp"
 
 namespace pcmtp {
 
+class GtkPlayerWindow;
+
+namespace patches {
+gboolean on_playlist_focus_in(GtkWidget* widget, GdkEventFocus* event, gpointer user_data);
+gboolean on_playlist_view_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data);
+void update_current_track_from_playlist_ui(GtkPlayerWindow& window, int index_column);
+} // namespace patches
+
 class GtkPlayerWindow {
+    friend gboolean patches::on_playlist_focus_in(GtkWidget* widget, GdkEventFocus* event, gpointer user_data);
+    friend gboolean patches::on_playlist_view_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data);
+    friend void patches::update_current_track_from_playlist_ui(GtkPlayerWindow& window, int index_column);
+
 public:
     struct ResampleRule {
         std::uint32_t from_rate = 0;
@@ -228,6 +241,7 @@ private:
     void update_playlist_row(std::size_t index);
     void select_playlist_row(std::size_t index);
     void update_playlist_selection_from_ui();
+    void sync_playlist_cursor_to_selection();
 
     std::unique_ptr<IAudioDecoder> create_decoder_for_entry(const PlaylistEntry& entry, bool for_normalization) const;
     GaplessTrackSpec gapless_spec_for_entry(const PlaylistEntry& entry) const;
@@ -260,6 +274,7 @@ private:
     void refresh_active_alsa_output_diagnostics();
     void setup_mpris();
     void setup_media_keys(GtkApplication* app);
+    void initialize_playlist_search();
     void handle_media_play();
     void handle_media_pause();
     void handle_media_stop();
@@ -326,6 +341,7 @@ private:
     GtkWidget* soft_volume_scale_ = nullptr;
     bool softvol_dragging_ = false;
     GtkListStore* playlist_store_ = nullptr;
+    GtkWidget* playlist_scrolled_ = nullptr;
     GtkWidget* playlist_view_ = nullptr;
     GtkWidget* diagnostics_active_output_value_ = nullptr;
 
@@ -409,6 +425,9 @@ private:
     mutable std::string mpris_cover_cache_art_path_;
     mutable bool mpris_cover_cache_valid_ = false;
     std::unique_ptr<MprisService> mpris_service_;
+    struct SearchDelegate;
+    std::unique_ptr<SearchDelegate> search_delegate_;
+    std::unique_ptr<PlaylistSearchController> search_controller_;
 };
 
 } // namespace pcmtp
