@@ -744,6 +744,14 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path,
     return info;
 }
 
+bool ExternalAudioDecoder::try_probe_wav_metadata_fast(const std::string& path, ExternalAudioInfo* out_info) {
+    if (out_info == nullptr) {
+        return false;
+    }
+    *out_info = ExternalAudioInfo{};
+    return probe_wav_header_fast(path, *out_info);
+}
+
 ExternalAudioInfo ExternalAudioDecoder::probe_info(const std::string& path, std::uint32_t forced_output_sample_rate, std::uint16_t forced_output_bits_per_sample) {
     ExternalAudioInfo info = probe_metadata(path, forced_output_sample_rate, forced_output_bits_per_sample);
     info.tags = GenericTags{};
