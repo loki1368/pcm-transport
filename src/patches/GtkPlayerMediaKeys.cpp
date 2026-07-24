@@ -150,7 +150,7 @@ void handle_media_play(GtkPlayerWindow* window) {
 }
 
 void handle_media_pause(GtkPlayerWindow* window) {
-    if (window == nullptr || window->playlist_loading_) {
+    if (window == nullptr) {
         return;
     }
     if (window->engine_.is_playing() && !window->engine_.is_paused()) {
@@ -160,7 +160,7 @@ void handle_media_pause(GtkPlayerWindow* window) {
 }
 
 void handle_media_stop(GtkPlayerWindow* window) {
-    if (window != nullptr && !window->playlist_loading_) {
+    if (window != nullptr) {
         window->stop_playback();
     }
 }

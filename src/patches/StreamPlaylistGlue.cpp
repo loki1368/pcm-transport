@@ -427,13 +427,13 @@ bool StreamPlaylistGlue::begin_play_track(std::size_t index,
     if (probe_generation_out != nullptr) {
         *probe_generation_out = 0;
     }
-    if (host.playlist_loading_ || index >= host.playlist_.size()) {
+    if (index >= host.playlist_.size()) {
         return true;
     }
     const GtkPlayerWindow::PlaylistEntry& entry = host.playlist_[index];
     const bool metadata_ready = entry.metadata_state == GtkPlayerWindow::MetadataState::Ready;
     if (!entry_playable(entry.patch.is_stream, metadata_ready)) {
-        return true;
+        return false;
     }
 
     const std::uint64_t probe_generation = delegate_.stream_manager().bump_probe_generation();

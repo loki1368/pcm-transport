@@ -31,6 +31,13 @@ void update_current_track_from_playlist_ui(GtkPlayerWindow& window, int index_co
         gtk_tree_model_get(model, &iter, index_column, &row_index, -1);
         if (row_index >= 0 && static_cast<std::size_t>(row_index) < window.playlist_.size()) {
             window.current_track_index_ = static_cast<std::size_t>(row_index);
+            if (window.pending_metadata_playback_valid()) {
+                window.set_pending_metadata_playback(window.current_track_index_,
+                                                     window.pending_metadata_playback_.offset_samples,
+                                                     window.pending_metadata_playback_.start_playback,
+                                                     window.pending_metadata_playback_.preserve_paused,
+                                                     window.pending_metadata_playback_.update_mpris_track);
+            }
             return;
         }
     }
@@ -46,6 +53,13 @@ void update_current_track_from_playlist_ui(GtkPlayerWindow& window, int index_co
             gtk_tree_model_get(cursor_model, &cursor_iter, index_column, &row_index, -1);
             if (row_index >= 0 && static_cast<std::size_t>(row_index) < window.playlist_.size()) {
                 window.current_track_index_ = static_cast<std::size_t>(row_index);
+                if (window.pending_metadata_playback_valid()) {
+                    window.set_pending_metadata_playback(window.current_track_index_,
+                                                         window.pending_metadata_playback_.offset_samples,
+                                                         window.pending_metadata_playback_.start_playback,
+                                                         window.pending_metadata_playback_.preserve_paused,
+                                                         window.pending_metadata_playback_.update_mpris_track);
+                }
             }
         }
         gtk_tree_path_free(cursor_path);

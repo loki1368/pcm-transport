@@ -43,7 +43,6 @@ public:
     static FlacTags read_tags(const std::string& path);
     static FlacFileProbe probe_file(const std::string& path);
 
-
 private:
     static ::FLAC__StreamDecoderWriteStatus write_callback(const ::FLAC__StreamDecoder* decoder,
                                                            const ::FLAC__Frame* frame,
