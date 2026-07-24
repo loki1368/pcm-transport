@@ -325,10 +325,6 @@ void StreamPlaybackManager::deliver_probe_result(ProbeTaskResult* raw) {
     if (request == nullptr || delegate_.ui_closing()) {
         return;
     }
-    if (!probe_is_current(request->generation)) {
-        return;
-    }
-
     ProbeResult result;
     result.url = request->url;
     result.generation = request->generation;
@@ -336,6 +332,7 @@ void StreamPlaybackManager::deliver_probe_result(ProbeTaskResult* raw) {
     result.probe_ok = request->probe_ok;
     result.error = request->error;
     result.playback = request->playback;
+    result.stale = !probe_is_current(request->generation);
     delegate_.on_probe_finished(std::move(result));
 }
 

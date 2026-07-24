@@ -39,6 +39,7 @@ public:
         std::uint64_t generation = 0;
         ExternalAudioInfo info;
         bool probe_ok = false;
+        bool stale = false;
         std::string error;
         ProbePlaybackRequest playback;
     };
