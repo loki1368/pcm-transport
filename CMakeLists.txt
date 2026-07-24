@@ -15,6 +15,7 @@ pkg_check_modules(AVFORMAT REQUIRED IMPORTED_TARGET libavformat)
 pkg_check_modules(AVCODEC REQUIRED IMPORTED_TARGET libavcodec)
 pkg_check_modules(AVUTIL REQUIRED IMPORTED_TARGET libavutil)
 pkg_check_modules(SWRESAMPLE REQUIRED IMPORTED_TARGET libswresample)
+find_package(OpenSSL REQUIRED)
 
 find_program(GLIB_COMPILE_RESOURCES_EXECUTABLE
     NAMES glib-compile-resources
@@ -52,8 +53,20 @@ add_custom_command(
 set_source_files_properties(${PCM_TRANSPORT_RESOURCE_SOURCE} PROPERTIES GENERATED TRUE)
 
 set(PCM_TRANSPORT_PATCH_SOURCES
+    src/patches/GtkPlayerFileChooserPatches.cpp
+    src/patches/GtkPlayerMediaKeys.cpp
+    src/patches/GtkPlayerWindowDelegates.cpp
+    src/patches/M3uPlaylistExtensions.cpp
+    src/patches/MprisStreamPatches.cpp
     src/patches/PlaylistSearchController.cpp
     src/patches/PlaylistSelectionPatches.cpp
+    src/patches/PlaylistStreamViewPatches.cpp
+    src/patches/StreamAudioDecoder.cpp
+    src/patches/StreamDecoderFactory.cpp
+    src/patches/StreamPlaybackHooks.cpp
+    src/patches/StreamPlaybackManager.cpp
+    src/patches/StreamPlaylistGlue.cpp
+    src/patches/StreamPlaylistUtils.cpp
 )
 
 add_library(pcm_transport_patches STATIC ${PCM_TRANSPORT_PATCH_SOURCES})
@@ -72,6 +85,10 @@ add_executable(pcm_transport
     src/backend/AlsaPcmBackend.cpp
     src/core/PlaybackEngine.cpp
     src/cue/CueParser.cpp
+    src/util/MediaUri.cpp
+    src/stream/IcyMetadataClient.cpp
+    src/stream/StreamSidecar.cpp
+    src/stream/StreamHealthRegistry.cpp
     src/playlist/M3uPlaylistReader.cpp
     src/playlist/MediaProbe.cpp
     src/playlist/Mp3FastProbe.cpp
@@ -121,6 +138,8 @@ target_link_libraries(pcm_transport PRIVATE
     PkgConfig::AVCODEC
     PkgConfig::AVUTIL
     PkgConfig::SWRESAMPLE
+    OpenSSL::SSL
+    OpenSSL::Crypto
     pthread
 )
 

@@ -3,6 +3,8 @@
 
 #include "pcmtp/decoder/ExternalAudioDecoder.hpp"
 
+#include "pcmtp/util/MediaUri.hpp"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -474,7 +476,22 @@ AVFormatContext* open_input_context(const std::string& path,
         context->interrupt_callback.callback = interrupt_callback;
         context->interrupt_callback.opaque = interrupt;
     }
-    int result = avformat_open_input(&context, path.c_str(), nullptr, nullptr);
+    AVDictionary* options = nullptr;
+    if (is_remote_media_uri(path)) {
+        av_dict_set(&options, "reconnect", "1", 0);
+        av_dict_set(&options, "reconnect_at_eof", "1", 0);
+        av_dict_set(&options, "reconnect_streamed", "1", 0);
+        av_dict_set(&options, "reconnect_delay_max", "30", 0);
+        av_dict_set(&options, "timeout", "8000000", 0);
+        av_dict_set(&options, "rw_timeout", "8000000", 0);
+        av_dict_set(&options, "user_agent", "pcm-transport/0.9", 0);
+        if (is_hls_media_uri(path)) {
+            av_dict_set(&options, "live_start_index", "-3", 0);
+            av_dict_set(&options, "hls_allow_cache", "1", 0);
+        }
+    }
+    int result = avformat_open_input(&context, path.c_str(), nullptr, &options);
+    av_dict_free(&options);
     if (result < 0) {
         if (context != nullptr) {
             avformat_close_input(&context);
@@ -1599,6 +1616,9 @@ std::string ExternalAudioDecoder::to_lower_extension(const std::string& path) {
 }
 
 bool ExternalAudioDecoder::looks_supported(const std::string& path) {
+    if (is_remote_media_uri(path)) {
+        return true;
+    }
     static const std::array<const char*, 39> extensions = {{
         ".mp3", ".mp2", ".m4a", ".m4r", ".aac", ".ac3", ".dts", ".ogg", ".oga",
         ".opus", ".spx", ".wav", ".wave", ".w64", ".bwf", ".au", ".snd", ".caf",

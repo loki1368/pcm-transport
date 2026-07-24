@@ -856,7 +856,15 @@ void PlaybackEngine::playback_loop() {
             snapshot_.finished = !stop_requested_ && last_error_.empty();
             snapshot_.playing = false;
             snapshot_.paused = false;
-            snapshot_.message = last_error_.empty() ? "Stopped" : last_error_;
+            if (!last_error_.empty()) {
+                snapshot_.message = last_error_;
+            } else if (!stop_requested_ &&
+                       decoder_->total_samples_per_channel() == 0 &&
+                       played_samples_per_channel <= initial_samples_per_channel_) {
+                snapshot_.message = "Stream unavailable";
+            } else {
+                snapshot_.message = "Stopped";
+            }
         }
         meter_transport_active_.store(false, std::memory_order_release);
         level_meter_peak_units_.store(kNoMeterMeasurement, std::memory_order_relaxed);
