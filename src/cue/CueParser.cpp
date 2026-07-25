@@ -163,15 +163,20 @@ std::string resolve_case_insensitive_path(const std::string& base_dir, const std
 }
 
 bool starts_with_keyword(const std::string& line, const std::string& keyword) {
-    if (line.size() < keyword.size()) {
+    std::size_t keyword_size = keyword.size();
+    while (keyword_size > 0 &&
+           std::isspace(static_cast<unsigned char>(keyword[keyword_size - 1])) != 0) {
+        --keyword_size;
+    }
+    if (keyword_size == 0 || line.size() <= keyword_size) {
         return false;
     }
-    for (std::size_t i = 0; i < keyword.size(); ++i) {
+    for (std::size_t i = 0; i < keyword_size; ++i) {
         if (std::toupper(static_cast<unsigned char>(line[i])) != std::toupper(static_cast<unsigned char>(keyword[i]))) {
             return false;
         }
     }
-    return true;
+    return std::isspace(static_cast<unsigned char>(line[keyword_size])) != 0;
 }
 
 std::string cue_file_entry_value(const std::string& line) {
@@ -198,7 +203,7 @@ std::uint64_t mmssff_to_frame75(const std::string& value) {
     const int minutes = std::stoi(mm);
     const int seconds = std::stoi(ss);
     const int frames = std::stoi(ff);
-    if (minutes < 0 || seconds < 0 || frames < 0) {
+    if (minutes < 0 || seconds < 0 || seconds > 59 || frames < 0 || frames > 74) {
         throw std::runtime_error("Invalid CUE time value: " + value);
     }
     const std::uint64_t minute_value = static_cast<std::uint64_t>(minutes);
@@ -279,7 +284,18 @@ CueSheet CueParser::parse_file(const std::string& path, std::uint64_t total_samp
     const std::string base_dir = directory_of(path);
 
     CueTrack* current_track = nullptr;
-    bool seen_audio_file = false;
+    std::string current_audio_file_path;
+    std::vector<std::string> declared_file_paths;
+
+    const auto remember_path = [](std::vector<std::string>* paths,
+                                  const std::string& value) {
+        if (paths == nullptr || value.empty()) {
+            return;
+        }
+        if (std::find(paths->begin(), paths->end(), value) == paths->end()) {
+            paths->push_back(value);
+        }
+    };
 
     std::string raw_line;
     while (std::getline(input, raw_line)) {
@@ -291,8 +307,17 @@ CueSheet CueParser::parse_file(const std::string& path, std::uint64_t total_samp
         if (starts_with_keyword(line, "FILE ")) {
             const std::string referenced = cue_file_entry_value(line);
             if (!referenced.empty()) {
-                sheet.audio_file_path = resolve_case_insensitive_path(base_dir, referenced);
-                seen_audio_file = true;
+                current_audio_file_path = resolve_case_insensitive_path(base_dir, referenced);
+                remember_path(&declared_file_paths, current_audio_file_path);
+                // EAC can place the next FILE command after TRACK/INDEX 00 but
+                // before INDEX 01. In that layout the track's playable data is
+                // stored in the newly selected file.
+                if (current_track != nullptr && current_track->has_index_00 &&
+                    !current_track->has_index_01) {
+                    current_track->audio_file_path = current_audio_file_path;
+                } else {
+                    current_track = nullptr;
+                }
             }
             continue;
         }
@@ -318,6 +343,7 @@ CueSheet CueParser::parse_file(const std::string& path, std::uint64_t total_samp
         }
 
         if (starts_with_keyword(line, "TRACK ")) {
+            current_track = nullptr;
             std::istringstream stream(line.substr(6));
             int number = 0;
             std::string type;
@@ -326,42 +352,70 @@ CueSheet CueParser::parse_file(const std::string& path, std::uint64_t total_samp
                 return static_cast<char>(std::tolower(c));
             });
             if (type == "audio") {
+                if (current_audio_file_path.empty()) {
+                    throw std::runtime_error("CUE AUDIO track does not have a FILE entry");
+                }
                 CueTrack track;
                 track.number = number;
+                track.audio_file_path = current_audio_file_path;
                 sheet.tracks.push_back(track);
                 current_track = &sheet.tracks.back();
             }
             continue;
         }
 
-        if (starts_with_keyword(line, "INDEX 01 ")) {
+        if (starts_with_keyword(line, "INDEX ")) {
             if (current_track == nullptr) {
                 continue;
             }
-            current_track->start_frame_75 = mmssff_to_frame75(trim(line.substr(9)));
+            std::istringstream stream(line.substr(6));
+            int index_number = -1;
+            std::string position;
+            stream >> index_number >> position;
+            if (position.empty()) {
+                continue;
+            }
+            if (index_number == 0) {
+                (void)mmssff_to_frame75(position);
+                current_track->has_index_00 = true;
+                continue;
+            }
+            if (index_number != 1) {
+                continue;
+            }
+            current_track->start_frame_75 = mmssff_to_frame75(position);
             current_track->start_sample = CueParser::frame75_to_samples(
                 current_track->start_frame_75, 44100U);
+            current_track->has_index_01 = true;
             continue;
         }
     }
 
-    if (!seen_audio_file) {
+    if (declared_file_paths.empty()) {
         throw std::runtime_error("CUE file does not contain FILE entry");
     }
 
     if (sheet.tracks.empty()) {
         CueTrack track;
         track.number = 1;
+        track.audio_file_path = declared_file_paths.front();
+        track.has_index_01 = true;
         track.start_sample = 0;
         sheet.tracks.push_back(track);
     }
 
+    for (const CueTrack& track : sheet.tracks) {
+        remember_path(&sheet.audio_file_paths, track.audio_file_path);
+    }
+    sheet.audio_file_path = sheet.audio_file_paths.front();
+
     for (std::size_t i = 0; i < sheet.tracks.size(); ++i) {
-        if (i + 1 < sheet.tracks.size()) {
+        if (i + 1 < sheet.tracks.size() &&
+            sheet.tracks[i].audio_file_path == sheet.tracks[i + 1].audio_file_path) {
             sheet.tracks[i].end_frame_75 = sheet.tracks[i + 1].start_frame_75;
             sheet.tracks[i].has_end_frame_75 = true;
             sheet.tracks[i].end_sample = sheet.tracks[i + 1].start_sample;
-        } else {
+        } else if (sheet.audio_file_paths.size() == 1) {
             sheet.tracks[i].end_sample = total_samples_per_channel;
         }
         if (sheet.tracks[i].title.empty()) {

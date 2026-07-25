@@ -30,6 +30,7 @@
 #include "pcmtp/hardware/CardProfileRegistry.hpp"
 #include "pcmtp/mpris/MprisService.hpp"
 #include "pcmtp/playlist/MediaProbe.hpp"
+#include "pcmtp/playlist/SourceScanner.hpp"
 #include "pcmtp/util/ManagedSubprocess.hpp"
 
 namespace pcmtp {
@@ -91,7 +92,8 @@ public:
     explicit GtkPlayerWindow(std::size_t transport_buffer_ms);
     ~GtkPlayerWindow();
 
-    void show();
+    void show(const std::string& program_name,
+              const std::vector<std::string>& source_paths);
 
     enum class MetadataState {
         Pending,
@@ -153,6 +155,21 @@ private:
         MediaProbeResult result;
     };
 
+    struct SourceScanJob {
+        std::uint64_t generation = 0;
+        std::vector<std::string> source_paths;
+        bool replace_playlist = true;
+        bool quiet = false;
+        bool record_last_sources = false;
+        std::string play_after_load_path;
+        std::shared_ptr<std::atomic<bool>> cancel_requested;
+    };
+
+    struct SourceScanCompletion {
+        SourceScanJob job;
+        SourceScanResult result;
+    };
+
     struct PendingMetadataPlayback {
         bool active = false;
         std::uint64_t generation = 0;
@@ -171,6 +188,11 @@ private:
     };
 
     static void on_activate(GtkApplication* app, gpointer user_data);
+    static void on_open(GApplication* application,
+                        GFile** files,
+                        gint file_count,
+                        const gchar* hint,
+                        gpointer user_data);
     static void on_open_clicked(GtkButton* button, gpointer user_data);
     static void on_play_clicked(GtkButton* button, gpointer user_data);
     static void on_pause_clicked(GtkButton* button, gpointer user_data);
@@ -202,6 +224,21 @@ private:
     static gboolean on_restore_last_sources_idle(gpointer user_data);
 
     void build_ui(GtkApplication* app);
+    void start_source_scan_worker();
+    void stop_source_scan_worker();
+    void source_scan_worker_loop();
+    bool open_source_paths(const std::vector<std::string>& paths,
+                           bool replace_playlist,
+                           bool quiet,
+                           bool record_last_sources,
+                           const std::string& play_after_load_path = std::string());
+    void enqueue_source_scan(const std::vector<std::string>& paths,
+                             bool replace_playlist,
+                             bool quiet,
+                             bool record_last_sources,
+                             const std::string& play_after_load_path);
+    void cancel_source_scan();
+    void drain_source_scan_results();
     std::size_t append_source_placeholders(const std::string& path,
                                            const std::string& top_level_source_path,
                                            std::vector<std::string>* probe_paths);
@@ -239,6 +276,12 @@ private:
                                                bool quiet,
                                                bool record_last_sources,
                                                const std::string& play_after_load_path = std::string());
+    std::vector<std::string> load_resolved_source_paths(
+        const std::vector<ScannedSourcePath>& paths,
+        bool replace_playlist,
+        bool quiet,
+        bool record_last_sources,
+        const std::string& play_after_load_path);
     void finalize_loaded_playlist(bool rebuild_view = true);
     void schedule_last_sources_restore();
     void append_media_to_playlist(const std::string& path,
@@ -423,6 +466,15 @@ private:
     std::vector<std::uint64_t> gapless_chain_offsets_;
     std::uint64_t gapless_chain_total_samples_ = 0;
     std::string last_open_directory_;
+    std::thread source_scan_worker_;
+    mutable std::mutex source_scan_mutex_;
+    std::condition_variable source_scan_cv_;
+    std::deque<SourceScanJob> source_scan_jobs_;
+    std::deque<SourceScanCompletion> source_scan_completions_;
+    std::shared_ptr<std::atomic<bool>> active_source_scan_cancel_;
+    bool source_scan_worker_stop_ = false;
+    bool source_scan_active_ = false;
+    std::uint64_t source_scan_generation_ = 0;
     std::vector<std::thread> metadata_workers_;
     std::vector<std::unique_ptr<ManagedSubprocess>> metadata_probe_processes_;
     mutable std::mutex metadata_worker_mutex_;

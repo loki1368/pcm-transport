@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(pcm_transport VERSION 0.9.110 LANGUAGES C CXX)
+project(pcm_transport VERSION 0.9.111 LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 
@@ -88,6 +88,7 @@ add_executable(pcm_transport
     src/stream/StreamHealthRegistry.cpp
     src/playlist/M3uPlaylistReader.cpp
     src/playlist/MediaProbe.cpp
+    src/playlist/SourceScanner.cpp
     src/decoder/FlacStreamDecoder.cpp
     src/decoder/ExternalAudioDecoder.cpp
     src/decoder/RangeLimitedDecoder.cpp

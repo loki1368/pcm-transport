@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
+#include <vector>
 
 namespace pcmtp {
 
@@ -11,7 +13,9 @@ public:
 private:
     int run_probe_only();
     int run_player(const std::string& file_path, const std::string& device_name, std::size_t transport_buffer_ms);
-    int run_gui(int argc, char** argv, std::size_t transport_buffer_ms);
+    int run_gui(const std::string& program_name,
+                const std::vector<std::string>& source_paths,
+                std::size_t transport_buffer_ms);
     void print_usage(const char* program_name) const;
 };
 

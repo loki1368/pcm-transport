@@ -263,6 +263,7 @@ GtkPlayerWindow::~GtkPlayerWindow() {
     }
     stop_ui_updates();
     cancel_pending_seek();
+    stop_source_scan_worker();
     stop_metadata_worker();
     mpris_service_.reset();
     stop_playback();

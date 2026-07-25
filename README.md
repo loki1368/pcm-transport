@@ -1,4 +1,4 @@
-# PCM Transport v0.9.110
+# PCM Transport v0.9.111
 
 **PCM Transport** is a Linux desktop audio player focused on direct PCM playback, predictable DSP, and clear signal-path reporting.
 
@@ -6,7 +6,11 @@
 
 ## Author
 
-**Andrey Berestov**
+[Andrey Berestov](https://github.com/andreyberestov)
+
+Contributors:
+
+[loki1368](https://github.com/loki1368)
 
 Website: https://andreyberestov.github.io/pcm-transport/
 
@@ -36,8 +40,7 @@ Website: https://andreyberestov.github.io/pcm-transport/
 - Same-format gapless playback where possible
 - Optional SoXr resampling and bit-depth rules
 - Baxandall-style Bass/Treble controls and Deep Bass presets
-- MPRIS integration (media keys, cover art) — initial work by [@loki1368](https://github.com/loki1368), further refined
-
+- MPRIS integration (media keys, cover art)
 
 ---
 
@@ -194,7 +197,13 @@ The embedded application icons are available when running directly from `build`.
 cmake --install build --prefix <prefix>
 ```
 
-This optional desktop integration installs the binary, desktop entry and hicolor application icons under the selected prefix. Installation is not required for running from `build`.
+User-local installation example:
+
+```bash
+cmake --install build --prefix ~/.local
+```
+
+This optional desktop integration installs the binary, desktop entry and hicolor application icons under the selected prefix. It also enables opening supported audio files, playlists, CUE sheets and directories from compatible Linux file managers. Installation is not required for running from `build`.
 
 ---
 

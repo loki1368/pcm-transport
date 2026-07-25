@@ -10,16 +10,20 @@ struct CueTrack {
     int number = 0;
     std::string title;
     std::string performer;
+    std::string audio_file_path;
     std::uint64_t start_sample = 0;
     std::uint64_t end_sample = 0;
     std::uint64_t start_frame_75 = 0;
     std::uint64_t end_frame_75 = 0;
+    bool has_index_00 = false;
+    bool has_index_01 = false;
     bool has_end_frame_75 = false;
 };
 
 struct CueSheet {
     std::string cue_path;
     std::string audio_file_path;
+    std::vector<std::string> audio_file_paths;
     std::string title;
     std::string performer;
     std::vector<CueTrack> tracks;

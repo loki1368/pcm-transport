@@ -204,10 +204,6 @@ FlacFileProbe FlacStreamDecoder::probe_file(const std::string& path) {
     return result;
 }
 
-FlacTags FlacStreamDecoder::read_tags(const std::string& path) {
-    return probe_file(path).tags;
-}
-
 ::FLAC__StreamDecoderWriteStatus FlacStreamDecoder::write_callback(const ::FLAC__StreamDecoder*,
                                                                    const ::FLAC__Frame* frame,
                                                                    const ::FLAC__int32* const buffer[],

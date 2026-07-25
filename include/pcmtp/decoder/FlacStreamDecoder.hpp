@@ -40,7 +40,6 @@ public:
     std::string source_path() const override;
     bool seek_to_sample(std::uint64_t sample_index) override;
 
-    static FlacTags read_tags(const std::string& path);
     static FlacFileProbe probe_file(const std::string& path);
 
 private:

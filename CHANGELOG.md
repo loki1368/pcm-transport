@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.111
+
+- Improve lazy metadata loading performance and early playback, based on work contributed by [@loki1368](https://github.com/loki1368).
+- Refine pending playback and metadata finalization for reliable playback while metadata is still loading.
+- Add opening of local files and directories from Linux file managers and positional command-line arguments.
+- Route file-open requests to the existing application instance.
+- Add asynchronous recursive directory scanning with cancellation, natural ordering and duplicate suppression.
+- Register supported audio, CUE, M3U/M3U8 and directory MIME types.
+- Add multi-file CUE playback across all supported audio formats.
+- Prefer valid single-file CUE sheets during directory scans while avoiding duplicate split-file and playlist entries.
+- Preserve opened directories as top-level sources for startup restoration.
+- Restore vertical soft-volume control expansion.
+
 ## 0.9.110
 
 - Added DSF, DFF and DST playback with configurable DSD-to-PCM conversion up to 1.536 MHz.

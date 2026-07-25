@@ -341,6 +341,10 @@ std::string find_cover_art_in_directory(const std::string& audio_file_path) {
     return candidates.front().path;
 }
 
+bool is_supported_media_path(const std::string& path) {
+    return SourceScanner::is_supported_media_path(path);
+}
+
 bool extension_is_lossless(const std::string& extension) {
     return extension == ".flac" || extension == ".wav" || extension == ".wave" ||
            extension == ".bwf" || extension == ".aiff" || extension == ".aif" ||
@@ -2319,28 +2323,107 @@ void GtkPlayerWindow::finish_initialization_after_patch_subsystems() {
     engine_.set_soft_eq_profile(bass_shelf_hz_, treble_shelf_hz_);
     engine_.set_deep_bass_enabled(deep_bass_enabled_);
     engine_.set_deep_bass_preset(deep_bass_internal_from_ui(deep_bass_preset_));
-    start_metadata_worker();
     stream_manager_->load_health_registry();
 }
 
-void GtkPlayerWindow::show() {
-    app_ = gtk_application_new(kApplicationId, G_APPLICATION_FLAGS_NONE);
+void GtkPlayerWindow::show(const std::string& program_name,
+                           const std::vector<std::string>& source_paths) {
+    app_ = gtk_application_new(kApplicationId, G_APPLICATION_HANDLES_OPEN);
     g_signal_connect(app_, "activate", G_CALLBACK(GtkPlayerWindow::on_activate), this);
-    g_application_run(G_APPLICATION(app_), 0, nullptr);
+    g_signal_connect(app_, "open", G_CALLBACK(GtkPlayerWindow::on_open), this);
+
+    std::vector<std::string> arguments;
+    arguments.reserve(source_paths.size() + 1);
+    arguments.push_back(program_name.empty() ? std::string("pcm_transport") : program_name);
+    for (const std::string& source_path : source_paths) {
+        if (!source_path.empty() && source_path[0] == '-') {
+            arguments.push_back("./" + source_path);
+        } else {
+            arguments.push_back(source_path);
+        }
+    }
+
+    std::vector<char*> argument_pointers;
+    argument_pointers.reserve(arguments.size() + 1);
+    for (std::string& argument : arguments) {
+        argument_pointers.push_back(argument.data());
+    }
+    argument_pointers.push_back(nullptr);
+
+    g_application_run(G_APPLICATION(app_),
+                      static_cast<int>(arguments.size()),
+                      argument_pointers.data());
     g_object_unref(app_);
     app_ = nullptr;
 }
 
 void GtkPlayerWindow::on_activate(GtkApplication* app, gpointer user_data) {
     install_default_application_icons();
+    GtkPlayerWindow* self = static_cast<GtkPlayerWindow*>(user_data);
+    if (self->window_ == nullptr) {
+        self->build_ui(app);
+    }
+    if (self->window_ != nullptr) {
+        gtk_window_present(GTK_WINDOW(self->window_));
+    }
+}
+
+void GtkPlayerWindow::on_open(GApplication* application,
+                              GFile** files,
+                              gint file_count,
+                              const gchar*,
+                              gpointer user_data) {
+    GtkPlayerWindow* self = static_cast<GtkPlayerWindow*>(user_data);
+    if (self == nullptr || self->ui_closing_) {
+        return;
+    }
+
     install_default_application_icons();
-    static_cast<GtkPlayerWindow*>(user_data)->build_ui(app);
+    if (self->window_ == nullptr) {
+        self->build_ui(GTK_APPLICATION(application));
+    }
+
+    std::vector<std::string> source_paths;
+    if (files != nullptr && file_count > 0) {
+        source_paths.reserve(static_cast<std::size_t>(file_count));
+        for (gint index = 0; index < file_count; ++index) {
+            if (files[index] == nullptr) {
+                continue;
+            }
+            gchar* local_path = g_file_get_path(files[index]);
+            if (local_path == nullptr) {
+                Logger::instance().error("Cannot open a non-local source");
+                continue;
+            }
+            const std::string path(local_path);
+            g_free(local_path);
+            const bool regular_file = g_file_test(path.c_str(), G_FILE_TEST_IS_REGULAR);
+            const bool directory = g_file_test(path.c_str(), G_FILE_TEST_IS_DIR);
+            if (!regular_file && !directory) {
+                Logger::instance().error("Cannot open unavailable source: " + path);
+                continue;
+            }
+            if (regular_file && !is_supported_media_path(path)) {
+                Logger::instance().error("Cannot open unsupported source: " + path);
+                continue;
+            }
+            source_paths.push_back(path);
+        }
+    }
+
+    if (!source_paths.empty()) {
+        self->open_source_paths(source_paths, true, false, true);
+    }
+    if (self->window_ != nullptr) {
+        gtk_window_present(GTK_WINDOW(self->window_));
+    }
 }
 
 void GtkPlayerWindow::build_ui(GtkApplication* app) {
+    start_metadata_worker();
     window_ = gtk_application_window_new(app);
     gtk_window_set_icon_name(GTK_WINDOW(window_), kApplicationId);
-    gtk_window_set_title(GTK_WINDOW(window_), "PCM Transport v0.9.110");
+    gtk_window_set_title(GTK_WINDOW(window_), "PCM Transport v0.9.111");
     gtk_window_set_default_size(GTK_WINDOW(window_), 900, 660);
     gtk_container_set_border_width(GTK_CONTAINER(window_), 16);
 
@@ -2558,10 +2641,14 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
 
     GtkWidget* softvol_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_widget_set_size_request(softvol_box, 58, -1);
+    gtk_widget_set_vexpand(softvol_box, TRUE);
+    gtk_widget_set_valign(softvol_box, GTK_ALIGN_FILL);
     gtk_box_pack_end(GTK_BOX(content_row), softvol_box, FALSE, FALSE, 0);
 
     soft_volume_scale_ = gtk_drawing_area_new();
     gtk_widget_set_size_request(soft_volume_scale_, 52, 285);
+    gtk_widget_set_vexpand(soft_volume_scale_, TRUE);
+    gtk_widget_set_valign(soft_volume_scale_, GTK_ALIGN_FILL);
     gtk_widget_add_events(soft_volume_scale_, GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_BUTTON1_MOTION_MASK | GDK_POINTER_MOTION_MASK);
     g_signal_connect(soft_volume_scale_, "draw", G_CALLBACK(GtkPlayerWindow::on_softvol_draw), this);
     g_signal_connect(soft_volume_scale_, "button-press-event", G_CALLBACK(GtkPlayerWindow::on_softvol_button_press), this);
@@ -2660,6 +2747,7 @@ gboolean GtkPlayerWindow::on_timer_tick(gpointer user_data) {
         return G_SOURCE_REMOVE;
     }
 
+    self->drain_source_scan_results();
     self->drain_metadata_probe_results();
 
     const PlaybackStatusSnapshot status = self->engine_.snapshot();
@@ -3751,6 +3839,220 @@ void GtkPlayerWindow::update_clip_indicator(bool clip_detected, std::uint32_t cl
     }
 }
 
+
+void GtkPlayerWindow::start_source_scan_worker() {
+    if (source_scan_worker_.joinable()) {
+        return;
+    }
+    source_scan_worker_stop_ = false;
+    source_scan_worker_ = std::thread(&GtkPlayerWindow::source_scan_worker_loop, this);
+}
+
+void GtkPlayerWindow::stop_source_scan_worker() {
+    {
+        std::lock_guard<std::mutex> lock(source_scan_mutex_);
+        source_scan_worker_stop_ = true;
+        if (active_source_scan_cancel_) {
+            active_source_scan_cancel_->store(true, std::memory_order_relaxed);
+        }
+        source_scan_jobs_.clear();
+    }
+    source_scan_cv_.notify_all();
+    if (source_scan_worker_.joinable()) {
+        source_scan_worker_.join();
+    }
+    {
+        std::lock_guard<std::mutex> lock(source_scan_mutex_);
+        source_scan_completions_.clear();
+        active_source_scan_cancel_.reset();
+    }
+    source_scan_active_ = false;
+}
+
+void GtkPlayerWindow::source_scan_worker_loop() {
+    for (;;) {
+        SourceScanJob job;
+        {
+            std::unique_lock<std::mutex> lock(source_scan_mutex_);
+            source_scan_cv_.wait(lock, [this]() {
+                return source_scan_worker_stop_ || !source_scan_jobs_.empty();
+            });
+            if (source_scan_worker_stop_) {
+                return;
+            }
+            job = std::move(source_scan_jobs_.front());
+            source_scan_jobs_.pop_front();
+        }
+
+        SourceScanCompletion completion;
+        completion.job = job;
+        completion.result = SourceScanner::scan(
+            job.source_paths,
+            job.cancel_requested ? job.cancel_requested.get() : nullptr);
+
+        {
+            std::lock_guard<std::mutex> lock(source_scan_mutex_);
+            if (source_scan_worker_stop_) {
+                return;
+            }
+            source_scan_completions_.push_back(std::move(completion));
+        }
+    }
+}
+
+void GtkPlayerWindow::cancel_source_scan() {
+    std::lock_guard<std::mutex> lock(source_scan_mutex_);
+    if (active_source_scan_cancel_) {
+        active_source_scan_cancel_->store(true, std::memory_order_relaxed);
+    }
+    ++source_scan_generation_;
+    source_scan_jobs_.clear();
+    source_scan_completions_.clear();
+    active_source_scan_cancel_.reset();
+    source_scan_active_ = false;
+}
+
+bool GtkPlayerWindow::open_source_paths(const std::vector<std::string>& paths,
+                                        bool replace_playlist,
+                                        bool quiet,
+                                        bool record_last_sources,
+                                        const std::string& play_after_load_path) {
+    if (paths.empty() || ui_closing_) {
+        return false;
+    }
+
+    bool contains_directory = false;
+    bool contains_usable_source = false;
+    for (const std::string& path : paths) {
+        if (path.empty()) {
+            continue;
+        }
+        if (g_file_test(path.c_str(), G_FILE_TEST_IS_DIR)) {
+            contains_directory = true;
+            contains_usable_source = true;
+            continue;
+        }
+        if (g_file_test(path.c_str(), G_FILE_TEST_IS_REGULAR) &&
+            is_supported_media_path(path)) {
+            contains_usable_source = true;
+        }
+    }
+    if (!contains_usable_source) {
+        return false;
+    }
+
+    if (!contains_directory) {
+        return !load_source_paths(paths,
+                                  replace_playlist,
+                                  quiet,
+                                  record_last_sources,
+                                  play_after_load_path).empty();
+    }
+
+    enqueue_source_scan(paths,
+                        replace_playlist,
+                        quiet,
+                        record_last_sources,
+                        play_after_load_path);
+    return true;
+}
+
+void GtkPlayerWindow::enqueue_source_scan(const std::vector<std::string>& paths,
+                                          bool replace_playlist,
+                                          bool quiet,
+                                          bool record_last_sources,
+                                          const std::string& play_after_load_path) {
+    if (paths.empty() || ui_closing_) {
+        return;
+    }
+    start_source_scan_worker();
+
+    if (record_last_sources && restore_sources_idle_id_ != 0) {
+        g_source_remove(restore_sources_idle_id_);
+        restore_sources_idle_id_ = 0;
+    }
+
+    SourceScanJob job;
+    job.source_paths = paths;
+    job.replace_playlist = replace_playlist;
+    job.quiet = quiet;
+    job.record_last_sources = record_last_sources;
+    job.play_after_load_path = play_after_load_path;
+    job.cancel_requested = std::make_shared<std::atomic<bool>>(false);
+
+    {
+        std::lock_guard<std::mutex> lock(source_scan_mutex_);
+        if (active_source_scan_cancel_) {
+            active_source_scan_cancel_->store(true, std::memory_order_relaxed);
+        }
+        ++source_scan_generation_;
+        job.generation = source_scan_generation_;
+        source_scan_jobs_.clear();
+        source_scan_completions_.clear();
+        active_source_scan_cancel_ = job.cancel_requested;
+        source_scan_jobs_.push_back(job);
+        source_scan_active_ = true;
+    }
+    source_scan_cv_.notify_one();
+
+    update_loading_controls();
+    refresh_display();
+    notify_mpris_state_changed();
+}
+
+void GtkPlayerWindow::drain_source_scan_results() {
+    std::deque<SourceScanCompletion> completions;
+    {
+        std::lock_guard<std::mutex> lock(source_scan_mutex_);
+        completions.swap(source_scan_completions_);
+    }
+
+    for (SourceScanCompletion& completion : completions) {
+        if (completion.job.generation != source_scan_generation_) {
+            continue;
+        }
+
+        source_scan_active_ = false;
+        {
+            std::lock_guard<std::mutex> lock(source_scan_mutex_);
+            if (completion.job.generation == source_scan_generation_) {
+                active_source_scan_cancel_.reset();
+            }
+        }
+
+        if (completion.result.cancelled || ui_closing_) {
+            continue;
+        }
+
+        for (const std::string& error : completion.result.errors) {
+            if (completion.job.quiet) {
+                Logger::instance().debug(error);
+            } else {
+                Logger::instance().error(error);
+            }
+        }
+
+        if (completion.result.sources.empty()) {
+            const std::string message = "No supported audio sources were found";
+            if (completion.job.quiet) {
+                Logger::instance().debug(message);
+            } else {
+                Logger::instance().error(message);
+            }
+            update_loading_controls();
+            refresh_display();
+            notify_mpris_state_changed();
+            continue;
+        }
+
+        load_resolved_source_paths(completion.result.sources,
+                                   completion.job.replace_playlist,
+                                   completion.job.quiet,
+                                   completion.job.record_last_sources,
+                                   completion.job.play_after_load_path);
+    }
+}
+
 std::size_t GtkPlayerWindow::append_source_placeholders(const std::string& path,
                                                         const std::string& top_level_source_path,
                                                         std::vector<std::string>* probe_paths) {
@@ -3802,19 +4104,24 @@ std::size_t GtkPlayerWindow::append_source_placeholders(const std::string& path,
             cue_cache_[path] = sheet;
         }
 
-        if (!g_file_test(sheet.audio_file_path.c_str(), G_FILE_TEST_IS_REGULAR)) {
-            throw std::runtime_error("CUE audio file is unavailable: " + sheet.audio_file_path);
-        }
-        if (!patches::is_supported_media_path(sheet.audio_file_path) ||
-            CueParser::looks_like_cue_path(sheet.audio_file_path) ||
-            M3uPlaylistReader::looks_like_playlist_path(sheet.audio_file_path)) {
-            throw std::runtime_error("Unsupported CUE audio file type: " + sheet.audio_file_path);
+        for (const std::string& audio_file_path : sheet.audio_file_paths) {
+            if (!g_file_test(audio_file_path.c_str(), G_FILE_TEST_IS_REGULAR)) {
+                throw std::runtime_error("CUE audio file is unavailable: " + audio_file_path);
+            }
+            if (!is_supported_media_path(audio_file_path) ||
+                CueParser::looks_like_cue_path(audio_file_path) ||
+                M3uPlaylistReader::looks_like_playlist_path(audio_file_path)) {
+                throw std::runtime_error("Unsupported CUE audio file type: " + audio_file_path);
+            }
+            probe_paths->push_back(audio_file_path);
         }
 
-        probe_paths->push_back(sheet.audio_file_path);
         for (const CueTrack& cue_track : sheet.tracks) {
+            if (cue_track.audio_file_path.empty()) {
+                throw std::runtime_error("CUE track does not reference an audio file");
+            }
             PlaylistEntry entry;
-            entry.audio_file_path = sheet.audio_file_path;
+            entry.audio_file_path = cue_track.audio_file_path;
             entry.top_level_source_path = top_level_source_path;
             entry.load_generation = metadata_generation_;
             entry.track_number = cue_track.number;
@@ -4152,7 +4459,11 @@ bool GtkPlayerWindow::complete_metadata_probe_path(std::uint64_t generation,
         }
     }
 
-    try_start_pending_metadata_play(path);
+    const bool final_completion = playlist_loading_ &&
+                                  metadata_completed_files_ >= metadata_total_files_;
+    if (!final_completion) {
+        try_start_pending_metadata_play(path);
+    }
     return true;
 }
 
@@ -4384,9 +4695,6 @@ void GtkPlayerWindow::drain_metadata_probe_results() {
 
     bool changed = false;
     bool loading_progress_changed = false;
-    if (playlist_store_ != nullptr) {
-        g_object_freeze_notify(G_OBJECT(playlist_store_));
-    }
     for (MetadataProbeCompletion& completion : completions) {
         if (completion.generation != metadata_generation_) {
             continue;
@@ -4417,10 +4725,6 @@ void GtkPlayerWindow::drain_metadata_probe_results() {
             loading_progress_changed = true;
         }
     }
-    if (playlist_store_ != nullptr) {
-        g_object_thaw_notify(G_OBJECT(playlist_store_));
-    }
-
     if (playlist_loading_) {
         if (loading_progress_changed &&
             (metadata_completed_files_ % kMetadataDisplayRefreshStride == 0 ||
@@ -4481,6 +4785,10 @@ void GtkPlayerWindow::finish_metadata_load_session() {
         const bool engine_active = engine_.transport_snapshot().playing ||
                                    engine_.transport_snapshot().paused;
 
+        playlist_.erase(std::remove_if(playlist_.begin(), playlist_.end(), [](const PlaylistEntry& entry) {
+            return entry.metadata_state == MetadataState::Failed;
+        }), playlist_.end());
+
         remap_playlist_indices_after_failed_removal(index_remap);
 
         if (engine_active && (current_track_removed || (was_gapless && !gapless_chain_active_))) {
@@ -4490,10 +4798,6 @@ void GtkPlayerWindow::finish_metadata_load_session() {
             }
         }
     }
-
-    playlist_.erase(std::remove_if(playlist_.begin(), playlist_.end(), [](const PlaylistEntry& entry) {
-        return entry.metadata_state == MetadataState::Failed;
-    }), playlist_.end());
 
     std::vector<std::string> successful_sources;
     for (const std::string& source : requested_sources) {
@@ -4537,6 +4841,12 @@ void GtkPlayerWindow::finish_metadata_load_session() {
     update_loading_controls();
     finalize_loaded_playlist(metadata_failed_files_ > 0);
 
+    if (pending_metadata_playback_valid()) {
+        const std::string pending_path = pending_metadata_playback_.waiting_path;
+        try_start_pending_metadata_play(pending_path);
+        return;
+    }
+
     if (!play_after_path.empty()) {
         for (std::size_t index = 0; index < playlist_.size(); ++index) {
             if (playlist_[index].load_generation == play_after_generation &&
@@ -4570,6 +4880,25 @@ std::vector<std::string> GtkPlayerWindow::load_source_paths(const std::vector<st
                                                             bool quiet,
                                                             bool record_last_sources,
                                                             const std::string& play_after_load_path) {
+    cancel_source_scan();
+    std::vector<ScannedSourcePath> resolved_paths;
+    resolved_paths.reserve(paths.size());
+    for (const std::string& path : paths) {
+        resolved_paths.push_back(ScannedSourcePath{path, path});
+    }
+    return load_resolved_source_paths(resolved_paths,
+                                      replace_playlist,
+                                      quiet,
+                                      record_last_sources,
+                                      play_after_load_path);
+}
+
+std::vector<std::string> GtkPlayerWindow::load_resolved_source_paths(
+    const std::vector<ScannedSourcePath>& paths,
+    bool replace_playlist,
+    bool quiet,
+    bool record_last_sources,
+    const std::string& play_after_load_path) {
     std::vector<std::string> accepted_sources;
     if (paths.empty() || ui_closing_) {
         return accepted_sources;
@@ -4610,7 +4939,12 @@ std::vector<std::string> GtkPlayerWindow::load_source_paths(const std::vector<st
     }
 
     std::vector<std::string> probe_paths;
-    for (const std::string& path : paths) {
+    std::unordered_set<std::string> accepted_source_set;
+    for (const ScannedSourcePath& source : paths) {
+        const std::string& path = source.path;
+        const std::string top_level_source = source.top_level_source_path.empty()
+            ? path
+            : source.top_level_source_path;
         if (path.empty()) {
             continue;
         }
@@ -4627,15 +4961,15 @@ std::vector<std::string> GtkPlayerWindow::load_source_paths(const std::vector<st
 
         const std::size_t before = playlist_.size();
         try {
-            append_source_placeholders(path, path, &probe_paths);
+            append_source_placeholders(path, top_level_source, &probe_paths);
         } catch (const std::exception& ex) {
             const std::string message = std::string("Cannot load source: ") + path +
                                         " (" + ex.what() + ")";
             if (quiet) Logger::instance().debug(message);
             else Logger::instance().error(message);
         }
-        if (playlist_.size() > before) {
-            accepted_sources.push_back(path);
+        if (playlist_.size() > before && accepted_source_set.insert(top_level_source).second) {
+            accepted_sources.push_back(top_level_source);
         }
     }
 
@@ -4743,11 +5077,11 @@ gboolean GtkPlayerWindow::on_restore_last_sources_idle(gpointer user_data) {
     }
 
     const std::vector<std::string> saved_sources = self->last_opened_sources_;
-    const std::vector<std::string> restored = self->load_source_paths(saved_sources, true, true, false);
-    if (restored.empty()) {
+    if (!self->open_source_paths(saved_sources, true, true, false)) {
         Logger::instance().debug("No saved source could be scheduled for restoration");
     } else {
-        Logger::instance().info("Scheduled saved sources for restoration: " + std::to_string(restored.size()));
+        Logger::instance().info("Scheduled saved sources for restoration: " +
+                                std::to_string(saved_sources.size()));
     }
     return G_SOURCE_REMOVE;
 }
@@ -4858,6 +5192,8 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
     if (index >= playlist_.size()) {
         return;
     }
+
+    clear_pending_metadata_play();
 
     std::uint64_t probe_generation = 0;
     if (stream_glue_->begin_play_track(index,
@@ -5328,14 +5664,14 @@ void GtkPlayerWindow::open_about_dialog() {
     }
 
     GtkWidget* title = gtk_label_new(nullptr);
-    gtk_label_set_markup(GTK_LABEL(title), "<b>PCM Transport 0.9.110</b>");
+    gtk_label_set_markup(GTK_LABEL(title), "<b>PCM Transport 0.9.111</b>");
     gtk_label_set_xalign(GTK_LABEL(title), 0.5f);
     GtkWidget* subtitle = gtk_label_new("Digital Audio Player");
     gtk_label_set_xalign(GTK_LABEL(subtitle), 0.5f);
 
     GtkWidget* author = gtk_label_new(nullptr);
     gtk_label_set_markup(GTK_LABEL(author),
-                         "Author: <a href=\"https://github.com/andreyberestov\">Andrey Berestov</a>");
+                         "Author:\n<a href=\"https://github.com/andreyberestov\">Andrey Berestov</a>");
     gtk_label_set_xalign(GTK_LABEL(author), 0.5f);
     gtk_label_set_justify(GTK_LABEL(author), GTK_JUSTIFY_CENTER);
     gtk_label_set_selectable(GTK_LABEL(author), TRUE);
@@ -5351,7 +5687,7 @@ void GtkPlayerWindow::open_about_dialog() {
 
     GtkWidget* contributors = gtk_label_new(nullptr);
     gtk_label_set_markup(GTK_LABEL(contributors),
-                         "Contributors: <a href=\"https://github.com/loki1368\">loki1368</a> — initial MPRIS integration");
+                         "Contributors:\n<a href=\"https://github.com/loki1368\">loki1368</a>");
     gtk_label_set_xalign(GTK_LABEL(contributors), 0.5f);
     gtk_label_set_justify(GTK_LABEL(contributors), GTK_JUSTIFY_CENTER);
     gtk_label_set_selectable(GTK_LABEL(contributors), TRUE);
@@ -5367,8 +5703,8 @@ void GtkPlayerWindow::open_about_dialog() {
     gtk_box_pack_start(GTK_BOX(box), title, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), subtitle, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), author, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(box), website, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), contributors, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), website, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), details, FALSE, FALSE, 0);
     gtk_widget_show_all(dialog);
     if (about_close_button != nullptr) {
@@ -5549,7 +5885,7 @@ void GtkPlayerWindow::open_bitperfect_test_dialog(GtkWidget* parent_dialog, int 
         };
         try {
             post_diagnostics_update(text_view, progress, close_button,
-                "PCM Transport FLAC bit-perfect test\nVersion: 0.9.110\nMode: current player processing path before ALSA\nFFmpeg: not used\n", 0.02, false);
+                "PCM Transport FLAC bit-perfect test\nVersion: 0.9.111\nMode: current player processing path before ALSA\nFFmpeg: not used\n", 0.02, false);
             std::ostringstream ctx;
             ctx << "Duration: " << duration_seconds << " sec\n"
                 << "Generated signal: deterministic 16-bit / 44.1 kHz / stereo stress pattern\n"
@@ -6654,7 +6990,10 @@ void GtkPlayerWindow::refresh_display(bool update_text, bool update_progress, bo
     std::string source_text = "Device: " + current_device_;
     std::string path_text = "Path: --";
 
-    if (pending_metadata_playback_valid()) {
+    if (source_scan_active_) {
+        status_text = "Scanning folder...";
+        path_text = "Path: discovering supported audio sources";
+    } else if (pending_metadata_playback_valid()) {
         status_text = "Preparing track for playback...";
         path_text = "Path: probing metadata";
         if (!playlist_.empty() && pending_metadata_playback_.index < playlist_.size()) {
@@ -6738,8 +7077,8 @@ void GtkPlayerWindow::refresh_display(bool update_text, bool update_progress, bo
         update_clip_indicator(false, 0);
     }
 
-    const bool has_track = !metadata_loading_progress_visible() && !pending_metadata_playback_valid() &&
-                           current_track_metadata_ready();
+    const bool has_track = !source_scan_active_ && !metadata_loading_progress_visible() &&
+                           !pending_metadata_playback_valid() && current_track_metadata_ready();
     set_widget_opacity_if_changed(badge_lossless_, (has_track && playlist_[current_track_index_].lossless_source) ? 1.0 : 0.0);
     set_widget_opacity_if_changed(badge_redbook_, (has_track && playlist_[current_track_index_].decoded_format.is_red_book()) ? 1.0 : 0.0);
     set_widget_opacity_if_changed(badge_native_, (has_track && playlist_[current_track_index_].native_decode) ? 1.0 : 0.0);
