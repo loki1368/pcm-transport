@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrey Berestov and PCM Transport contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 #include "pcmtp/decoder/ExternalAudioDecoder.hpp"
 
 #include <algorithm>
@@ -213,6 +216,79 @@ std::string trim_value_copy(const std::string& value) {
         --end;
     }
     return value.substr(start, end - start);
+}
+
+enum class ProbeSection {
+    None,
+    Stream,
+    Format
+};
+
+struct ParsedProbeTags {
+    std::string stream_title;
+    std::string stream_artist;
+    std::string stream_album;
+    std::string stream_track;
+    std::string format_title;
+    std::string format_artist;
+    std::string format_album;
+    std::string format_track;
+};
+
+bool capture_ffprobe_tag(ParsedProbeTags& tags,
+                         ProbeSection section,
+                         const std::string& key,
+                         const std::string& value) {
+    std::string* target = nullptr;
+    if (key == "tag:title" || key == "title") {
+        target = section == ProbeSection::Format ? &tags.format_title :
+                 section == ProbeSection::Stream ? &tags.stream_title : nullptr;
+    } else if (key == "tag:artist" || key == "artist") {
+        target = section == ProbeSection::Format ? &tags.format_artist :
+                 section == ProbeSection::Stream ? &tags.stream_artist : nullptr;
+    } else if (key == "tag:album" || key == "album") {
+        target = section == ProbeSection::Format ? &tags.format_album :
+                 section == ProbeSection::Stream ? &tags.stream_album : nullptr;
+    } else if (key == "tag:track" || key == "track" ||
+               key == "tag:tracknumber" || key == "tracknumber") {
+        target = section == ProbeSection::Format ? &tags.format_track :
+                 section == ProbeSection::Stream ? &tags.stream_track : nullptr;
+    } else {
+        return false;
+    }
+
+    if (target != nullptr && target->empty()) {
+        *target = value;
+    }
+    return true;
+}
+
+GenericTags finalize_ffprobe_tags(const ParsedProbeTags& parsed) {
+    GenericTags tags;
+    const std::string selected_title =
+        !trim_value_copy(parsed.format_title).empty() ? parsed.format_title : parsed.stream_title;
+    const std::string selected_artist =
+        !trim_value_copy(parsed.format_artist).empty() ? parsed.format_artist : parsed.stream_artist;
+    const std::string selected_album =
+        !trim_value_copy(parsed.format_album).empty() ? parsed.format_album : parsed.stream_album;
+    const std::string selected_track =
+        !trim_value_copy(parsed.format_track).empty() ? parsed.format_track : parsed.stream_track;
+
+    if (!selected_title.empty()) {
+        tags.title = pcmtp::text::normalize_metadata_value(selected_title);
+    }
+    if (!selected_artist.empty()) {
+        tags.artist = pcmtp::text::normalize_metadata_value(selected_artist);
+    }
+    if (!selected_album.empty()) {
+        tags.album = pcmtp::text::normalize_metadata_value(selected_album);
+    }
+    if (!selected_track.empty()) {
+        try {
+            tags.track_number = std::stoi(selected_track);
+        } catch (...) {}
+    }
+    return tags;
 }
 
 double parse_time_base_seconds(const std::string& value) {
@@ -480,7 +556,63 @@ bool probe_m4a_packet_duration_ffprobe(const std::string& path,
     return true;
 }
 
-bool probe_wav_header_fast(const std::string& path, ExternalAudioInfo& info) {
+bool probe_wav_id3_tags_ffprobe(const std::string& path,
+                                GenericTags& tags,
+                                ManagedSubprocess* probe_process) {
+    const std::vector<std::string> arguments = {
+        "ffprobe", "-v", "error", "-select_streams", "a:0",
+        "-show_entries",
+        "stream_tags=title,artist,album,track,tracknumber:format_tags=title,artist,album,track,tracknumber",
+        "-of", "default=nokey=0:noprint_wrappers=0:string_validation=ignore",
+        path
+    };
+    const CommandCaptureResult probe = run_command_capture(arguments, false, probe_process);
+    if (probe.cancelled) {
+        throw std::runtime_error("metadata probe cancelled");
+    }
+    if (probe.timed_out || probe.status != 0 || probe.stdout_text.empty()) {
+        Logger::instance().debug("ExternalAudioDecoder WAV embedded-ID3 metadata fallback failed: " + path);
+        return false;
+    }
+
+    ParsedProbeTags parsed_tags;
+    ProbeSection section = ProbeSection::None;
+    std::istringstream lines(probe.stdout_text);
+    std::string line;
+    while (std::getline(lines, line)) {
+        line = trim_value_copy(line);
+        if (line == "[STREAM]") {
+            section = ProbeSection::Stream;
+            continue;
+        }
+        if (line == "[FORMAT]") {
+            section = ProbeSection::Format;
+            continue;
+        }
+        if (line == "[/STREAM]" || line == "[/FORMAT]") {
+            section = ProbeSection::None;
+            continue;
+        }
+
+        const std::size_t separator = line.find('=');
+        if (separator == std::string::npos) {
+            continue;
+        }
+        const std::string key = lower_copy(line.substr(0, separator));
+        const std::string value = line.substr(separator + 1);
+        capture_ffprobe_tag(parsed_tags, section, key, value);
+    }
+
+    tags = finalize_ffprobe_tags(parsed_tags);
+    return !tags.title.empty() || !tags.artist.empty() || !tags.album.empty() || tags.track_number > 0;
+}
+
+bool probe_wav_header_fast(const std::string& path,
+                           ExternalAudioInfo& info,
+                           bool* has_embedded_id3) {
+    if (has_embedded_id3 != nullptr) {
+        *has_embedded_id3 = false;
+    }
     std::ifstream input(path.c_str(), std::ios::binary);
     if (!input) {
         return false;
@@ -503,6 +635,7 @@ bool probe_wav_header_fast(const std::string& path, ExternalAudioInfo& info) {
     std::uint16_t block_align = 0;
     std::uint16_t bits_per_sample = 0;
     std::uint64_t data_bytes = 0;
+    constexpr std::uint32_t kMaxInfoChunkBytes = 4U * 1024U * 1024U;
 
     while (input) {
         unsigned char header[8]{};
@@ -511,9 +644,8 @@ bool probe_wav_header_fast(const std::string& path, ExternalAudioInfo& info) {
         }
         const std::string chunk_id(reinterpret_cast<const char*>(header), 4);
         const std::uint32_t chunk_size = read_le32(header + 4);
-        const std::streampos chunk_data_pos = input.tellg();
         if (chunk_id == "fmt ") {
-            if (chunk_size < 16) {
+            if (chunk_size < 16 || chunk_size > kMaxInfoChunkBytes) {
                 return false;
             }
             std::vector<unsigned char> fmt(chunk_size);
@@ -532,19 +664,65 @@ bool probe_wav_header_fast(const std::string& path, ExternalAudioInfo& info) {
             data_bytes = chunk_size;
             have_data = true;
             input.seekg(static_cast<std::streamoff>(chunk_size), std::ios::cur);
+        } else if (chunk_id == "LIST" && chunk_size >= 4 && chunk_size <= kMaxInfoChunkBytes) {
+            std::vector<unsigned char> list_data(chunk_size);
+            if (!read_exact(input, list_data.data(), list_data.size())) {
+                return false;
+            }
+            if (std::memcmp(list_data.data(), "INFO", 4) == 0) {
+                std::size_t offset = 4;
+                while (offset + 8 <= list_data.size()) {
+                    const std::string info_id(
+                        reinterpret_cast<const char*>(list_data.data() + offset), 4);
+                    const std::uint32_t value_size = read_le32(list_data.data() + offset + 4);
+                    offset += 8;
+                    if (value_size > list_data.size() - offset) {
+                        break;
+                    }
+                    std::string value(
+                        reinterpret_cast<const char*>(list_data.data() + offset),
+                        static_cast<std::size_t>(value_size));
+                    const std::size_t nul = value.find('\0');
+                    if (nul != std::string::npos) {
+                        value.resize(nul);
+                    }
+                    value = trim_value_copy(value);
+                    if (!value.empty()) {
+                        const std::string normalized = pcmtp::text::normalize_metadata_value(value);
+                        if (info_id == "IART" && info.tags.artist.empty()) {
+                            info.tags.artist = normalized;
+                        } else if (info_id == "INAM" && info.tags.title.empty()) {
+                            info.tags.title = normalized;
+                        } else if ((info_id == "IPRD" || info_id == "IALB" || info_id == "ALBM") &&
+                                   info.tags.album.empty()) {
+                            info.tags.album = normalized;
+                        } else if ((info_id == "ITRK" || info_id == "IPRT") &&
+                                   info.tags.track_number == 0) {
+                            try {
+                                info.tags.track_number = std::stoi(value);
+                            } catch (...) {}
+                        }
+                    }
+                    offset += value_size;
+                    if ((value_size & 1U) != 0 && offset < list_data.size()) {
+                        ++offset;
+                    }
+                }
+            }
+        } else if (chunk_id == "ID3 " || chunk_id == "id3 ") {
+            if (has_embedded_id3 != nullptr) {
+                *has_embedded_id3 = true;
+            }
+            input.seekg(static_cast<std::streamoff>(chunk_size), std::ios::cur);
         } else {
             input.seekg(static_cast<std::streamoff>(chunk_size), std::ios::cur);
         }
-        if (chunk_size % 2 != 0) {
+        if ((chunk_size & 1U) != 0) {
             input.seekg(1, std::ios::cur);
         }
         if (!input && !input.eof()) {
             return false;
         }
-        if (have_fmt && have_data) {
-            break;
-        }
-        (void)chunk_data_pos;
     }
 
     if (!have_fmt || !have_data || channels == 0 || sample_rate == 0 || block_align == 0 || bits_per_sample == 0) {
@@ -648,15 +826,33 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path,
     const std::string ext = to_lower_extension(path);
     const bool can_use_fast_wav = (ext == ".wav") || (ext == ".wave") || (ext == ".bwf");
     bool have_info = false;
+    bool wav_has_embedded_id3 = false;
     if (can_use_fast_wav) {
-        have_info = probe_wav_header_fast(path, info);
+        have_info = probe_wav_header_fast(path, info, &wav_has_embedded_id3);
+        if (have_info && wav_has_embedded_id3) {
+            GenericTags embedded_tags;
+            if (probe_wav_id3_tags_ffprobe(path, embedded_tags, probe_process)) {
+                if (info.tags.title.empty()) {
+                    info.tags.title = embedded_tags.title;
+                }
+                if (info.tags.artist.empty()) {
+                    info.tags.artist = embedded_tags.artist;
+                }
+                if (info.tags.album.empty()) {
+                    info.tags.album = embedded_tags.album;
+                }
+                if (info.tags.track_number == 0) {
+                    info.tags.track_number = embedded_tags.track_number;
+                }
+            }
+        }
     }
 
     if (!have_info) {
         const std::vector<std::string> probe_arguments = {
             "ffprobe", "-v", "error", "-select_streams", "a:0",
             "-show_entries",
-            "stream=codec_name,sample_fmt,sample_rate,channels,bits_per_sample,bits_per_raw_sample,duration,duration_ts,time_base:stream_tags=title,artist,track,tracknumber:format=duration:format_tags=title,artist,track,tracknumber",
+            "stream=codec_name,sample_fmt,sample_rate,channels,bits_per_sample,bits_per_raw_sample,duration,duration_ts,time_base:stream_tags=title,artist,album,track,tracknumber:format=duration:format_tags=title,artist,album,track,tracknumber",
             "-of", "default=nokey=0:noprint_wrappers=0:string_validation=ignore",
             path
         };
@@ -677,21 +873,10 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path,
             Logger::instance().debug("ExternalAudioDecoder probe returned no data for: " + path);
         }
 
-        enum class ProbeSection {
-            None,
-            Stream,
-            Format
-        };
-
         std::istringstream ps(probe.stdout_text);
         std::string line;
         std::string sample_fmt;
-        std::string stream_title;
-        std::string stream_artist;
-        std::string stream_track;
-        std::string format_title;
-        std::string format_artist;
-        std::string format_track;
+        ParsedProbeTags parsed_tags;
         ProbeSection section = ProbeSection::None;
         double seconds = 0.0;
         while (std::getline(ps, line)) {
@@ -736,48 +921,13 @@ ExternalAudioInfo ExternalAudioDecoder::probe_metadata(const std::string& path,
                     if (probed > seconds) {
                         seconds = probed;
                     }
-                } else if (key == "tag:title" || key == "title") {
-                    if (section == ProbeSection::Format) {
-                        format_title = value;
-                    } else if (section == ProbeSection::Stream) {
-                        stream_title = value;
-                    }
-                } else if (key == "tag:artist" || key == "artist") {
-                    if (section == ProbeSection::Format) {
-                        format_artist = value;
-                    } else if (section == ProbeSection::Stream) {
-                        stream_artist = value;
-                    }
-                } else if (key == "tag:track" || key == "track") {
-                    if (section == ProbeSection::Format) {
-                        format_track = value;
-                    } else if (section == ProbeSection::Stream) {
-                        stream_track = value;
-                    }
-                } else if (key == "tag:tracknumber" || key == "tracknumber") {
-                    if (section == ProbeSection::Format && format_track.empty()) {
-                        format_track = value;
-                    } else if (section == ProbeSection::Stream && stream_track.empty()) {
-                        stream_track = value;
-                    }
+                } else {
+                    capture_ffprobe_tag(parsed_tags, section, key, value);
                 }
             } catch (...) {}
         }
 
-        const std::string& selected_title = !trim_value_copy(format_title).empty() ? format_title : stream_title;
-        const std::string& selected_artist = !trim_value_copy(format_artist).empty() ? format_artist : stream_artist;
-        const std::string& selected_track = !trim_value_copy(format_track).empty() ? format_track : stream_track;
-        if (!selected_title.empty()) {
-            info.tags.title = pcmtp::text::normalize_metadata_value(selected_title);
-        }
-        if (!selected_artist.empty()) {
-            info.tags.artist = pcmtp::text::normalize_metadata_value(selected_artist);
-        }
-        if (!selected_track.empty()) {
-            try {
-                info.tags.track_number = std::stoi(selected_track);
-            } catch (...) {}
-        }
+        info.tags = finalize_ffprobe_tags(parsed_tags);
         const std::uint16_t fmt_bits = bits_from_sample_fmt(sample_fmt);
         if ((info.format.bits_per_sample == 0 || info.format.bits_per_sample == 16) && fmt_bits > 0) {
             if (!(info.format.bits_per_sample == 16 && fmt_bits == 32 && info.codec_name != "alac")) {

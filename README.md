@@ -1,4 +1,4 @@
-# PCM Transport v0.9.111
+# PCM Transport v0.9.112
 
 **PCM Transport** is a Linux desktop audio player focused on direct PCM playback, predictable DSP, and clear signal-path reporting.
 
@@ -113,6 +113,33 @@ FFmpeg-backed formats require `ffmpeg` and `ffprobe` at runtime. Rare-format sup
 - DSD sources (DSF/DFF) are played via PCM conversion; native DSD output is not available.
 
 ---
+## Command-line opening
+
+Local audio files, playlists, CUE sheets and directories can be opened directly from the command line:
+
+```bash
+./build/pcm_transport <path> [<path>...]
+```
+
+Examples:
+
+```bash
+./build/pcm_transport album.flac
+./build/pcm_transport album.cue
+./build/pcm_transport playlist.m3u8
+./build/pcm_transport "/home/user/Music/My Album"
+./build/pcm_transport track01.flac track02.flac
+```
+
+When PCM Transport is already running, new paths are opened in the existing application instance.
+
+Use -- before a path that begins with a hyphen:
+
+```bash
+./build/pcm_transport -- "-track.flac"
+```
+
+---
 
 ## AppImage
 
@@ -144,8 +171,7 @@ sudo pacman -S --needed base-devel cmake pkgconf alsa-lib flac gtk3 ffmpeg
 ### Debian / Ubuntu
 
 ```bash
-sudo apt install build-essential cmake pkg-config \
-    libasound2-dev libflac-dev libgtk-3-dev ffmpeg
+sudo apt install build-essential cmake pkg-config libasound2-dev libflac-dev libgtk-3-dev ffmpeg
 ```
 
 ### ALT Linux
@@ -204,6 +230,10 @@ cmake --install build --prefix ~/.local
 ```
 
 This optional desktop integration installs the binary, desktop entry and hicolor application icons under the selected prefix. It also enables opening supported audio files, playlists, CUE sheets and directories from compatible Linux file managers. Installation is not required for running from `build`.
+
+Some desktop environments may require refreshing their application and icon caches before PCM Transport appears in application or “Open With” menus.
+
+If the application does not appear in your menu or file associations do not work immediately, please log out and log back into your desktop session. This ensures all desktop caches are rebuilt for your environment.
 
 ---
 

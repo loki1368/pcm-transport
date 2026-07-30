@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrey Berestov and PCM Transport contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 #include "pcmtp/mpris/MprisService.hpp"
 
 #include <gio/gio.h>
@@ -177,6 +180,9 @@ GVariant* metadata_variant(const MprisPlayerState& state) {
         }
         g_variant_builder_add(&builder, "{sv}", "xesam:artist", g_variant_builder_end(&artist_builder));
 
+        if (!state.album.empty()) {
+            g_variant_builder_add(&builder, "{sv}", "xesam:album", g_variant_new_string(state.album.c_str()));
+        }
         if (!state.url.empty()) {
             g_variant_builder_add(&builder, "{sv}", "xesam:url", g_variant_new_string(state.url.c_str()));
         }
@@ -195,7 +201,7 @@ GVariant* metadata_variant(const MprisPlayerState& state) {
 }
 
 std::string metadata_signature(const MprisPlayerState& state) {
-    return state.title + "|" + state.artist + "|" + state.url + "|" + state.art_url + "|" +
+    return state.title + "|" + state.artist + "|" + state.album + "|" + state.url + "|" + state.art_url + "|" +
            std::to_string(state.length_usec) + "|" + std::to_string(state.track_number) + "|" +
            state.track_id + "|" + std::to_string(state.track_epoch) + "|" + (state.has_track ? "1" : "0");
 }

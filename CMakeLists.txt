@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(pcm_transport VERSION 0.9.111 LANGUAGES C CXX)
+project(pcm_transport VERSION 0.9.112 LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 

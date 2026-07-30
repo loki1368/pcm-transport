@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrey Berestov and PCM Transport contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 #pragma once
 
 #include <FLAC/stream_decoder.h>
@@ -17,6 +20,7 @@ namespace pcmtp {
 struct FlacTags {
     std::string title;
     std::string artist;
+    std::string album;
     int track_number = 0;
 };
 

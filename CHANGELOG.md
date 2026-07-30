@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.112
+
+- Initial playlist filter implementation contributed by [@loki1368](https://github.com/loki1368).
+- Further filter integration, optimization, bug fixes and release polishing.
+- Add Album metadata to FLAC, FFprobe, CUE and WAV/BWF probes, including RIFF INFO and embedded-ID3 fallback; publish Album through MPRIS `xesam:album`.
+- Parse WAV RIFF INFO Artist, Title, Album and `ITRK`/`IPRT` track numbers through the fast metadata path.
+- Add drag-and-drop opening of local files, CUE, M3U/M3U8 and directories.
+- Add right-click directory selection to the existing Open button.
+- Refine playlist layout and sizing.
+- Improve the settings-saving algorithm.
+- Release the playlist model reference when the main window is destroyed and tie DSP size groups to the dialog lifetime.
+- Improve alignment of GUI display elements.
+
 ## 0.9.111
 
 - Improve lazy metadata loading performance and early playback, based on work contributed by [@loki1368](https://github.com/loki1368).

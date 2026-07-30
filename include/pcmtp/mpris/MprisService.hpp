@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrey Berestov and PCM Transport contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 #pragma once
 
 #include <gio/gio.h>
@@ -24,6 +27,7 @@ struct MprisPlayerState {
     std::int64_t length_usec = 0;
     std::string title;
     std::string artist;
+    std::string album;
     std::string url;
     std::string art_url;
     std::string track_id;

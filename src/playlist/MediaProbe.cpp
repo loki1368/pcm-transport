@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrey Berestov and PCM Transport contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 #include "pcmtp/playlist/MediaProbe.hpp"
 
 #include <algorithm>
@@ -48,6 +51,7 @@ MediaProbeResult probe_media_file(const std::string& path,
                 result.total_samples_per_channel = flac_probe.total_samples_per_channel;
                 result.tags.title = flac_probe.tags.title;
                 result.tags.artist = flac_probe.tags.artist;
+                result.tags.album = flac_probe.tags.album;
                 result.tags.track_number = flac_probe.tags.track_number;
                 result.codec_name = "flac";
                 result.native_decode = true;

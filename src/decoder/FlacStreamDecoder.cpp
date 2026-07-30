@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrey Berestov and PCM Transport contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 #include "pcmtp/decoder/FlacStreamDecoder.hpp"
 
 #include <FLAC/metadata.h>
@@ -188,6 +191,8 @@ FlacFileProbe FlacStreamDecoder::probe_file(const std::string& path) {
                     result.tags.title = pcmtp::text::normalize_metadata_value(value);
                 } else if (key == "ARTIST") {
                     result.tags.artist = pcmtp::text::normalize_metadata_value(value);
+                } else if (key == "ALBUM") {
+                    result.tags.album = pcmtp::text::normalize_metadata_value(value);
                 } else if (key == "TRACKNUMBER") {
                     try {
                         result.tags.track_number = std::stoi(value);

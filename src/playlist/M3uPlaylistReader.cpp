@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Andrey Berestov and PCM Transport contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 #include "pcmtp/playlist/M3uPlaylistReader.hpp"
 
 #include "pcmtp/patches/M3uPlaylistExtensions.hpp"
