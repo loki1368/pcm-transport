@@ -32,12 +32,15 @@ struct ExternalAudioInfo {
     std::uint64_t source_presentation_start_sample = 0;
     GenericTags tags{};
     std::string codec_name;
+    std::uint32_t bit_rate = 0;
     bool dsd_source = false;
     std::uint32_t dsd_sample_rate = 0;
     std::int64_t duration_ts = 0;
     std::string time_base;
     bool lossless = false;
     bool raw_aac = false;
+    bool duration_reliable = true;
+    bool live_format_probed = false;
     SampleExtentKind sample_extent_kind = SampleExtentKind::Unknown;
     SampleExtentSource sample_extent_source = SampleExtentSource::None;
     ExactPresentationDrainPolicy sample_extent_drain_policy =

@@ -170,7 +170,7 @@ chmod +x PCM-Transport-latest-x86_64.AppImage
 ### Arch Linux
 
 ```bash
-sudo pacman -S --needed base-devel cmake pkgconf alsa-lib flac gtk3 ffmpeg
+sudo pacman -S --needed base-devel cmake pkgconf alsa-lib flac gtk3 ffmpeg curl openssl
 ```
 
 ### Debian / Ubuntu
@@ -178,7 +178,8 @@ sudo pacman -S --needed base-devel cmake pkgconf alsa-lib flac gtk3 ffmpeg
 ```bash
 sudo apt install build-essential cmake pkg-config \
     libasound2-dev libflac-dev libgtk-3-dev \
-    libavformat-dev libavcodec-dev libavutil-dev libswresample-dev
+    libavformat-dev libavcodec-dev libavutil-dev libswresample-dev \
+    libcurl4-openssl-dev libssl-dev
 ```
 
 ### ALT Linux
@@ -187,7 +188,8 @@ sudo apt install build-essential cmake pkg-config \
 su -
 apt-get install build-essential cmake pkg-config \
     libalsa-devel libflac-devel libgtk+3-devel \
-    libavformat-devel libavcodec-devel libavutil-devel libswresample-devel
+    libavformat-devel libavcodec-devel libavutil-devel libswresample-devel \
+    libcurl-devel libssl-devel
 exit
 ```
 
@@ -198,6 +200,8 @@ exit
 - GLib / GIO 2.52 or newer
 - libFLAC 1.3.3 or newer
 - FFmpeg 4.4 or newer shared libraries: libavformat, libavcodec, libavutil and libswresample
+- libcurl (remote M3U/M3U8 playlist fetch)
+- OpenSSL (HTTPS ICY metadata sidecar)
 - rtkit-daemon (optional, for RTKit realtime audio-thread priority)
 - pkexec and setcap (optional, for granting persistent cap_sys_nice realtime permission)
 

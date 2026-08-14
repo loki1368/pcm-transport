@@ -16,6 +16,8 @@ pkg_check_modules(AVFORMAT REQUIRED IMPORTED_TARGET libavformat>=58.76.100)
 pkg_check_modules(AVCODEC REQUIRED IMPORTED_TARGET libavcodec>=58.134.100)
 pkg_check_modules(AVUTIL REQUIRED IMPORTED_TARGET libavutil>=56.70.100)
 pkg_check_modules(SWRESAMPLE REQUIRED IMPORTED_TARGET libswresample>=3.9.100)
+pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
+find_package(OpenSSL REQUIRED)
 
 find_program(GLIB_COMPILE_RESOURCES_EXECUTABLE
     NAMES glib-compile-resources
@@ -82,6 +84,14 @@ add_executable(pcm_transport
     src/backend/AlsaPcmBackend.cpp
     src/core/PlaybackEngine.cpp
     src/cue/CueParser.cpp
+    src/util/MediaUri.cpp
+    src/util/HttpFetch.cpp
+    src/stream/IcyMetadataClient.cpp
+    src/stream/StreamSidecar.cpp
+    src/stream/StreamHealthRegistry.cpp
+    src/stream/StreamPlaybackManager.cpp
+    src/stream/StreamAudioDecoder.cpp
+    src/stream/StreamDisplay.cpp
     src/playlist/M3uPlaylistReader.cpp
     src/playlist/MediaProbe.cpp
     src/playlist/Mp3FastProbe.cpp
@@ -93,6 +103,7 @@ add_executable(pcm_transport
     src/decoder/RangeLimitedDecoder.cpp
     src/decoder/GaplessChainDecoder.cpp
     src/gui/GtkPlayerWindow.cpp
+    src/gui/PlaylistStreamView.cpp
     src/mpris/MprisService.cpp
     src/hardware/CardProfileRegistry.cpp
     src/dsp/AlsaControlBridge.cpp
@@ -132,6 +143,9 @@ target_link_libraries(pcm_transport PRIVATE
     PkgConfig::AVCODEC
     PkgConfig::AVUTIL
     PkgConfig::SWRESAMPLE
+    PkgConfig::CURL
+    OpenSSL::SSL
+    OpenSSL::Crypto
     pthread
 )
 

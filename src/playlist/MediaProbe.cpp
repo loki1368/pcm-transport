@@ -8,7 +8,9 @@
 #include <chrono>
 #include <exception>
 
+#include "pcmtp/decoder/ExternalAudioDecoder.hpp"
 #include "pcmtp/decoder/FlacStreamDecoder.hpp"
+#include "pcmtp/stream/StreamAudioDecoder.hpp"
 #include "pcmtp/playlist/Mp3FastProbe.hpp"
 #include "pcmtp/util/Logger.hpp"
 
@@ -101,7 +103,9 @@ MediaProbeResult probe_media_file(const std::string& path,
             }
         }
 
-        const ExternalAudioInfo info = ExternalAudioDecoder::probe_metadata(path, 0, 0, probe_cancellation);
+        const ExternalAudioInfo info = StreamAudioDecoder::is_stream_uri(path)
+            ? StreamAudioDecoder::probe_metadata(path, 0, 0, probe_cancellation)
+            : ExternalAudioDecoder::probe_metadata(path, 0, 0, probe_cancellation);
         fill_result_from_external_info(info, &result);
         if (result.codec_name.empty() || result.format.sample_rate == 0 ||
             result.format.channels == 0) {

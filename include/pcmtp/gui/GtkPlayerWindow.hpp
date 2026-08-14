@@ -34,6 +34,7 @@
 #include "pcmtp/playlist/MediaProbe.hpp"
 #include "pcmtp/playlist/SourceScanner.hpp"
 #include "pcmtp/patches/PlaylistSearchController.hpp"
+#include "pcmtp/stream/StreamPlaybackManager.hpp"
 #include "pcmtp/util/ProbeCancellation.hpp"
 
 namespace pcmtp {
@@ -69,7 +70,6 @@ public:
     void show(const std::string& program_name,
               const std::vector<std::string>& source_paths);
 
-private:
     enum class MetadataState {
         Pending,
         Ready,
@@ -124,8 +124,12 @@ private:
         bool cue_track = false;
         std::uint64_t cue_album_end_sample = 0;
         std::uint64_t source_cue_album_end_sample = 0;
+        bool is_stream = false;
+        bool stream_format_probed = false;
+        std::uint32_t source_bit_rate = 0;
     };
 
+private:
     struct ActiveTrackTransportState {
         std::uint64_t planned_length_samples = 0;
         bool range_limited = false;
@@ -316,6 +320,64 @@ private:
     static gboolean on_preferences_save_timeout(gpointer user_data);
 
     void build_ui(GtkApplication* app);
+    void initialize_stream_subsystem();
+    std::size_t find_playlist_index_by_url(const std::string& url) const;
+    void ensure_stream_service_timer_running();
+    void stop_stream_service_timer();
+    bool stream_service_timer_needed() const;
+    static gboolean on_stream_service_tick(gpointer user_data);
+
+    void append_stream_entry(const std::string& path,
+                             const std::string& hint_title = std::string(),
+                             const std::string& hint_artist = std::string(),
+                             const std::string& top_level_source_path = std::string());
+    void handle_stream_probe_result(StreamPlaybackManager::ProbeResult result);
+    void begin_async_stream_probe_and_play(std::size_t index,
+                                           std::uint64_t offset_samples,
+                                           bool preserve_paused,
+                                           bool update_mpris_track,
+                                           bool skip_engine_stop,
+                                           std::uint64_t probe_generation);
+    void refresh_stream_health_rows_for_url(const std::string& url);
+    bool prepare_play_track_preamble(std::size_t index,
+                                     std::uint64_t offset_samples,
+                                     bool start_playback,
+                                     bool preserve_paused,
+                                     bool update_mpris_track,
+                                     bool skip_engine_stop,
+                                     std::uint64_t probe_generation);
+    std::unique_ptr<IAudioDecoder> open_stream_decoder(std::size_t index,
+                                                       std::uint64_t initial_offset,
+                                                       bool preserve_paused,
+                                                       bool update_mpris_track,
+                                                       bool skip_engine_stop,
+                                                       std::uint64_t probe_generation,
+                                                       bool* async_started);
+    void on_stream_play_succeeded(std::size_t index);
+    void on_stream_play_failed(const std::string& url, const std::string& error);
+    void on_stream_ui_timer_tick(const PlaybackStatusSnapshot& status);
+    void on_stream_transport_finished(std::size_t finished_index, bool* should_advance);
+    bool try_load_stream_source(const std::string& path,
+                                std::vector<std::string>* accepted_sources,
+                                bool quiet,
+                                const std::string& top_level_source_path = std::string());
+    bool entry_playable(bool is_stream, bool metadata_ready) const;
+    std::size_t append_source_stream_placeholder(const std::string& path,
+                                                 const std::string& top_level_source_path,
+                                                 const std::string& hint_title = std::string(),
+                                                 const std::string& hint_artist = std::string());
+    bool begin_play_track_stream_preamble(std::size_t index,
+                                          std::uint64_t offset_samples,
+                                          bool start_playback,
+                                          bool preserve_paused,
+                                          bool update_mpris_track,
+                                          bool skip_engine_stop,
+                                          std::uint64_t* probe_generation_out);
+    void handle_stream_playback_error(bool is_stream,
+                                      const std::string& audio_file_path,
+                                      const std::string& error);
+    void apply_stream_mpris_action_wrappers(MprisService::Actions& actions);
+    void apply_stream_fields_to_mpris_state(MprisPlayerState& state, const PlaylistEntry& track) const;
     void start_source_scan_worker();
     void stop_source_scan_worker();
     void source_scan_worker_loop();
@@ -650,7 +712,7 @@ private:
     PlaylistScrollPolicy automatic_transport_scroll_policy(std::size_t index) const;
 
     static std::string format_time_seconds(std::uint64_t total_seconds);
-    static std::string display_title_for(const PlaylistEntry& entry);
+    std::string display_title_for(const PlaylistEntry& entry) const;
 
     GtkApplication* app_ = nullptr;
     GtkWidget* window_ = nullptr;
@@ -838,6 +900,7 @@ private:
     std::uint32_t clip_hold_samples_ = 0;
     guint progress_deadline_id_ = 0;
     guint meter_timer_id_ = 0;
+    guint stream_service_timer_id_ = 0;
     guint playback_event_source_id_ = 0;
     std::chrono::steady_clock::time_point meter_last_update_{};
     bool progress_blink_enabled_ = true;
@@ -907,6 +970,9 @@ private:
     struct SearchDelegate;
     std::unique_ptr<SearchDelegate> search_delegate_;
     std::unique_ptr<PlaylistSearchController> search_controller_;
+    struct StreamDelegate;
+    std::unique_ptr<StreamDelegate> stream_delegate_;
+    std::unique_ptr<StreamPlaybackManager> stream_manager_;
 };
 
 } // namespace pcmtp
