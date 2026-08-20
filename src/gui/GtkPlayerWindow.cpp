@@ -9560,9 +9560,15 @@ void GtkPlayerWindow::remap_playlist_indices_after_failed_removal(
 }
 
 void GtkPlayerWindow::stop_playback() {
+    const bool was_playing = engine_.is_playing();
     halt_active_transport(true);
-    if (!ui_closing_) {
-        refresh_display();
+    if (ui_closing_) {
+        return;
+    }
+    refresh_display();
+    // Already-stopped Stop must not reshuffle MPRIS metadata toward the
+    // current playlist selection.
+    if (was_playing) {
         notify_mpris_state_changed();
     }
 }
@@ -14351,14 +14357,14 @@ std::string GtkPlayerWindow::cached_cover_art_for(const std::string& audio_file_
     return mpris_cover_cache_art_path_;
 }
 
-std::size_t GtkPlayerWindow::mpris_playlist_index(bool transport_active) const {
+std::size_t GtkPlayerWindow::mpris_playlist_index(bool /*transport_active*/) const {
     if (playlist_.empty()) {
         return playlist_.size();
     }
-    if (transport_active) {
-        return std::min(current_track_index_, playlist_.size() - 1);
-    }
-    return std::min(playlist_play_target_index(), playlist_.size() - 1);
+    // Always publish the transport/current track. While stopped that is the
+    // track that was halted — not the playlist row the user may have selected
+    // afterward. Local Play still uses playlist_play_target_index().
+    return std::min(current_track_index_, playlist_.size() - 1);
 }
 
 std::string GtkPlayerWindow::mpris_track_id_for_index(std::size_t index) const {
