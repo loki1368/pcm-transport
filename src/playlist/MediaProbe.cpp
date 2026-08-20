@@ -43,6 +43,7 @@ void fill_result_from_external_info(const ExternalAudioInfo& info, MediaProbeRes
     result->sample_extent_source = info.sample_extent_source;
     result->tags = info.tags;
     result->codec_name = info.codec_name;
+    result->bit_rate = info.bit_rate;
     result->native_decode = false;
     result->lossless = info.lossless;
     result->dsd_source = info.dsd_source;

@@ -694,6 +694,7 @@ private:
 
     static std::string format_time_seconds(std::uint64_t total_seconds);
     std::string display_title_for(const PlaylistEntry& entry) const;
+    std::string media_source_summary(const PlaylistEntry& entry) const;
 
     GtkApplication* app_ = nullptr;
     GtkWidget* window_ = nullptr;

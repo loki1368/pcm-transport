@@ -2099,6 +2099,11 @@ LibavProbeResult probe_with_libav(const std::string& path,
         info.format.channels = static_cast<std::uint16_t>(channels > 0 ? channels : 2);
         const char* codec_name = avcodec_get_name(parameters->codec_id);
         info.codec_name = codec_name != nullptr ? lower_copy(codec_name) : std::string();
+        if (parameters->bit_rate > 0) {
+            info.bit_rate = static_cast<std::uint32_t>(parameters->bit_rate);
+        } else if (context->bit_rate > 0) {
+            info.bit_rate = static_cast<std::uint32_t>(context->bit_rate);
+        }
         int bits = parameters->bits_per_raw_sample;
         if (bits <= 0) bits = parameters->bits_per_coded_sample;
         if (bits <= 0) bits = av_get_exact_bits_per_sample(parameters->codec_id);

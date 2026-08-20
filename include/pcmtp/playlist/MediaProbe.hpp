@@ -25,6 +25,7 @@ struct MediaProbeResult {
     SampleExtentSource sample_extent_source = SampleExtentSource::None;
     GenericTags tags{};
     std::string codec_name;
+    std::uint32_t bit_rate = 0;
     bool native_decode = false;
     bool lossless = false;
     bool dsd_source = false;

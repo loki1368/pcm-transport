@@ -1020,6 +1020,91 @@ std::string lower_extension(const std::string& path) {
     return ext;
 }
 
+std::string codec_display_name(const std::string& codec_name) {
+    if (codec_name.empty()) {
+        return "File";
+    }
+    if (codec_name == "mp3") return "MP3";
+    if (codec_name == "flac") return "FLAC";
+    if (codec_name == "aac") return "AAC";
+    if (codec_name == "vorbis") return "Vorbis";
+    if (codec_name == "opus") return "Opus";
+    if (codec_name == "alac") return "ALAC";
+    if (codec_name == "ape") return "APE";
+    if (codec_name == "wavpack") return "WavPack";
+    if (codec_name == "tta") return "TTA";
+    if (codec_name == "tak") return "TAK";
+    if (codec_name == "hls") return "HLS";
+    if (codec_name == "stream") return "Stream";
+    std::string out = codec_name;
+    if (!out.empty()) {
+        out[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(out[0])));
+    }
+    return out;
+}
+
+std::string codec_label_for_entry(const std::string& codec_name, const std::string& path) {
+    if (!codec_name.empty()) {
+        if (codec_name.size() >= 4 && codec_name.compare(0, 4, "pcm_") == 0) {
+            const std::string ext = lower_extension(path);
+            if (ext == ".wav" || ext == ".wave") return "WAV";
+            if (ext == ".bwf") return "BWF";
+            if (ext == ".aiff" || ext == ".aif") return "AIFF";
+            if (ext == ".au" || ext == ".snd") return "AU/SND";
+            if (ext == ".caf") return "CAF";
+            if (ext == ".w64") return "W64";
+            if (ext == ".voc") return "VOC";
+            return "PCM";
+        }
+        return codec_display_name(codec_name);
+    }
+
+    const std::string ext = lower_extension(path);
+    if (ext == ".flac") return "FLAC";
+    if (ext == ".wav" || ext == ".wave") return "WAV";
+    if (ext == ".bwf") return "BWF";
+    if (ext == ".au" || ext == ".snd") return "AU/SND";
+    if (ext == ".caf") return "CAF";
+    if (ext == ".aiff" || ext == ".aif") return "AIFF";
+    if (ext == ".ape") return "APE";
+    if (ext == ".wv") return "WavPack";
+    if (ext == ".w64") return "W64";
+    if (ext == ".voc") return "VOC";
+    if (ext == ".ra") return "RA";
+    if (ext == ".m4a") return "M4A";
+    if (ext == ".m4r") return "M4R";
+    if (ext == ".aac") return "AAC";
+    if (ext == ".mp2") return "MP2";
+    if (ext == ".ac3") return "AC3";
+    if (ext == ".dts") return "DTS";
+    if (ext == ".ogg" || ext == ".oga") return "OGG";
+    if (ext == ".opus") return "OPUS";
+    if (ext == ".spx") return "SPX";
+    if (ext == ".tak") return "TAK";
+    if (ext == ".tta") return "TTA";
+    if (ext == ".wmv") return "WMV";
+    if (ext == ".wma" || ext == ".asf" || ext == ".xwma") return "WMA";
+    if (ext == ".oma" || ext == ".aa3" || ext == ".at3") return "ATRAC";
+    if (ext == ".mpc" || ext == ".mp+" || ext == ".mpp") return "MPC";
+    if (ext == ".dsf") return "DSF";
+    if (ext == ".dff") return "DFF";
+    if (ext == ".mp3") return "MP3";
+    return "File";
+}
+
+std::string channels_layout_label(std::uint16_t channels) {
+    if (channels == 1) {
+        return "mono";
+    }
+    if (channels == 2) {
+        return {};
+    }
+    if (channels > 0) {
+        return std::to_string(channels) + " ch";
+    }
+    return {};
+}
+
 enum class PcmDialogLayoutMode {
     Compact,
     Expandable
@@ -7247,36 +7332,7 @@ std::string GtkPlayerWindow::processing_path_for_entry(
     const PlaylistEntry& entry,
     const AudioFormat& active_output_format) const {
     const std::string ext = lower_extension(entry.audio_file_path);
-    std::string source_name = "File";
-    if (ext == ".flac") source_name = "FLAC";
-    else if (ext == ".wav" || ext == ".wave") source_name = "WAV";
-    else if (ext == ".bwf") source_name = "BWF";
-    else if (ext == ".au" || ext == ".snd") source_name = "AU/SND";
-    else if (ext == ".caf") source_name = "CAF";
-    else if (ext == ".aiff" || ext == ".aif") source_name = "AIFF";
-    else if (ext == ".ape") source_name = "APE";
-    else if (ext == ".wv") source_name = "WavPack";
-    else if (ext == ".w64") source_name = "W64";
-    else if (ext == ".voc") source_name = "VOC";
-    else if (ext == ".ra") source_name = "RA";
-    else if (ext == ".m4a") source_name = "M4A";
-    else if (ext == ".m4r") source_name = "M4R";
-    else if (ext == ".aac") source_name = "AAC";
-    else if (ext == ".mp2") source_name = "MP2";
-    else if (ext == ".ac3") source_name = "AC3";
-    else if (ext == ".dts") source_name = "DTS";
-    else if (ext == ".ogg" || ext == ".oga") source_name = "OGG";
-    else if (ext == ".opus") source_name = "OPUS";
-    else if (ext == ".spx") source_name = "SPX";
-    else if (ext == ".tak") source_name = "TAK";
-    else if (ext == ".tta") source_name = "TTA";
-    else if (ext == ".wmv") source_name = "WMV";
-    else if (ext == ".wma" || ext == ".asf" || ext == ".xwma") source_name = "WMA";
-    else if (ext == ".oma" || ext == ".aa3" || ext == ".at3") source_name = "ATRAC";
-    else if (ext == ".mpc" || ext == ".mp+" || ext == ".mpp") source_name = "MPC";
-    else if (ext == ".dsf") source_name = "DSF";
-    else if (ext == ".dff") source_name = "DFF";
-    else if (ext == ".mp3") source_name = "MP3";
+    const std::string source_name = media_source_summary(entry);
 
     const std::uint32_t shown_rate = active_output_format.sample_rate > 0
         ? active_output_format.sample_rate
@@ -7290,7 +7346,7 @@ std::string GtkPlayerWindow::processing_path_for_entry(
         const DsdRateDefinition* definition = find_dsd_rate_definition(entry.dsd_sample_rate);
         const std::string container_name = ext == ".dsf"
             ? "DSF"
-            : (ext == ".dff" ? "DFF" : source_name);
+            : (ext == ".dff" ? "DFF" : codec_label_for_entry(entry.codec_name, entry.audio_file_path));
         const std::string dsd_name = definition != nullptr
             ? std::string(definition->source_label)
             : (std::string("DSD · ") + format_dsd_rate_mhz(entry.dsd_sample_rate));
@@ -8327,6 +8383,7 @@ void GtkPlayerWindow::apply_metadata_probe_result(std::uint64_t generation,
         entry.dsd_sample_rate = result.dsd_source ? result.dsd_sample_rate : 0;
         entry.decoded_format = result.format;
         entry.codec_name = result.codec_name;
+        entry.source_bit_rate = result.bit_rate;
         entry.source_sample_extent_kind = result.sample_extent_kind;
         entry.source_sample_extent_source = result.sample_extent_source;
         entry.sample_extent_drain_policy = result.sample_extent_drain_policy;
@@ -13586,6 +13643,36 @@ std::string GtkPlayerWindow::display_title_for(const PlaylistEntry& entry) const
         return entry.performer + " - " + entry.title;
     }
     return entry.title;
+}
+
+std::string GtkPlayerWindow::media_source_summary(const PlaylistEntry& entry) const {
+    std::ostringstream summary;
+    if (entry.is_stream && entry.codec_name.empty()) {
+        summary << "Stream";
+    } else {
+        summary << codec_label_for_entry(entry.codec_name, entry.audio_file_path);
+    }
+
+    const std::uint32_t rate = entry.source_sample_rate > 0 ? entry.source_sample_rate : entry.decoded_format.sample_rate;
+    const std::uint16_t channels = entry.decoded_format.channels > 0 ? entry.decoded_format.channels : 2;
+    const std::uint16_t bits = entry.source_bits_per_sample > 0 ? entry.source_bits_per_sample : entry.decoded_format.bits_per_sample;
+
+    if (rate > 0) {
+        summary << ", " << rate << " Hz";
+        const std::string layout = channels_layout_label(channels);
+        if (!layout.empty()) {
+            summary << ", " << layout;
+        }
+        const bool show_bitrate = entry.source_bit_rate >= 1000 &&
+                                  (entry.lossy_source || (entry.is_stream && !entry.lossless_source));
+        if (show_bitrate) {
+            summary << ", " << ((entry.source_bit_rate + 500) / 1000) << " kb/s";
+        } else if (bits > 0 && !entry.lossy_source) {
+            summary << ", " << bits << " bit";
+        }
+    }
+
+    return summary.str();
 }
 
 void GtkPlayerWindow::load_preferences() {
