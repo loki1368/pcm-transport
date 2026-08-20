@@ -507,6 +507,16 @@ bool is_supported_media_path(const std::string& path) {
     return SourceScanner::is_supported_media_path(path);
 }
 
+gboolean open_dialog_file_filter(const GtkFileFilterInfo* filter_info, gpointer) {
+    if (filter_info == nullptr || filter_info->filename == nullptr) {
+        return FALSE;
+    }
+    if (g_file_test(filter_info->filename, G_FILE_TEST_IS_DIR)) {
+        return TRUE;
+    }
+    return is_supported_media_path(filter_info->filename) ? TRUE : FALSE;
+}
+
 constexpr const char* kMprisNoTrackObjectPath = "/org/mpris/MediaPlayer2/TrackList/NoTrack";
 
 std::int64_t samples_to_usec_safe(std::uint64_t samples, std::uint32_t sample_rate) {
@@ -10018,91 +10028,12 @@ void GtkPlayerWindow::open_file_dialog() {
     }
 
     GtkFileFilter* filter = gtk_file_filter_new();
-    gtk_file_filter_set_name(filter, "Audio, cue and playlist files");
-    gtk_file_filter_add_pattern(filter, "*.flac");
-    gtk_file_filter_add_pattern(filter, "*.FLAC");
-    gtk_file_filter_add_pattern(filter, "*.mp3");
-    gtk_file_filter_add_pattern(filter, "*.MP3");
-    gtk_file_filter_add_pattern(filter, "*.mp2");
-    gtk_file_filter_add_pattern(filter, "*.MP2");
-    gtk_file_filter_add_pattern(filter, "*.m4a");
-    gtk_file_filter_add_pattern(filter, "*.M4A");
-    gtk_file_filter_add_pattern(filter, "*.m4r");
-    gtk_file_filter_add_pattern(filter, "*.M4R");
-    gtk_file_filter_add_pattern(filter, "*.aac");
-    gtk_file_filter_add_pattern(filter, "*.AAC");
-    gtk_file_filter_add_pattern(filter, "*.ac3");
-    gtk_file_filter_add_pattern(filter, "*.AC3");
-    gtk_file_filter_add_pattern(filter, "*.dts");
-    gtk_file_filter_add_pattern(filter, "*.DTS");
-    gtk_file_filter_add_pattern(filter, "*.ogg");
-    gtk_file_filter_add_pattern(filter, "*.OGG");
-    gtk_file_filter_add_pattern(filter, "*.opus");
-    gtk_file_filter_add_pattern(filter, "*.spx");
-    gtk_file_filter_add_pattern(filter, "*.oga");
-    gtk_file_filter_add_pattern(filter, "*.au");
-    gtk_file_filter_add_pattern(filter, "*.snd");
-    gtk_file_filter_add_pattern(filter, "*.caf");
-    gtk_file_filter_add_pattern(filter, "*.voc");
-    gtk_file_filter_add_pattern(filter, "*.ra");
-    gtk_file_filter_add_pattern(filter, "*.w64");
-    gtk_file_filter_add_pattern(filter, "*.bwf");
-    gtk_file_filter_add_pattern(filter, "*.tak");
-    gtk_file_filter_add_pattern(filter, "*.tta");
-    gtk_file_filter_add_pattern(filter, "*.wma");
-    gtk_file_filter_add_pattern(filter, "*.asf");
-    gtk_file_filter_add_pattern(filter, "*.xwma");
-    gtk_file_filter_add_pattern(filter, "*.wmv");
-    gtk_file_filter_add_pattern(filter, "*.oma");
-    gtk_file_filter_add_pattern(filter, "*.aa3");
-    gtk_file_filter_add_pattern(filter, "*.at3");
-    gtk_file_filter_add_pattern(filter, "*.mpc");
-    gtk_file_filter_add_pattern(filter, "*.mp+");
-    gtk_file_filter_add_pattern(filter, "*.mpp");
-    gtk_file_filter_add_pattern(filter, "*.dsf");
-    gtk_file_filter_add_pattern(filter, "*.dff");
-    gtk_file_filter_add_pattern(filter, "*.OGA");
-    gtk_file_filter_add_pattern(filter, "*.AU");
-    gtk_file_filter_add_pattern(filter, "*.SND");
-    gtk_file_filter_add_pattern(filter, "*.CAF");
-    gtk_file_filter_add_pattern(filter, "*.VOC");
-    gtk_file_filter_add_pattern(filter, "*.RA");
-    gtk_file_filter_add_pattern(filter, "*.W64");
-    gtk_file_filter_add_pattern(filter, "*.SPX");
-    gtk_file_filter_add_pattern(filter, "*.BWF");
-    gtk_file_filter_add_pattern(filter, "*.TAK");
-    gtk_file_filter_add_pattern(filter, "*.TTA");
-    gtk_file_filter_add_pattern(filter, "*.WMA");
-    gtk_file_filter_add_pattern(filter, "*.ASF");
-    gtk_file_filter_add_pattern(filter, "*.XWMA");
-    gtk_file_filter_add_pattern(filter, "*.WMV");
-    gtk_file_filter_add_pattern(filter, "*.OMA");
-    gtk_file_filter_add_pattern(filter, "*.AA3");
-    gtk_file_filter_add_pattern(filter, "*.AT3");
-    gtk_file_filter_add_pattern(filter, "*.MPC");
-    gtk_file_filter_add_pattern(filter, "*.MP+");
-    gtk_file_filter_add_pattern(filter, "*.MPP");
-    gtk_file_filter_add_pattern(filter, "*.DSF");
-    gtk_file_filter_add_pattern(filter, "*.DFF");
-    gtk_file_filter_add_pattern(filter, "*.OPUS");
-    gtk_file_filter_add_pattern(filter, "*.wav");
-    gtk_file_filter_add_pattern(filter, "*.WAV");
-    gtk_file_filter_add_pattern(filter, "*.wave");
-    gtk_file_filter_add_pattern(filter, "*.WAVE");
-    gtk_file_filter_add_pattern(filter, "*.aiff");
-    gtk_file_filter_add_pattern(filter, "*.AIFF");
-    gtk_file_filter_add_pattern(filter, "*.aif");
-    gtk_file_filter_add_pattern(filter, "*.AIF");
-    gtk_file_filter_add_pattern(filter, "*.ape");
-    gtk_file_filter_add_pattern(filter, "*.APE");
-    gtk_file_filter_add_pattern(filter, "*.wv");
-    gtk_file_filter_add_pattern(filter, "*.WV");
-    gtk_file_filter_add_pattern(filter, "*.cue");
-    gtk_file_filter_add_pattern(filter, "*.CUE");
-    gtk_file_filter_add_pattern(filter, "*.m3u");
-    gtk_file_filter_add_pattern(filter, "*.M3U");
-    gtk_file_filter_add_pattern(filter, "*.m3u8");
-    gtk_file_filter_add_pattern(filter, "*.M3U8");
+    gtk_file_filter_set_name(filter, "Audio, cue, playlist files and folders");
+    gtk_file_filter_add_custom(filter,
+                               GTK_FILE_FILTER_FILENAME,
+                               open_dialog_file_filter,
+                               nullptr,
+                               nullptr);
     gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), filter);
 
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
@@ -10121,7 +10052,7 @@ void GtkPlayerWindow::open_file_dialog() {
             g_slist_free(files);
 
             if (!selected_paths.empty() &&
-                !load_source_paths(selected_paths, true, false, true).empty()) {
+                open_source_paths(selected_paths, true, false, true)) {
                 remember_open_directory_from_sources(selected_paths);
             }
         }
