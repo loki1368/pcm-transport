@@ -66,12 +66,9 @@ bool is_regular_file_following_symlink(const std::string& path) {
     return stat(path.c_str(), &status) == 0 && S_ISREG(status.st_mode);
 }
 
-bool is_directory_without_following_symlink(const std::string& path) {
+bool is_directory_following_symlink(const std::string& path) {
     struct stat status {};
-    if (lstat(path.c_str(), &status) != 0 || S_ISLNK(status.st_mode)) {
-        return false;
-    }
-    return S_ISDIR(status.st_mode);
+    return stat(path.c_str(), &status) == 0 && S_ISDIR(status.st_mode);
 }
 
 std::string join_path(const std::string& directory, const std::string& name) {
@@ -253,7 +250,13 @@ bool push_directory_frame(const std::string& directory,
                           std::strerror(errno) + ")");
         return false;
     }
-    if (S_ISLNK(status.st_mode) || !S_ISDIR(status.st_mode)) {
+    // Allow a top-level directory symlink (user-selected folder link). Nested
+    // directory symlinks are still skipped by the collector before it calls us.
+    if (S_ISLNK(status.st_mode)) {
+        if (stat(directory.c_str(), &status) != 0 || !S_ISDIR(status.st_mode)) {
+            return false;
+        }
+    } else if (!S_ISDIR(status.st_mode)) {
         return false;
     }
     if (status.st_dev != root_device) {
@@ -284,12 +287,9 @@ void collect_directory_candidates(const std::string& directory,
     }
 
     struct stat root_status {};
-    if (lstat(directory.c_str(), &root_status) != 0) {
-        errors->push_back("Cannot inspect directory: " + directory + " (" +
-                          std::strerror(errno) + ")");
-        return;
-    }
-    if (S_ISLNK(root_status.st_mode) || !S_ISDIR(root_status.st_mode)) {
+    // Follow a top-level directory symlink so "Open directory" / file-manager
+    // opens of folder links work. Nested directory links remain skipped below.
+    if (stat(directory.c_str(), &root_status) != 0 || !S_ISDIR(root_status.st_mode)) {
         errors->push_back("Cannot scan directory: " + directory);
         return;
     }
@@ -514,7 +514,7 @@ SourceScanResult SourceScanner::scan(
             continue;
         }
 
-        if (is_directory_without_following_symlink(top_level_path)) {
+        if (is_directory_following_symlink(top_level_path)) {
             std::vector<ScannedSourcePath> expanded = expand_directory(
                 top_level_path,
                 cancel_requested,
