@@ -877,8 +877,8 @@ private:
     std::unordered_map<std::string, MetadataProbePathState> metadata_probe_path_states_;
     std::unordered_map<std::string, CachedMediaProbe> media_probe_cache_;
     std::uint64_t media_probe_cache_serial_ = 0;
-    bool restore_last_sources_enabled_ = false;
-    bool restore_last_active_track_enabled_ = false;
+    bool restore_last_sources_enabled_ = true;
+    bool restore_last_active_track_enabled_ = true;
     std::vector<std::string> last_opened_sources_;
     std::vector<std::string> current_loaded_source_paths_;
     bool current_loaded_sources_initialized_ = false;
@@ -905,7 +905,7 @@ private:
     std::chrono::steady_clock::time_point meter_last_update_{};
     bool progress_blink_enabled_ = true;
     std::shared_ptr<std::atomic<bool>> ui_dispatch_lifetime_;
-    bool playlist_search_enabled_ = false;
+    bool playlist_search_enabled_ = true;
     bool playlist_column_widths_remember_enabled_ = false;
     std::array<int, 5> saved_playlist_column_widths_ = {{-1, -1, -1, -1, -1}};
     std::array<int, 5> runtime_playlist_column_widths_ = {{-1, -1, -1, -1, -1}};
