@@ -13362,8 +13362,6 @@ void GtkPlayerWindow::set_explicit_playlist_selection(std::size_t index) {
         return;
     }
     const bool transport_stopped = !engine_.is_playing();
-    const bool mpris_selection_changed =
-        transport_stopped && mpris_playlist_index(false) != index;
     cancel_pending_last_active_track_restore();
     clear_random_stopped_preview();
     playlist_selection_mode_ = PlaylistSelectionMode::ExplicitUser;
@@ -13375,9 +13373,8 @@ void GtkPlayerWindow::set_explicit_playlist_selection(std::size_t index) {
     if (pending_metadata_playback_valid()) {
         pending_metadata_playback_.preserve_explicit_selection = true;
     }
-    if (mpris_selection_changed) {
-        mark_mpris_track_changed();
-    }
+    // While stopped, keep MPRIS on the last transport track. Selection only
+    // affects the next local play target; metadata updates when playback starts.
     if (transport_stopped) {
         refresh_stereo_tonal_dsp_controls(false, 0);
     }
@@ -13388,8 +13385,6 @@ void GtkPlayerWindow::set_filter_candidate_selection(std::size_t index) {
         return;
     }
     const bool transport_stopped = !engine_.is_playing();
-    const bool mpris_selection_changed =
-        transport_stopped && mpris_playlist_index(false) != index;
     cancel_pending_last_active_track_restore();
     clear_random_stopped_preview();
     if (!playlist_filter_session_active_) {
@@ -13403,9 +13398,6 @@ void GtkPlayerWindow::set_filter_candidate_selection(std::size_t index) {
     playlist_selection_mode_ = PlaylistSelectionMode::FilterCandidate;
     selected_playlist_index_ = index;
     playlist_filter_candidate_valid_ = true;
-    if (mpris_selection_changed) {
-        mark_mpris_track_changed();
-    }
     if (transport_stopped) {
         refresh_stereo_tonal_dsp_controls(false, 0);
     }
