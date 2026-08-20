@@ -3233,24 +3233,26 @@ void GtkPlayerWindow::handle_stream_playback_error(bool is_stream,
 }
 
 void GtkPlayerWindow::apply_stream_mpris_action_wrappers(MprisService::Actions& actions) {
-    auto wrap_selection = [this](std::function<void()> action) {
-        return [this, action = std::move(action)]() {
-            update_playlist_selection_from_ui();
+    auto wrap_selection = [this](std::function<void()> action, bool skip_when_searching) {
+        return [this, action = std::move(action), skip_when_searching]() {
+            if (!skip_when_searching || !playlist_search_enabled_) {
+                update_playlist_selection_from_ui();
+            }
             action();
         };
     };
 
     auto play = std::move(actions.play);
-    actions.play = wrap_selection(std::move(play));
+    actions.play = wrap_selection(std::move(play), true);
 
     auto play_pause = std::move(actions.play_pause);
-    actions.play_pause = wrap_selection(std::move(play_pause));
+    actions.play_pause = wrap_selection(std::move(play_pause), true);
 
     auto next = std::move(actions.next);
-    actions.next = wrap_selection(std::move(next));
+    actions.next = wrap_selection(std::move(next), false);
 
     auto previous = std::move(actions.previous);
-    actions.previous = wrap_selection(std::move(previous));
+    actions.previous = wrap_selection(std::move(previous), false);
 }
 
 void GtkPlayerWindow::apply_stream_fields_to_mpris_state(MprisPlayerState& state,
