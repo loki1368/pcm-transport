@@ -58,9 +58,11 @@ done
 
 BIN_DIR="${PREFIX}/bin"
 APP_DIR="${PREFIX}/share/applications"
+USER_APP_DIR="${HOME}/.local/share/applications"
 ICON_ROOT="${PREFIX}/share/icons/hicolor"
 DESKTOP_DST="${APP_DIR}/${DESKTOP_ID}.desktop"
 INSTALLED_BIN="${BIN_DIR}/pcm_transport"
+MIMEAPPS_LIST="${HOME}/.config/mimeapps.list"
 
 # MIME types from data/org.berestov.pcmtransport.desktop (kept in sync manually).
 MIME_TYPES=(
@@ -78,6 +80,9 @@ MIME_TYPES=(
 refresh_caches() {
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "${APP_DIR}" 2>/dev/null || true
+    if [[ "${USER_APP_DIR}" != "${APP_DIR}" && -d "${USER_APP_DIR}" ]]; then
+      update-desktop-database "${USER_APP_DIR}" 2>/dev/null || true
+    fi
   fi
   if command -v gtk-update-icon-cache >/dev/null 2>&1 && [[ -d "${ICON_ROOT}" ]]; then
     gtk-update-icon-cache -f -t "${ICON_ROOT}" 2>/dev/null || true
@@ -87,22 +92,46 @@ refresh_caches() {
   fi
 }
 
+# File managers create userapp-pcm_transport-XXXX.desktop stubs (often with an
+# empty Name=) when opening a file via “Open With → Other Application”. Those
+# stubs show up as blank rows in Open With menus — remove them.
+cleanup_userapp_stubs() {
+  local stub
+  local removed=0
+  shopt -s nullglob
+  for stub in "${USER_APP_DIR}"/userapp-pcm_transport-*.desktop \
+              "${USER_APP_DIR}"/userapp-*pcm_transport*.desktop; do
+    [[ -f "${stub}" ]] || continue
+    rm -f "${stub}"
+    removed=$((removed + 1))
+  done
+  shopt -u nullglob
+
+  if [[ -f "${MIMEAPPS_LIST}" ]]; then
+    local tmp
+    tmp=$(mktemp)
+    # Drop any leftover associations pointing at the removed stubs.
+    sed -E 's/userapp-pcm_transport-[^.;]+\.desktop;?//g; s/;;+/;/g; s/=;/=/g; s/;$//' \
+      "${MIMEAPPS_LIST}" > "${tmp}"
+    if ! cmp -s "${MIMEAPPS_LIST}" "${tmp}"; then
+      mv "${tmp}" "${MIMEAPPS_LIST}"
+    else
+      rm -f "${tmp}"
+    fi
+  fi
+
+  if [[ "${removed}" -gt 0 ]]; then
+    echo "Removed ${removed} empty file-manager stub(s) (userapp-pcm_transport-*)."
+  fi
+}
+
 unregister() {
+  cleanup_userapp_stubs
   rm -f "${INSTALLED_BIN}"
   rm -f "${DESKTOP_DST}"
   for size in 16 32 48 128 256; do
     rm -f "${ICON_ROOT}/${size}x${size}/apps/${ICON_NAME}.png"
   done
-  if command -v xdg-mime >/dev/null 2>&1; then
-    for mime in "${MIME_TYPES[@]}"; do
-      current=$(xdg-mime query default "${mime}" 2>/dev/null || true)
-      if [[ "${current}" == "${DESKTOP_ID}.desktop" ]]; then
-        # Clearing a default is DE-specific; best-effort unset via empty write is avoided.
-        # Users can reassign defaults in the file manager.
-        :
-      fi
-    done
-  fi
   refresh_caches
   echo "Unregistered PCM Transport from ${PREFIX}"
   echo "Note: default MIME associations may still point here until changed in the file manager."
@@ -118,6 +147,8 @@ register() {
     echo "Desktop entry not found: ${DESKTOP_SRC}" >&2
     exit 1
   fi
+
+  cleanup_userapp_stubs
 
   mkdir -p "${BIN_DIR}" "${APP_DIR}"
   install -m 755 "${BINARY}" "${INSTALLED_BIN}"
@@ -162,6 +193,7 @@ register() {
   echo "  icons  : ${ICON_ROOT}/*/apps/${ICON_NAME}.png"
   echo
   echo "Open audio files, playlists, CUE sheets, or directories via “Open With” / file manager."
+  echo "Prefer the named “PCM Transport” entry — avoid “Other Application” (it creates blank stubs)."
   if [[ "${SET_DEFAULTS}" -eq 0 ]]; then
     echo "To also claim defaults: $0 --set-defaults"
   fi
