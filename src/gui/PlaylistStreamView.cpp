@@ -71,6 +71,15 @@ void on_playlist_row_cell_data(GtkTreeViewColumn* column,
     }
     const std::string cell_text = text != nullptr ? text : std::string();
 
+    // Ellipsize only when the column already has a fixed pixel width. With
+    // GROW_ONLY sizing, PANGO_ELLIPSIZE_END makes GtkCellRendererText report a
+    // near-zero preferred width and the playlist collapses to an empty grey pane.
+    const PangoEllipsizeMode ellipsize =
+        (column != nullptr &&
+         gtk_tree_view_column_get_sizing(column) == GTK_TREE_VIEW_COLUMN_FIXED)
+            ? PANGO_ELLIPSIZE_END
+            : PANGO_ELLIPSIZE_NONE;
+
     if (broken) {
         std::string span_attrs = std::string("foreground='") + broken_color + "'";
         if (playing) {
@@ -80,7 +89,7 @@ void on_playlist_row_cell_data(GtkTreeViewColumn* column,
             "<span " + span_attrs + ">" + escape_pango_markup_text(cell_text) + "</span>";
         g_object_set(G_OBJECT(cell),
                        "markup", markup.c_str(),
-                       "ellipsize", PANGO_ELLIPSIZE_END,
+                       "ellipsize", ellipsize,
                        "foreground-set", FALSE,
                        "weight-set", FALSE,
                        "cell-background-set", selected ? TRUE : FALSE,
@@ -92,7 +101,7 @@ void on_playlist_row_cell_data(GtkTreeViewColumn* column,
         g_object_set(G_OBJECT(cell),
                        "markup", nullptr,
                        "text", cell_text.c_str(),
-                       "ellipsize", PANGO_ELLIPSIZE_END,
+                       "ellipsize", ellipsize,
                        "foreground-rgba", &normal_selected_fg,
                        "foreground-set", TRUE,
                        "cell-background-rgba", &normal_selected_bg,
@@ -104,7 +113,7 @@ void on_playlist_row_cell_data(GtkTreeViewColumn* column,
         g_object_set(G_OBJECT(cell),
                        "markup", nullptr,
                        "text", cell_text.c_str(),
-                       "ellipsize", PANGO_ELLIPSIZE_END,
+                       "ellipsize", ellipsize,
                        "foreground-set", FALSE,
                        "cell-background-set", FALSE,
                        "weight", playing ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_NORMAL,

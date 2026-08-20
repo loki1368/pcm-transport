@@ -3600,19 +3600,14 @@ void GtkPlayerWindow::on_playlist_field_cell_data(GtkTreeViewColumn* column,
         return;
     }
 
-    std::size_t slot = 0;
     int model_column = -1;
     if (column == self->playlist_artist_column_) {
-        slot = 0;
         model_column = COL_ARTIST;
     } else if (column == self->playlist_title_column_) {
-        slot = 1;
         model_column = COL_TITLE;
     } else if (column == self->playlist_album_column_) {
-        slot = 2;
         model_column = COL_ALBUM;
     } else if (column == self->playlist_source_column_) {
-        slot = 3;
         model_column = COL_SOURCE;
     } else {
         return;
@@ -3628,15 +3623,13 @@ void GtkPlayerWindow::on_playlist_field_cell_data(GtkTreeViewColumn* column,
     // the column could not reveal more characters until a full rebuild. Column
     // geometry (from the field-width limit and/or user resize) constrains the
     // cell; Pango ellipsizes to the live pixel width on every render.
+    //
+    // Only enable ellipsize for FIXED columns. GROW_ONLY + END ellipsis makes
+    // GtkCellRendererText request ~0 width and collapses the playlist.
     PangoEllipsizeMode ellipsize = PANGO_ELLIPSIZE_NONE;
-    if (self->playlist_field_width_limit_enabled_) {
-        const int initial_cap = self->playlist_field_width_initial_caps_[slot];
-        const int fixed_width = gtk_tree_view_column_get_fixed_width(column);
-        if (initial_cap > 0 ||
-            fixed_width > 0 ||
-            gtk_tree_view_column_get_sizing(column) == GTK_TREE_VIEW_COLUMN_FIXED) {
-            ellipsize = PANGO_ELLIPSIZE_END;
-        }
+    if (self->playlist_field_width_limit_enabled_ &&
+        gtk_tree_view_column_get_sizing(column) == GTK_TREE_VIEW_COLUMN_FIXED) {
+        ellipsize = PANGO_ELLIPSIZE_END;
     }
 
     g_object_set(renderer,
@@ -13113,9 +13106,7 @@ void GtkPlayerWindow::on_playlist_column_width_notify(GObject* object,
         gtk_tree_view_column_get_sizing(column) != GTK_TREE_VIEW_COLUMN_FIXED) {
         return;
     }
-    // Force cells to re-run their data funcs / Pango layout against the new
-    // pixel width so ellipsis tracks the drag instead of staying stale.
-    gtk_tree_view_column_queue_resize(column);
+    // Do not queue_resize here: it re-enters notify::width and can stall the UI.
     if (self->playlist_view_ != nullptr) {
         gtk_widget_queue_draw(self->playlist_view_);
     }
