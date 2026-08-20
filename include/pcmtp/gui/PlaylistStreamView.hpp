@@ -26,10 +26,17 @@ void install_playlist_stream_styling(GtkTreeView* view,
                                      GtkTreeViewColumn* col_track,
                                      GtkTreeViewColumn* col_artist,
                                      GtkTreeViewColumn* col_title,
+                                     GtkTreeViewColumn* col_album,
                                      GtkTreeViewColumn* col_source,
                                      int col_trackno_id,
                                      int col_artist_id,
                                      int col_title_id,
-                                     int col_source_id);
+                                     int col_album_id,
+                                     int col_source_id,
+                                     const std::size_t* playing_index);
+
+void refresh_playlist_row_styles(GtkWidget* playlist_view);
+
+bool playlist_row_is_playing(GtkTreeView* view, GtkTreeModel* model, GtkTreeIter* iter);
 
 } // namespace pcmtp

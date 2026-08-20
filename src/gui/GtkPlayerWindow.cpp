@@ -3651,6 +3651,11 @@ void GtkPlayerWindow::on_playlist_field_cell_data(GtkTreeViewColumn* column,
     g_object_set(renderer,
                  "text", presentation.c_str(),
                  "ellipsize", ellipsize,
+                 "weight",
+                 playlist_row_is_playing(GTK_TREE_VIEW(self->playlist_view_), model, iter)
+                     ? PANGO_WEIGHT_BOLD
+                     : PANGO_WEIGHT_NORMAL,
+                 "weight-set", TRUE,
                  nullptr);
 }
 
@@ -4467,18 +4472,20 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     configure_sort_column(col_title, "Title", PlaylistSortKey::Title, 2);
     configure_sort_column(col_album, "Album", PlaylistSortKey::Album, 3);
     configure_sort_column(col_source, "Source", PlaylistSortKey::Source, 4);
-    apply_playlist_field_width_limit(false);
-    update_playlist_sort_headers();
-
     install_playlist_stream_styling(GTK_TREE_VIEW(playlist_view_),
                                              col_track,
                                              col_artist,
                                              col_title,
+                                             col_album,
                                              col_source,
                                              COL_TRACKNO,
                                              COL_ARTIST,
                                              COL_TITLE,
-                                             COL_SOURCE);
+                                             COL_ALBUM,
+                                             COL_SOURCE,
+                                             &current_track_index_);
+    apply_playlist_field_width_limit(false);
+    update_playlist_sort_headers();
 
     // Make child visibility and GTK theme metrics available without mapping the
     // top-level window. Derive the row step from the real renderers and the
@@ -7062,6 +7069,7 @@ void GtkPlayerWindow::update_gapless_chain_track_from_status(const PlaybackStatu
         return;
     }
 
+    const std::size_t previous_playing_index = current_track_index_;
     current_track_index_ = active_index;
     if (active_segment < active_track_transport_states_.size()) {
         active_range_limited_transport_ =
@@ -7073,6 +7081,9 @@ void GtkPlayerWindow::update_gapless_chain_track_from_status(const PlaybackStatu
         random_enabled_
             ? automatic_transport_scroll_policy(current_track_index_)
             : PlaylistScrollPolicy::EnsureVisible);
+    if (previous_playing_index != current_track_index_) {
+        refresh_playlist_row_styles(playlist_view_);
+    }
     mark_mpris_track_changed();
     refresh_active_alsa_output_diagnostics();
 }
@@ -9624,6 +9635,7 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
     refresh_active_alsa_output_diagnostics();
     clear_gapless_chain();
 
+    const std::size_t previous_playing_index = current_track_index_;
     current_track_index_ = index;
     const PlaylistScrollPolicy scroll_policy =
         (random_enabled_ && (start_reason == PlaybackStartReason::Automatic ||
@@ -9633,6 +9645,9 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
     sync_playlist_selection_after_transport_change(index,
                                                    preserve_explicit_selection,
                                                    scroll_policy);
+    if (previous_playing_index != current_track_index_) {
+        refresh_playlist_row_styles(playlist_view_);
+    }
     const PlaylistEntry track = playlist_[current_track_index_];
     const std::uint64_t track_length = track_length_samples(track);
     const std::uint64_t initial_offset = std::min<std::uint64_t>(offset_samples, track_length);
@@ -12633,12 +12648,6 @@ void GtkPlayerWindow::sync_playlist_field_renderer_binding() {
         playlist_album_column_,
         playlist_source_column_
     }};
-    const std::array<int, 4> model_columns = {{
-        COL_ARTIST,
-        COL_TITLE,
-        COL_ALBUM,
-        COL_SOURCE
-    }};
 
     for (std::size_t index = 0; index < columns.size(); ++index) {
         GtkTreeViewColumn* column = columns[index];
@@ -12647,7 +12656,7 @@ void GtkPlayerWindow::sync_playlist_field_renderer_binding() {
             continue;
         }
 
-        // The normal model attribute and the limited presentation callback are
+        // The normal stream/playing styler and the limited presentation callback are
         // two alternative renderer bindings. Keep them mutually exclusive so
         // changing the setting on an already realized TreeView takes effect
         // immediately without rebuilding the playlist model.
@@ -12660,11 +12669,23 @@ void GtkPlayerWindow::sync_playlist_field_renderer_binding() {
                 GtkPlayerWindow::on_playlist_field_cell_data,
                 this,
                 nullptr);
-        } else {
-            gtk_tree_view_column_add_attribute(
-                column, renderer, "text", model_columns[index]);
         }
         gtk_tree_view_column_queue_resize(column);
+    }
+
+    if (!use_cell_data && playlist_view_ != nullptr) {
+        install_playlist_stream_styling(GTK_TREE_VIEW(playlist_view_),
+                                        nullptr,
+                                        playlist_artist_column_,
+                                        playlist_title_column_,
+                                        playlist_album_column_,
+                                        playlist_source_column_,
+                                        -1,
+                                        COL_ARTIST,
+                                        COL_TITLE,
+                                        COL_ALBUM,
+                                        COL_SOURCE,
+                                        &current_track_index_);
     }
 
     playlist_field_cell_data_active_ = use_cell_data;
@@ -13663,11 +13684,10 @@ std::string GtkPlayerWindow::media_source_summary(const PlaylistEntry& entry) co
         if (!layout.empty()) {
             summary << ", " << layout;
         }
-        const bool show_bitrate = entry.source_bit_rate >= 1000 &&
-                                  (entry.lossy_source || (entry.is_stream && !entry.lossless_source));
-        if (show_bitrate) {
+        const bool lossy = !entry.lossless_source;
+        if (entry.source_bit_rate >= 1000 && lossy) {
             summary << ", " << ((entry.source_bit_rate + 500) / 1000) << " kb/s";
-        } else if (bits > 0 && !entry.lossy_source) {
+        } else if (bits > 0 && !lossy) {
             summary << ", " << bits << " bit";
         }
     }
