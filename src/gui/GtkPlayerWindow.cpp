@@ -4843,18 +4843,20 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
                          this);
     }
 
-    apply_playlist_column_width_memory(false);
-    update_playlist_sort_headers();
-
     install_playlist_stream_styling(GTK_TREE_VIEW(playlist_view_),
                                              col_track,
                                              col_artist,
                                              col_title,
+                                             col_album,
                                              col_source,
                                              COL_TRACKNO,
                                              COL_ARTIST,
                                              COL_TITLE,
-                                             COL_SOURCE);
+                                             COL_ALBUM,
+                                             COL_SOURCE,
+                                             &current_track_index_);
+    apply_playlist_column_width_memory(false);
+    update_playlist_sort_headers();
 
     // Make child visibility and GTK theme metrics available without mapping the
     // top-level window. Derive the row step from the real renderers and the
@@ -7499,6 +7501,7 @@ void GtkPlayerWindow::update_gapless_chain_track_from_status(const PlaybackStatu
         return;
     }
 
+    const std::size_t previous_playing_index = current_track_index_;
     current_track_index_ = active_index;
     if (active_segment < active_track_transport_states_.size()) {
         active_range_limited_transport_ =
@@ -7510,6 +7513,9 @@ void GtkPlayerWindow::update_gapless_chain_track_from_status(const PlaybackStatu
         random_enabled_
             ? automatic_transport_scroll_policy(current_track_index_)
             : PlaylistScrollPolicy::EnsureVisible);
+    if (previous_playing_index != current_track_index_) {
+        refresh_playlist_row_styles(playlist_view_);
+    }
     mark_mpris_track_changed();
     refresh_active_alsa_output_diagnostics();
 }
@@ -10349,6 +10355,7 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
     refresh_active_alsa_output_diagnostics();
     clear_gapless_chain();
 
+    const std::size_t previous_playing_index = current_track_index_;
     current_track_index_ = index;
     const PlaylistScrollPolicy scroll_policy =
         (random_enabled_ && (start_reason == PlaybackStartReason::Automatic ||
@@ -10358,6 +10365,9 @@ void GtkPlayerWindow::play_track_index_at_offset(std::size_t index,
     sync_playlist_selection_after_transport_change(index,
                                                    preserve_explicit_selection,
                                                    scroll_policy);
+    if (previous_playing_index != current_track_index_) {
+        refresh_playlist_row_styles(playlist_view_);
+    }
     const PlaylistEntry track = playlist_[current_track_index_];
     const std::uint64_t track_length = track_length_samples(track);
     const std::uint64_t initial_offset = std::min<std::uint64_t>(offset_samples, track_length);
@@ -14715,7 +14725,6 @@ std::string GtkPlayerWindow::display_title_for(const PlaylistEntry& entry) const
     }
     return entry.title;
 }
-
 void GtkPlayerWindow::load_preferences() {
     const char* home = std::getenv("HOME");
     if (home == nullptr || *home == '\0') {
