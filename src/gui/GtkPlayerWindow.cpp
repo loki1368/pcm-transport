@@ -3623,35 +3623,24 @@ void GtkPlayerWindow::on_playlist_field_cell_data(GtkTreeViewColumn* column,
     const std::string full_text = model_text != nullptr ? model_text : "";
     g_free(model_text);
 
-    std::string presentation = full_text;
+    // Always keep the full model string in the renderer. Character-capped
+    // truncation here permanently baked an ellipsis into the text, so widening
+    // the column could not reveal more characters until a full rebuild. Column
+    // geometry (from the field-width limit and/or user resize) constrains the
+    // cell; Pango ellipsizes to the live pixel width on every render.
     PangoEllipsizeMode ellipsize = PANGO_ELLIPSIZE_NONE;
     if (self->playlist_field_width_limit_enabled_) {
         const int initial_cap = self->playlist_field_width_initial_caps_[slot];
         const int fixed_width = gtk_tree_view_column_get_fixed_width(column);
-        if (initial_cap > 0) {
-            // Limited columns start with a strict character-capped presentation.
-            // GtkTreeViewColumn::fixed-width is the durable user-resize state:
-            // expanding beyond the configured initial cap reveals the full model
-            // value, while shrinking keeps the capped presentation and lets Pango
-            // ellipsize it further if necessary.
-            if (fixed_width <= initial_cap) {
-                const int max_chars = std::max(
-                    kMinPlaylistFieldWidthChars,
-                    std::min(kMaxPlaylistFieldWidthChars, self->playlist_field_width_chars_));
-                presentation = playlist_field_limited_presentation(full_text, max_chars);
-            }
-            ellipsize = PANGO_ELLIPSIZE_END;
-        } else if (fixed_width > 0) {
-            // A field that is already within the configured character limit uses
-            // normal GTK GROW_ONLY sizing. Once the user explicitly resizes that
-            // column, GTK records the width in fixed-width; only then enable end
-            // ellipsis for further manual shrink.
+        if (initial_cap > 0 ||
+            fixed_width > 0 ||
+            gtk_tree_view_column_get_sizing(column) == GTK_TREE_VIEW_COLUMN_FIXED) {
             ellipsize = PANGO_ELLIPSIZE_END;
         }
     }
 
     g_object_set(renderer,
-                 "text", presentation.c_str(),
+                 "text", full_text.c_str(),
                  "ellipsize", ellipsize,
                  "weight",
                  playlist_row_is_playing(GTK_TREE_VIEW(self->playlist_view_), model, iter)
@@ -12840,29 +12829,6 @@ void GtkPlayerWindow::apply_playlist_field_width_limit(bool reset_column_widths)
         return;
     }
 
-    if (has_saved_playlist_column_widths()) {
-        apply_saved_playlist_column_widths();
-        playlist_field_width_initial_caps_.fill(-1);
-        for (std::size_t index = 0; index < limited.size(); ++index) {
-            const int saved_width = playlist_column_widths_[index + 1];
-            if (limited[index] && saved_width > 0) {
-                playlist_field_width_initial_caps_[index] = saved_width;
-            }
-        }
-        if (playlist_scrolled_ != nullptr) {
-            GtkAdjustment* adjustment =
-                gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(playlist_scrolled_));
-            if (adjustment != nullptr) {
-                gtk_adjustment_set_value(adjustment, gtk_adjustment_get_lower(adjustment));
-            }
-        }
-        if (playlist_view_ != nullptr) {
-            gtk_widget_queue_draw(playlist_view_);
-            gtk_widget_queue_resize(playlist_view_);
-        }
-        return;
-    }
-
     std::array<int, 4> initial_pixel_widths = {{-1, -1, -1, -1}};
     if (playlist_view_ != nullptr) {
         // Only columns that actually exceed the configured character limit need
@@ -12978,6 +12944,12 @@ void GtkPlayerWindow::apply_playlist_field_width_limit(bool reset_column_widths)
                 column, !use_spacer && column == playlist_expand_column_ ? TRUE : FALSE);
         }
         gtk_tree_view_column_queue_resize(column);
+    }
+
+    // initial_caps keep the character-limit pixel measure so ellipsis gating
+    // stays correct; restored user widths may be wider or narrower than that.
+    if (has_saved_playlist_column_widths()) {
+        apply_saved_playlist_column_widths();
     }
 
     if (playlist_scrolled_ != nullptr) {
@@ -13140,6 +13112,12 @@ void GtkPlayerWindow::on_playlist_column_width_notify(GObject* object,
     if (column == nullptr ||
         gtk_tree_view_column_get_sizing(column) != GTK_TREE_VIEW_COLUMN_FIXED) {
         return;
+    }
+    // Force cells to re-run their data funcs / Pango layout against the new
+    // pixel width so ellipsis tracks the drag instead of staying stale.
+    gtk_tree_view_column_queue_resize(column);
+    if (self->playlist_view_ != nullptr) {
+        gtk_widget_queue_draw(self->playlist_view_);
     }
     self->schedule_playlist_column_width_persist();
 }
