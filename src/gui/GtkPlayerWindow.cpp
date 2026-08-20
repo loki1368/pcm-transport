@@ -77,6 +77,8 @@ constexpr int kMaxPlaylistRows = 20;
 constexpr int kMinPlaylistFieldWidthChars = 10;
 constexpr int kMaxPlaylistFieldWidthChars = 200;
 constexpr int kPlaylistFieldWidthSpacerMinPixels = 6;
+constexpr int kMinPersistedPlaylistColumnWidth = 24;
+constexpr int kMaxPersistedPlaylistColumnWidth = 4096;
 constexpr gint kDialogOuterMargin = 14;
 constexpr gint kDialogContentFooterSpacing = 8;
 constexpr gint kDialogButtonSpacing = 6;
@@ -3991,6 +3993,11 @@ GtkPlayerWindow::~GtkPlayerWindow() {
     ui_closing_ = true;
     uninstall_playback_event_bridge();
     stop_bitperfect_test_worker();
+    if (playlist_column_width_save_idle_id_ != 0) {
+        g_source_remove(playlist_column_width_save_idle_id_);
+        playlist_column_width_save_idle_id_ = 0;
+    }
+    capture_playlist_column_widths_from_view();
     flush_preferences_save();
     search_controller_.reset();
     search_delegate_.reset();
@@ -4393,6 +4400,7 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
     GtkCellRenderer* renderer = gtk_cell_renderer_text_new();
     g_object_set(renderer, "xpad", 6, "ypad", 2, nullptr);
     GtkTreeViewColumn* col_track = gtk_tree_view_column_new_with_attributes("#", renderer, "text", COL_TRACKNO, nullptr);
+    playlist_track_column_ = col_track;
     gtk_tree_view_column_set_resizable(col_track, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(playlist_view_), col_track);
 
@@ -4485,6 +4493,16 @@ void GtkPlayerWindow::build_ui(GtkApplication* app) {
                                              COL_SOURCE,
                                              &current_track_index_);
     apply_playlist_field_width_limit(false);
+    apply_saved_playlist_column_widths();
+    const std::array<GtkTreeViewColumn*, 5> persist_columns = {{
+        col_track, col_artist, col_title, col_album, col_source
+    }};
+    for (GtkTreeViewColumn* column : persist_columns) {
+        g_signal_connect(column,
+                         "notify::width",
+                         G_CALLBACK(GtkPlayerWindow::on_playlist_column_width_notify),
+                         this);
+    }
     update_playlist_sort_headers();
 
     // Make child visibility and GTK theme metrics available without mapping the
@@ -5226,9 +5244,16 @@ void GtkPlayerWindow::on_window_destroy(GtkWidget*, gpointer user_data) {
         self->playlist_title_renderer_ = nullptr;
         self->playlist_album_renderer_ = nullptr;
         self->playlist_source_renderer_ = nullptr;
+        if (self->playlist_column_width_save_idle_id_ != 0) {
+            g_source_remove(self->playlist_column_width_save_idle_id_);
+            self->playlist_column_width_save_idle_id_ = 0;
+        }
+        self->capture_playlist_column_widths_from_view();
+        self->playlist_track_column_ = nullptr;
         self->playlist_artist_column_ = nullptr;
         self->playlist_title_column_ = nullptr;
         self->playlist_album_column_ = nullptr;
+        self->playlist_field_width_spacer_column_ = nullptr;
         self->playlist_source_column_ = nullptr;
         if (self->playlist_store_ != nullptr) {
             g_object_unref(self->playlist_store_);
@@ -12815,6 +12840,29 @@ void GtkPlayerWindow::apply_playlist_field_width_limit(bool reset_column_widths)
         return;
     }
 
+    if (has_saved_playlist_column_widths()) {
+        apply_saved_playlist_column_widths();
+        playlist_field_width_initial_caps_.fill(-1);
+        for (std::size_t index = 0; index < limited.size(); ++index) {
+            const int saved_width = playlist_column_widths_[index + 1];
+            if (limited[index] && saved_width > 0) {
+                playlist_field_width_initial_caps_[index] = saved_width;
+            }
+        }
+        if (playlist_scrolled_ != nullptr) {
+            GtkAdjustment* adjustment =
+                gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(playlist_scrolled_));
+            if (adjustment != nullptr) {
+                gtk_adjustment_set_value(adjustment, gtk_adjustment_get_lower(adjustment));
+            }
+        }
+        if (playlist_view_ != nullptr) {
+            gtk_widget_queue_draw(playlist_view_);
+            gtk_widget_queue_resize(playlist_view_);
+        }
+        return;
+    }
+
     std::array<int, 4> initial_pixel_widths = {{-1, -1, -1, -1}};
     if (playlist_view_ != nullptr) {
         // Only columns that actually exceed the configured character limit need
@@ -12950,6 +12998,19 @@ void GtkPlayerWindow::reset_playlist_column_widths() {
         return;
     }
 
+    if (has_saved_playlist_column_widths()) {
+        apply_saved_playlist_column_widths();
+        if (playlist_scrolled_ != nullptr) {
+            GtkAdjustment* adjustment =
+                gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(playlist_scrolled_));
+            if (adjustment != nullptr) {
+                gtk_adjustment_set_value(adjustment, gtk_adjustment_get_lower(adjustment));
+            }
+        }
+        gtk_widget_queue_resize(playlist_view_);
+        return;
+    }
+
     playlist_field_width_initial_caps_.fill(-1);
 
     if (playlist_field_width_spacer_column_ != nullptr) {
@@ -12978,6 +13039,125 @@ void GtkPlayerWindow::reset_playlist_column_widths() {
         }
     }
     gtk_widget_queue_resize(playlist_view_);
+}
+
+bool GtkPlayerWindow::has_saved_playlist_column_widths() const {
+    for (int width : playlist_column_widths_) {
+        if (width > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void GtkPlayerWindow::apply_saved_playlist_column_widths() {
+    if (!has_saved_playlist_column_widths()) {
+        return;
+    }
+
+    const std::array<GtkTreeViewColumn*, 5> columns = {{
+        playlist_track_column_,
+        playlist_artist_column_,
+        playlist_title_column_,
+        playlist_album_column_,
+        playlist_source_column_
+    }};
+
+    playlist_column_widths_applying_ = true;
+    for (std::size_t index = 0; index < columns.size(); ++index) {
+        GtkTreeViewColumn* column = columns[index];
+        const int width = playlist_column_widths_[index];
+        if (column == nullptr || width <= 0) {
+            continue;
+        }
+        gtk_tree_view_column_set_sizing(column, GTK_TREE_VIEW_COLUMN_FIXED);
+        gtk_tree_view_column_set_fixed_width(column, width);
+        gtk_tree_view_column_set_max_width(column, -1);
+        gtk_tree_view_column_set_expand(
+            column, column == playlist_expand_column_ ? TRUE : FALSE);
+        gtk_tree_view_column_queue_resize(column);
+    }
+    playlist_column_widths_applying_ = false;
+}
+
+void GtkPlayerWindow::capture_playlist_column_widths_from_view() {
+    const std::array<GtkTreeViewColumn*, 5> columns = {{
+        playlist_track_column_,
+        playlist_artist_column_,
+        playlist_title_column_,
+        playlist_album_column_,
+        playlist_source_column_
+    }};
+
+    bool any_fixed = false;
+    for (GtkTreeViewColumn* column : columns) {
+        if (column != nullptr &&
+            gtk_tree_view_column_get_sizing(column) == GTK_TREE_VIEW_COLUMN_FIXED) {
+            any_fixed = true;
+            break;
+        }
+    }
+    if (!any_fixed && !has_saved_playlist_column_widths()) {
+        return;
+    }
+
+    for (std::size_t index = 0; index < columns.size(); ++index) {
+        GtkTreeViewColumn* column = columns[index];
+        if (column == nullptr) {
+            continue;
+        }
+        int width = gtk_tree_view_column_get_width(column);
+        if (width <= 0) {
+            width = gtk_tree_view_column_get_fixed_width(column);
+        }
+        if (width < kMinPersistedPlaylistColumnWidth ||
+            width > kMaxPersistedPlaylistColumnWidth) {
+            continue;
+        }
+        playlist_column_widths_[index] = width;
+    }
+}
+
+void GtkPlayerWindow::schedule_playlist_column_width_persist() {
+    if (ui_closing_ || playlist_column_widths_applying_ || bulk_preferences_update_) {
+        return;
+    }
+    if (playlist_column_width_save_idle_id_ != 0) {
+        return;
+    }
+    playlist_column_width_save_idle_id_ =
+        g_idle_add(GtkPlayerWindow::on_playlist_column_width_save_idle, this);
+}
+
+void GtkPlayerWindow::on_playlist_column_width_notify(GObject* object,
+                                                       GParamSpec*,
+                                                       gpointer user_data) {
+    auto* self = static_cast<GtkPlayerWindow*>(user_data);
+    if (self == nullptr || self->ui_closing_ || self->playlist_column_widths_applying_) {
+        return;
+    }
+    auto* column = GTK_TREE_VIEW_COLUMN(object);
+    if (column == nullptr ||
+        gtk_tree_view_column_get_sizing(column) != GTK_TREE_VIEW_COLUMN_FIXED) {
+        return;
+    }
+    self->schedule_playlist_column_width_persist();
+}
+
+gboolean GtkPlayerWindow::on_playlist_column_width_save_idle(gpointer user_data) {
+    auto* self = static_cast<GtkPlayerWindow*>(user_data);
+    if (self == nullptr) {
+        return G_SOURCE_REMOVE;
+    }
+    self->playlist_column_width_save_idle_id_ = 0;
+    if (self->ui_closing_ || self->playlist_column_widths_applying_) {
+        return G_SOURCE_REMOVE;
+    }
+    self->capture_playlist_column_widths_from_view();
+    if (self->has_saved_playlist_column_widths()) {
+        self->save_preferences();
+    }
+    return G_SOURCE_REMOVE;
 }
 
 void GtkPlayerWindow::rebuild_playlist_search_cache() {
@@ -13802,6 +13982,32 @@ void GtkPlayerWindow::load_preferences() {
             playlist_field_width_chars_ = std::max(
                 kMinPlaylistFieldWidthChars,
                 std::min(kMaxPlaylistFieldWidthChars, playlist_field_width_chars_));
+        } else if (key == "playlist_column_widths") {
+            std::array<int, 5> parsed = {{0, 0, 0, 0, 0}};
+            std::size_t slot = 0;
+            std::size_t start = 0;
+            while (slot < parsed.size() && start <= value.size()) {
+                const std::size_t comma = value.find(',', start);
+                const std::string token = value.substr(
+                    start, comma == std::string::npos ? std::string::npos : comma - start);
+                try {
+                    const int width = std::stoi(token);
+                    if (width == 0 ||
+                        (width >= kMinPersistedPlaylistColumnWidth &&
+                         width <= kMaxPersistedPlaylistColumnWidth)) {
+                        parsed[slot] = width;
+                    }
+                } catch (...) {
+                }
+                ++slot;
+                if (comma == std::string::npos) {
+                    break;
+                }
+                start = comma + 1;
+            }
+            if (slot == parsed.size()) {
+                playlist_column_widths_ = parsed;
+            }
         } else if (key == "level_meter_enabled") {
             level_meter_enabled_ = (value == "1" || value == "true" || value == "yes");
         } else if (key == "clip_detection_enabled") {
@@ -13938,6 +14144,14 @@ std::string GtkPlayerWindow::serialize_preferences() const {
     out << "playlist_field_width_limit_enabled="
         << (playlist_field_width_limit_enabled_ ? 1 : 0) << '\n';
     out << "playlist_field_width_chars=" << playlist_field_width_chars_ << '\n';
+    if (has_saved_playlist_column_widths()) {
+        out << "playlist_column_widths="
+            << playlist_column_widths_[0] << ','
+            << playlist_column_widths_[1] << ','
+            << playlist_column_widths_[2] << ','
+            << playlist_column_widths_[3] << ','
+            << playlist_column_widths_[4] << '\n';
+    }
     out << "level_meter_enabled=" << (level_meter_enabled_ ? 1 : 0) << '\n';
     out << "clip_detection_enabled=" << (clip_detection_enabled_ ? 1 : 0) << '\n';
     out << "resample_rules=" << serialize_resample_rules(resample_rules_) << '\n';

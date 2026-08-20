@@ -308,6 +308,8 @@ private:
                                           GtkTreeViewColumn* column,
                                           gpointer user_data);
     static void on_playlist_column_clicked(GtkTreeViewColumn* column, gpointer user_data);
+    static void on_playlist_column_width_notify(GObject* object, GParamSpec* pspec, gpointer user_data);
+    static gboolean on_playlist_column_width_save_idle(gpointer user_data);
     static void on_media_play(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_pause(GSimpleAction* action, GVariant* parameter, gpointer user_data);
     static void on_media_play_pause(GSimpleAction* action, GVariant* parameter, gpointer user_data);
@@ -513,6 +515,10 @@ private:
     void cancel_pending_seek();
     void rebuild_playlist_view(bool reset_column_widths = true);
     void reset_playlist_column_widths();
+    bool has_saved_playlist_column_widths() const;
+    void apply_saved_playlist_column_widths();
+    void capture_playlist_column_widths_from_view();
+    void schedule_playlist_column_width_persist();
     void apply_playlist_field_width_limit(bool reset_column_widths);
     void sync_playlist_field_renderer_binding();
     void update_playlist_sort_headers();
@@ -892,12 +898,17 @@ private:
     GtkCellRenderer* playlist_title_renderer_ = nullptr;
     GtkCellRenderer* playlist_album_renderer_ = nullptr;
     GtkCellRenderer* playlist_source_renderer_ = nullptr;
+    GtkTreeViewColumn* playlist_track_column_ = nullptr;
     GtkTreeViewColumn* playlist_artist_column_ = nullptr;
     GtkTreeViewColumn* playlist_title_column_ = nullptr;
     GtkTreeViewColumn* playlist_album_column_ = nullptr;
     GtkTreeViewColumn* playlist_field_width_spacer_column_ = nullptr;
     GtkTreeViewColumn* playlist_source_column_ = nullptr;
     std::array<int, 4> playlist_field_width_initial_caps_ = {{-1, -1, -1, -1}};
+    // Persisted pixel widths for # / Artist / Title / Album / Source. 0 = unset.
+    std::array<int, 5> playlist_column_widths_ = {{0, 0, 0, 0, 0}};
+    bool playlist_column_widths_applying_ = false;
+    guint playlist_column_width_save_idle_id_ = 0;
     bool playlist_field_cell_data_active_ = false;
     int playlist_rows_at_startup_ = 12;
     bool playlist_search_window_height_adjusted_ = false;
